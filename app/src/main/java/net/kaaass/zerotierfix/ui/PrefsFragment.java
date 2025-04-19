@@ -18,6 +18,8 @@ import android.widget.Toast;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
+import androidx.preference.EditTextPreference;
+import androidx.preference.ListPreference;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceFragmentCompat;
 import androidx.preference.SwitchPreference;
@@ -142,6 +144,77 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
         
         // 注册监听器，使偏好设置变化能够被捕获
         getPreferenceScreen().getSharedPreferences().registerOnSharedPreferenceChangeListener(this);
+        
+        // 初始化代理设置的摘要信息
+        initProxyPreferencesSummary();
+    }
+    
+    /**
+     * 初始化代理设置的摘要信息，以便在界面上显示当前值
+     */
+    private void initProxyPreferencesSummary() {
+        SharedPreferences sharedPreferences = getPreferenceScreen().getSharedPreferences();
+        
+        // 初始化代理类型
+        updateProxyTypePreferenceSummary(sharedPreferences);
+        
+        // 初始化代理主机
+        updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_HOST);
+        
+        // 初始化代理端口
+        updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_PORT);
+        
+        // 初始化代理用户名
+        updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_USERNAME);
+        
+        // 初始化代理密码（显示为星号）
+        updateProxyPasswordPreferenceSummary(sharedPreferences);
+    }
+    
+    /**
+     * 更新偏好设置的摘要信息
+     */
+    private void updatePreferenceSummary(SharedPreferences sharedPreferences, String key) {
+        Preference preference = findPreference(key);
+        if (preference instanceof EditTextPreference) {
+            String value = sharedPreferences.getString(key, "");
+            if (!value.isEmpty()) {
+                preference.setSummary(value);
+            } else {
+                preference.setSummary(null); // 清除摘要，只显示标题
+            }
+        }
+    }
+    
+    /**
+     * 更新代理类型偏好设置的摘要信息
+     */
+    private void updateProxyTypePreferenceSummary(SharedPreferences sharedPreferences) {
+        ListPreference preference = findPreference(Constants.PREF_PROXY_TYPE);
+        if (preference != null) {
+            String value = sharedPreferences.getString(Constants.PREF_PROXY_TYPE, "0");
+            int index = preference.findIndexOfValue(value);
+            if (index >= 0) {
+                preference.setSummary(preference.getEntries()[index]);
+            } else {
+                preference.setSummary(null);
+            }
+        }
+    }
+    
+    /**
+     * 更新代理密码偏好设置的摘要信息（显示为星号）
+     */
+    private void updateProxyPasswordPreferenceSummary(SharedPreferences sharedPreferences) {
+        Preference preference = findPreference(Constants.PREF_PROXY_PASSWORD);
+        if (preference instanceof EditTextPreference) {
+            String value = sharedPreferences.getString(Constants.PREF_PROXY_PASSWORD, "");
+            if (!value.isEmpty()) {
+                preference.setSummary("****"); // 密码用星号显示
+            } else {
+                preference.setSummary(null); // 清除摘要，只显示标题
+            }
+        }
     }
     
     @Override
@@ -278,6 +351,8 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
             Preference proxyHostPref = findPreference(Constants.PREF_PROXY_HOST);
             Preference proxyPortPref = findPreference(Constants.PREF_PROXY_PORT);
             Preference proxyTypePref = findPreference(Constants.PREF_PROXY_TYPE);
+            Preference proxyUsernamePref = findPreference(Constants.PREF_PROXY_USERNAME);
+            Preference proxyPasswordPref = findPreference(Constants.PREF_PROXY_PASSWORD);
             
             if (proxyHostPref != null) {
                 proxyHostPref.setEnabled(enabled);
@@ -287,6 +362,12 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
             }
             if (proxyTypePref != null) {
                 proxyTypePref.setEnabled(enabled);
+            }
+            if (proxyUsernamePref != null) {
+                proxyUsernamePref.setEnabled(enabled);
+            }
+            if (proxyPasswordPref != null) {
+                proxyPasswordPref.setEnabled(enabled);
             }
             
             // 记录代理启用状态变化
@@ -319,6 +400,9 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
                 }
                 Log.i(TAG, "代理类型已设置为: " + proxyTypeName);
                 
+                // 更新代理类型摘要
+                updateProxyTypePreferenceSummary(sharedPreferences);
+                
                 // 更新用户名密码字段状态
                 boolean needsAuth = proxyType != Constants.PROXY_TYPE_NONE;
                 Preference usernamePref = findPreference(Constants.PREF_PROXY_USERNAME);
@@ -332,6 +416,18 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
             } catch (NumberFormatException e) {
                 Log.e(TAG, "解析代理类型出错", e);
             }
+        } else if (key.equals(Constants.PREF_PROXY_HOST)) {
+            // 更新代理主机摘要
+            updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_HOST);
+        } else if (key.equals(Constants.PREF_PROXY_PORT)) {
+            // 更新代理端口摘要
+            updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_PORT);
+        } else if (key.equals(Constants.PREF_PROXY_USERNAME)) {
+            // 更新代理用户名摘要
+            updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_USERNAME);
+        } else if (key.equals(Constants.PREF_PROXY_PASSWORD)) {
+            // 更新代理密码摘要（显示为星号）
+            updateProxyPasswordPreferenceSummary(sharedPreferences);
         }
     }
 

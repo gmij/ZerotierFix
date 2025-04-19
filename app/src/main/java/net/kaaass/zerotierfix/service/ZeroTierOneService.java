@@ -1090,14 +1090,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private void configureAllowedDisallowedApps(VpnService.Builder builder, boolean isRouteViaZeroTier) {
         if (!isRouteViaZeroTier && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             // 设置部分 APP 不经过 VPN
-            for (var app : DISALLOWED_APPS) {
-                try {
-                    builder.addDisallowedApplication(app);
-                    LogUtil.d(TAG, "添加排除应用: " + app);
-                } catch (Exception e3) {
-                    LogUtil.e(TAG, "无法排除应用 " + app, e3);
-                }
-            }
+            // for (var app : DISALLOWED_APPS) {
+            //     try {
+            //         builder.addDisallowedApplication(app);
+            //         LogUtil.d(TAG, "添加排除应用: " + app);
+            //     } catch (Exception e3) {
+            //         LogUtil.e(TAG, "无法排除应用 " + app, e3);
+            //     }
+            // }
             
             // 排除更多常见需要直连的应用
             String[] commonDisallowedApps = {
@@ -1107,14 +1107,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 "com.android.providers.downloads", // 下载管理器
             };
             
-            for (String app : commonDisallowedApps) {
-                try {
-                    builder.addDisallowedApplication(app);
-                    LogUtil.d(TAG, "添加排除应用: " + app);
-                } catch (Exception e) {
-                    // 可能应用不存在，忽略错误
-                }
-            }
+            // for (String app : commonDisallowedApps) {
+            //     try {
+            //         builder.addDisallowedApplication(app);
+            //         LogUtil.d(TAG, "添加排除应用: " + app);
+            //     } catch (Exception e) {
+            //         // 可能应用不存在，忽略错误
+            //     }
+            // }
         }
     }
 
