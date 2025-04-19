@@ -147,10 +147,10 @@ public class LogsFragment extends Fragment {
             bottomAppBar.setOnMenuItemClickListener(item -> {
                 try {
                     int id = item.getItemId();
-                    if (id == R.id.menu_copy_logs) {
+                    if (id == R.id.menu_item_refresh) {
                         copyLogsToClipboard();
                         return true;
-                    } else if (id == R.id.menu_clear_logs) {
+                    } else if (id == R.id.menu_item_clear) {
                         clearLogs();
                         return true;
                     }
