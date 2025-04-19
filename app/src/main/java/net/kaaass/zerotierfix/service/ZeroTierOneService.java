@@ -889,18 +889,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 protectSocketConnection("1.1.1.1", 53);
                 protectSocketConnection("119.29.29.29", 53);
                 
-                // 2. 保护关键Google服务
-                protectSocketConnection("googleapis.com", 443);
-                protectSocketConnection("google.com", 443);
+                // // 2. 保护关键Google服务
+                // protectSocketConnection("googleapis.com", 443);
+                // protectSocketConnection("google.com", 443);
                 
-                // 3. 保护局域网连接 - 更完整的方式
-                String[] commonPrivateNetworks = {
-                    "10.0.0.0", "172.16.0.0", "192.168.0.0", "127.0.0.0" 
-                };
-                for (String privateNet : commonPrivateNetworks) {
-                    protectSocketConnection(privateNet, 0);
-                    LogUtil.i(TAG, "保护私有网络: " + privateNet);
-                }
+                // // 3. 保护局域网连接 - 更完整的方式
+                // String[] commonPrivateNetworks = {
+                //     "10.0.0.0", "172.16.0.0", "192.168.0.0", "127.0.0.0" 
+                // };
+                // for (String privateNet : commonPrivateNetworks) {
+                //     protectSocketConnection(privateNet, 0);
+                //     LogUtil.i(TAG, "保护私有网络: " + privateNet);
+                // }
                 
                 try {
                     NetworkInterface[] networkInterfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
