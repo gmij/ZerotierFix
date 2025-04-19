@@ -5,6 +5,8 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -19,12 +21,18 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.widget.NestedScrollView;
 import androidx.fragment.app.Fragment;
+import androidx.lifecycle.Lifecycle;
 
 import com.google.android.material.bottomappbar.BottomAppBar;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import com.google.android.material.snackbar.Snackbar;
 
 import net.kaaass.zerotierfix.R;
 import net.kaaass.zerotierfix.util.LogManager;
+
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.lang.ref.WeakReference;
 
 /**
  * 日志显示Fragment
@@ -38,46 +46,128 @@ public class LogsFragment extends Fragment {
     private NestedScrollView scrollView;
     private BottomAppBar bottomAppBar;
     private FloatingActionButton fabShare;
+    private View rootView;
 
     private LogManager logManager;
     private String currentLogs = "";
     private boolean isFragmentActive = false;
+    private LogCallback logCallback;
+    private Handler mainHandler;
+    private Thread.UncaughtExceptionHandler defaultExceptionHandler;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setHasOptionsMenu(true);
         logManager = LogManager.getInstance();
+        logCallback = new LogCallback(this);
+        mainHandler = new Handler(Looper.getMainLooper());
+        
+        // 设置全局异常处理
+        setupExceptionHandler();
+    }
+    
+    /**
+     * 设置全局异常处理器，防止应用直接崩溃
+     */
+    private void setupExceptionHandler() {
+        try {
+            // 保存默认异常处理器
+            defaultExceptionHandler = Thread.getDefaultUncaughtExceptionHandler();
+            
+            // 设置自定义异常处理器
+            Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+                try {
+                    // 获取异常详细信息
+                    StringWriter sw = new StringWriter();
+                    PrintWriter pw = new PrintWriter(sw);
+                    throwable.printStackTrace(pw);
+                    String stackTrace = sw.toString();
+                    
+                    // 记录日志
+                    Log.e(TAG, "捕获到未处理异常: " + throwable.getMessage(), throwable);
+                    
+                    // 使用主线程显示错误
+                    if (mainHandler != null && rootView != null && isAdded()) {
+                        mainHandler.post(() -> {
+                            try {
+                                // 用Snackbar显示错误提示
+                                if (rootView != null && isAdded()) {
+                                    Snackbar.make(rootView, "发生错误: " + throwable.getMessage(), 
+                                            Snackbar.LENGTH_LONG).show();
+                                    
+                                    // 将异常详情添加到日志内容中
+                                    String errorDetail = "--- 应用发生异常 ---\n" + 
+                                            stackTrace + 
+                                            "\n--- 异常信息结束 ---\n\n";
+                                    currentLogs = errorDetail + currentLogs;
+                                    updateUI(currentLogs);
+                                }
+                            } catch (Exception e) {
+                                Log.e(TAG, "显示错误信息时发生异常", e);
+                                // 如果显示失败，交给默认处理器
+                                if (defaultExceptionHandler != null) {
+                                    defaultExceptionHandler.uncaughtException(thread, throwable);
+                                }
+                            }
+                        });
+                    } else {
+                        // 如果无法在UI上显示，交给默认处理器
+                        if (defaultExceptionHandler != null) {
+                            defaultExceptionHandler.uncaughtException(thread, throwable);
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "处理异常时出错", e);
+                    // 如果异常处理器本身出错，使用默认处理器
+                    if (defaultExceptionHandler != null) {
+                        defaultExceptionHandler.uncaughtException(thread, throwable);
+                    }
+                }
+            });
+        } catch (Exception e) {
+            Log.e(TAG, "设置异常处理器失败", e);
+        }
     }
 
     @Nullable
     @Override
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
-        View view = inflater.inflate(R.layout.fragment_logs, container, false);
+        rootView = inflater.inflate(R.layout.fragment_logs, container, false);
 
         // 初始化视图
-        logsContentView = view.findViewById(R.id.logs_content);
-        emptyView = view.findViewById(R.id.logs_empty);
-        scrollView = view.findViewById(R.id.logs_scroll_view);
-        bottomAppBar = view.findViewById(R.id.bottom_app_bar);
-        fabShare = view.findViewById(R.id.fab_share);
+        logsContentView = rootView.findViewById(R.id.logs_content);
+        emptyView = rootView.findViewById(R.id.logs_empty);
+        scrollView = rootView.findViewById(R.id.logs_scroll_view);
+        bottomAppBar = rootView.findViewById(R.id.bottom_app_bar);
+        fabShare = rootView.findViewById(R.id.fab_share);
 
         try {
             // 设置底部工具栏菜单
             bottomAppBar.setOnMenuItemClickListener(item -> {
-                int id = item.getItemId();
-                if (id == R.id.menu_copy_logs) {
-                    copyLogsToClipboard();
-                    return true;
-                } else if (id == R.id.menu_clear_logs) {
-                    clearLogs();
-                    return true;
+                try {
+                    int id = item.getItemId();
+                    if (id == R.id.menu_copy_logs) {
+                        copyLogsToClipboard();
+                        return true;
+                    } else if (id == R.id.menu_clear_logs) {
+                        clearLogs();
+                        return true;
+                    }
+                } catch (Exception e) {
+                    showError("菜单操作失败", e);
                 }
                 return false;
             });
 
             // 设置分享按钮
-            fabShare.setOnClickListener(v -> shareLogs());
+            fabShare.setOnClickListener(v -> {
+                try {
+                    shareLogs();
+                } catch (Exception e) {
+                    showError("分享日志失败", e);
+                }
+            });
 
             // 创建菜单
             if (getActivity() != null) {
@@ -86,10 +176,10 @@ public class LogsFragment extends Fragment {
                 inflater1.inflate(R.menu.menu_logs, menu);
             }
         } catch (Exception e) {
-            Log.e(TAG, "Error setting up UI components", e);
+            showError("初始化界面组件失败", e);
         }
 
-        return view;
+        return rootView;
     }
 
     @Override
@@ -105,6 +195,27 @@ public class LogsFragment extends Fragment {
         super.onPause();
         isFragmentActive = false;
     }
+    
+    @Override
+    public void onDestroy() {
+        // 恢复默认异常处理器
+        if (defaultExceptionHandler != null) {
+            try {
+                Thread.setDefaultUncaughtExceptionHandler(defaultExceptionHandler);
+            } catch (Exception e) {
+                Log.e(TAG, "恢复默认异常处理器失败", e);
+            }
+        }
+        
+        // 清除回调引用，避免内存泄漏
+        if (logCallback != null) {
+            logCallback.detach();
+            logCallback = null;
+        }
+        
+        mainHandler = null;
+        super.onDestroy();
+    }
 
     /**
      * 加载日志
@@ -113,27 +224,38 @@ public class LogsFragment extends Fragment {
         if (getContext() == null) return;
 
         try {
-            logManager.getLogsAsync(requireContext(), logs -> {
-                if (getActivity() == null || !isFragmentActive) return;
-
-                try {
-                    getActivity().runOnUiThread(() -> {
-                        try {
-                            if (!isFragmentActive) return;
-                            currentLogs = logs;
-                            updateUI(logs);
-                        } catch (Exception e) {
-                            Log.e(TAG, "Error updating UI with logs", e);
-                        }
-                    });
-                } catch (Exception e) {
-                    Log.e(TAG, "Error posting to main thread", e);
-                }
-            });
+            // 使用静态内部类保持回调，避免内存泄漏
+            logManager.getLogsAsync(requireContext(), logCallback);
         } catch (Exception e) {
-            Log.e(TAG, "Error loading logs", e);
-            if (isFragmentActive) {
+            showError("加载日志失败", e);
+            if (isFragmentActive && isAdded()) {
                 updateUI("加载日志时出错: " + e.getMessage());
+            }
+        }
+    }
+    
+    /**
+     * 显示错误信息
+     */
+    private void showError(String message, Exception e) {
+        Log.e(TAG, message, e);
+        if (rootView != null && isAdded()) {
+            try {
+                // 使用Snackbar显示错误
+                Snackbar.make(rootView, message + ": " + e.getMessage(), Snackbar.LENGTH_LONG).show();
+                
+                // 记录错误到日志内容
+                StringWriter sw = new StringWriter();
+                PrintWriter pw = new PrintWriter(sw);
+                e.printStackTrace(pw);
+                String errorDetail = "--- 错误信息 ---\n" + 
+                        message + ": " + e.getMessage() + "\n" +
+                        sw.toString() + 
+                        "\n--- 错误信息结束 ---\n\n";
+                currentLogs = errorDetail + currentLogs;
+                updateUI(currentLogs);
+            } catch (Exception ex) {
+                Log.e(TAG, "显示错误信息失败", ex);
             }
         }
     }
@@ -142,7 +264,7 @@ public class LogsFragment extends Fragment {
      * 更新UI显示
      */
     private void updateUI(String logs) {
-        if (!isFragmentActive) return;
+        if (!isFragmentActive || !isAdded() || getActivity() == null) return;
         
         try {
             if (logs == null || logs.isEmpty()) {
@@ -156,14 +278,23 @@ public class LogsFragment extends Fragment {
                 // 滚动到底部
                 scrollView.post(() -> {
                     try {
-                        scrollView.fullScroll(View.FOCUS_DOWN);
+                        if (scrollView != null && isAdded()) {
+                            scrollView.fullScroll(View.FOCUS_DOWN);
+                        }
                     } catch (Exception e) {
-                        Log.e(TAG, "Error scrolling to bottom", e);
+                        Log.e(TAG, "滚动到底部失败", e);
                     }
                 });
             }
         } catch (Exception e) {
-            Log.e(TAG, "Error in updateUI", e);
+            Log.e(TAG, "更新UI失败", e);
+            try {
+                if (rootView != null && isAdded()) {
+                    Snackbar.make(rootView, "更新日志显示失败: " + e.getMessage(), Snackbar.LENGTH_SHORT).show();
+                }
+            } catch (Exception snackbarEx) {
+                Log.e(TAG, "显示Snackbar失败", snackbarEx);
+            }
         }
     }
 
@@ -182,8 +313,7 @@ public class LogsFragment extends Fragment {
             clipboard.setPrimaryClip(clip);
             Toast.makeText(getContext(), R.string.logs_copied, Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
-            Log.e(TAG, "Error copying to clipboard", e);
-            Toast.makeText(getContext(), "复制失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            showError("复制到剪贴板失败", e);
         }
     }
 
@@ -197,8 +327,7 @@ public class LogsFragment extends Fragment {
             updateUI("");
             Toast.makeText(getContext(), R.string.logs_cleared, Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
-            Log.e(TAG, "Error clearing logs", e);
-            Toast.makeText(getContext(), "清除失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            showError("清除日志失败", e);
         }
     }
 
@@ -218,8 +347,54 @@ public class LogsFragment extends Fragment {
             shareIntent.putExtra(Intent.EXTRA_TEXT, currentLogs);
             startActivity(Intent.createChooser(shareIntent, getString(R.string.logs_share)));
         } catch (Exception e) {
-            Log.e(TAG, "Error sharing logs", e);
-            Toast.makeText(getContext(), "分享失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            showError("分享日志失败", e);
+        }
+    }
+    
+    /**
+     * 使用静态内部类处理日志回调，避免内存泄漏
+     */
+    private static class LogCallback implements LogManager.LogCallback {
+        private WeakReference<LogsFragment> fragmentReference;
+        
+        public LogCallback(LogsFragment fragment) {
+            this.fragmentReference = new WeakReference<>(fragment);
+        }
+        
+        public void detach() {
+            fragmentReference.clear();
+        }
+        
+        @Override
+        public void onLogsReady(String logs) {
+            LogsFragment fragment = fragmentReference.get();
+            if (fragment == null || !fragment.isFragmentActive || !fragment.isAdded()) return;
+            
+            try {
+                fragment.getActivity().runOnUiThread(() -> {
+                    try {
+                        LogsFragment fragmentInstance = fragmentReference.get();
+                        if (fragmentInstance != null && fragmentInstance.isAdded() && 
+                            fragmentInstance.getLifecycle().getCurrentState().isAtLeast(Lifecycle.State.RESUMED)) {
+                            fragmentInstance.currentLogs = logs;
+                            fragmentInstance.updateUI(logs);
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "日志UI更新失败", e);
+                        LogsFragment fragmentInstance = fragmentReference.get();
+                        if (fragmentInstance != null && fragmentInstance.rootView != null && fragmentInstance.isAdded()) {
+                            try {
+                                Snackbar.make(fragmentInstance.rootView, "更新日志失败: " + e.getMessage(), 
+                                        Snackbar.LENGTH_SHORT).show();
+                            } catch (Exception snackbarEx) {
+                                Log.e(TAG, "显示错误Snackbar失败", snackbarEx);
+                            }
+                        }
+                    }
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "发送到主线程失败", e);
+            }
         }
     }
 }
