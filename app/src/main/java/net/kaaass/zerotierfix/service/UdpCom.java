@@ -78,7 +78,8 @@ public class UdpCom implements PacketSender, Runnable {
                                 // 不要直接调用 shutdown，通过服务来处理
                                 if (this.ztService != null) {
                                     this.ztService.setNextBackgroundTaskDeadline(jArr[0]);
-                                    if (processWirePacket != ResultCode.RESULT_FATAL_ERROR_ALREADY_EXISTS) {
+                                    // 移除对不存在常量的引用，只有在错误确实严重时才关闭服务
+                                    if (processWirePacket == ResultCode.RESULT_FATAL_ERROR) {
                                         this.ztService.shutdown();
                                     }
                                 }
