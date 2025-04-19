@@ -866,20 +866,70 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 如果启用了全局路由，添加默认路由(0.0.0.0/0 和 ::/0)
         if (isRouteViaZeroTier) {
             try {
-                // 改进的全局路由处理方式
-                // 添加 IPv4 全局路由 (0.0.0.0/0)
+                // 获取ZeroTier网络中的网关
+                InetAddress zerotierGateway = null;
+                
+                // 1. 尝试从路由配置中找到网关
+                if (virtualNetworkConfig.getRoutes().length > 0) {
+                    for (var routeConfig : virtualNetworkConfig.getRoutes()) {
+                        var via = routeConfig.getVia();
+                        if (via != null) {
+                            zerotierGateway = via.getAddress();
+                            Log.i(TAG, "找到ZeroTier网关: " + zerotierGateway.getHostAddress());
+                            break;
+                        }
+                    }
+                }
+                
+                // 2. 如果没有明确的网关，尝试使用分配给本设备的第一个IP作为默认网关
+                if (zerotierGateway == null && assignedAddresses.length > 0) {
+                    for (var addr : assignedAddresses) {
+                        if (addr.getAddress() instanceof Inet4Address) {
+                            // 尝试从IPv4地址推断网关 (通常是网络的第一个地址)
+                            byte[] ipBytes = addr.getAddress().getAddress();
+                            ipBytes[3] = 1; // 将最后一位改为1，通常是网关
+                            zerotierGateway = InetAddress.getByAddress(ipBytes);
+                            Log.i(TAG, "推断的网关地址: " + zerotierGateway.getHostAddress());
+                            break;
+                        }
+                    }
+                }
+                
+                // 添加IPv4全局路由 (0.0.0.0/0)
                 InetAddress v4DefaultRoute = InetAddress.getByName("0.0.0.0");
                 builder.addRoute(v4DefaultRoute, 0);
-                Log.i(TAG, "添加IPv4全局路由 0.0.0.0/0");
-                this.tunTapAdapter.addRouteAndNetwork(new Route(v4DefaultRoute, 0), networkId);
+                Log.i(TAG, "添加IPv4全局路由 0.0.0.0/0" + (zerotierGateway != null ? 
+                        " 网关: " + zerotierGateway.getHostAddress() : " 无指定网关"));
                 
-                // 增强对本地连接的保护，避免VPN路由循环
-                // 1. 保护DNS查询连接
+                // 添加路由到TunTap，如果有网关则设置网关
+                Route defaultRoute = new Route(v4DefaultRoute, 0);
+                if (zerotierGateway != null) {
+                    defaultRoute.setGateway(zerotierGateway);
+                }
+                this.tunTapAdapter.addRouteAndNetwork(defaultRoute, networkId);
+                
+                // 大幅增强对本地连接的保护，避免VPN路由循环
+                // 1. 保护常用DNS查询连接
                 protectSocketConnection("8.8.8.8", 53);
+                protectSocketConnection("8.8.4.4", 53);
                 protectSocketConnection("114.114.114.114", 53);
                 protectSocketConnection("223.5.5.5", 53);
+                protectSocketConnection("1.1.1.1", 53);
+                protectSocketConnection("119.29.29.29", 53);
                 
-                // 2. 保护局域网连接
+                // 2. 保护关键Google服务
+                protectSocketConnection("googleapis.com", 443);
+                protectSocketConnection("google.com", 443);
+                
+                // 3. 保护局域网连接 - 更完整的方式
+                String[] commonPrivateNetworks = {
+                    "10.0.0.0", "172.16.0.0", "192.168.0.0", "127.0.0.0" 
+                };
+                for (String network : commonPrivateNetworks) {
+                    protectSocketConnection(network, 0);
+                    Log.i(TAG, "保护私有网络: " + network);
+                }
+                
                 try {
                     NetworkInterface[] networkInterfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
                             .toArray(new NetworkInterface[0]);
@@ -895,6 +945,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                                         String subnet = ip.substring(0, ip.lastIndexOf(".")) + ".0";
                                         protectSocketConnection(subnet, 0);
                                         Log.i(TAG, "保护局域网连接: " + subnet);
+                                        
+                                        // 保护整个C类网络
+                                        if (ip.indexOf(".") > 0) {
+                                            String classC = ip.substring(0, ip.indexOf(".")) + ".0.0.0";
+                                            protectSocketConnection(classC, 0);
+                                            Log.i(TAG, "保护C类网络: " + classC);
+                                        }
                                     }
                                 }
                             }
@@ -904,17 +961,38 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     Log.e(TAG, "保护局域网连接时出错: " + e.getMessage());
                 }
                 
-                // 添加 IPv6 全局路由 (::/0)，如果IPv6未禁用
+                // 添加IPv6全局路由 (::/0)，如果IPv6未禁用
                 if (!this.disableIPv6) {
                     InetAddress v6DefaultRoute = InetAddress.getByName("::");
                     builder.addRoute(v6DefaultRoute, 0);
                     Log.i(TAG, "添加IPv6全局路由 ::/0");
-                    this.tunTapAdapter.addRouteAndNetwork(new Route(v6DefaultRoute, 0), networkId);
+                    
+                    // 创建IPv6路由
+                    Route ipv6Route = new Route(v6DefaultRoute, 0);
+                    
+                    // 尝试找到IPv6网关
+                    if (assignedAddresses.length > 0) {
+                        for (var addr : assignedAddresses) {
+                            if (addr.getAddress() instanceof Inet6Address) {
+                                // 推断IPv6网关
+                                ipv6Route.setGateway(addr.getAddress());
+                                Log.i(TAG, "IPv6推断网关: " + addr.getAddress().getHostAddress());
+                                break;
+                            }
+                        }
+                    }
+                    
+                    this.tunTapAdapter.addRouteAndNetwork(ipv6Route, networkId);
                     
                     // 保护IPv6连接
                     protectSocketConnection("2001:4860:4860::8888", 53);
                     protectSocketConnection("2400:3200::1", 53);
+                    protectSocketConnection("2606:4700:4700::1111", 53);
                 }
+                
+                // 提示用户检查ZeroTier网络配置
+                Log.i(TAG, "全局路由已启用。请确保ZeroTier网络中有配置了正确NAT和转发规则的出口节点。");
+                
             } catch (Exception e) {
                 Log.e(TAG, "添加默认路由时出错: " + e.getMessage(), e);
             }
