@@ -1187,10 +1187,32 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         builder.addRoute(v4DefaultRoute, 0);
         LogUtil.i(TAG, "添加IPv4全局路由 0.0.0.0/0 - 流量将通过代理: " + proxyManager.getProxyUrl());
         
+        // 创建代理处理器并配置到TunTapAdapter
+        try {
+            // 检查代理配置有效性
+            if (!proxyManager.isProxyConfigValid()) {
+                LogUtil.e(TAG, "代理配置无效，无法启用代理");
+                return;
+            }
+            
+            // 创建代理处理器
+            var proxyHandler = new net.kaaass.zerotierfix.proxy.ProxyHandler(proxyManager);
+            
+            // 设置到TunTapAdapter
+            if (this.tunTapAdapter != null) {
+                this.tunTapAdapter.setProxyHandler(proxyHandler);
+                LogUtil.i(TAG, "代理处理器已设置，类型: " + proxyManager.getProxyTypeString());
+            } else {
+                LogUtil.e(TAG, "无法设置代理处理器：TunTapAdapter为空");
+            }
+        } catch (Exception e) {
+            LogUtil.e(TAG, "初始化代理处理器失败: " + e.getMessage(), e);
+        }
+        
         // 在应用中记录代理设置
         LogUtil.logNetworkEvent("启用代理", proxyManager.getProxyTypeString() + " " + proxyHost + ":" + proxyManager.getProxyPort());
     }
-    
+
     /**
      * 配置使用代理服务器的IPv6路由
      * @param builder VPN构建器
