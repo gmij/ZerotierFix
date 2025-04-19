@@ -1208,7 +1208,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 配置直接通过ZeroTier的IPv4全局路由(不使用代理)
      */
     private void configureDirectGlobalRouting(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig, 
-                                             com.zerotier.sdk.VirtualNetworkConfig.InetSocketAddress[] assignedAddresses) throws Exception {
+                                             InetSocketAddress[] assignedAddresses) throws Exception {
         // 获取ZeroTier网络中的网关
         InetAddress zerotierGateway = null;
         
@@ -1257,7 +1257,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 配置直接通过ZeroTier的IPv6全局路由(不使用代理)
      */
     private void configureDirectIPv6Routing(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig,
-                                           com.zerotier.sdk.VirtualNetworkConfig.InetSocketAddress[] assignedAddresses) throws Exception {
+                                           InetSocketAddress[] assignedAddresses) throws Exception {
         InetAddress v6DefaultRoute = InetAddress.getByName("::");
         builder.addRoute(v6DefaultRoute, 0);
         LogUtil.i(TAG, "添加IPv6全局路由 ::/0");
