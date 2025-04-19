@@ -11,6 +11,7 @@ import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
@@ -24,9 +25,11 @@ public class LogManager {
     
     private static LogManager instance;
     private final LinkedList<String> logBuffer = new LinkedList<>();
+    private ExecutorService executorService;
     
     private LogManager() {
         // 私有构造函数
+        executorService = Executors.newSingleThreadExecutor();
     }
     
     public static synchronized LogManager getInstance() {
@@ -58,10 +61,33 @@ public class LogManager {
      * @param callback 回调函数
      */
     public void getLogsAsync(Context context, LogCallback callback) {
-        Executors.newSingleThreadExecutor().execute(() -> {
-            String logs = getLogs(context);
-            callback.onLogsReady(logs);
-        });
+        if (context == null || callback == null) {
+            Log.e(TAG, "getLogsAsync called with null context or callback");
+            return;
+        }
+        
+        try {
+            executorService.execute(() -> {
+                try {
+                    String logs = getLogs(context);
+                    callback.onLogsReady(logs);
+                } catch (Exception e) {
+                    Log.e(TAG, "Error in background log processing", e);
+                    try {
+                        callback.onLogsReady("获取日志时出错: " + e.getMessage());
+                    } catch (Exception callbackException) {
+                        Log.e(TAG, "Error calling callback", callbackException);
+                    }
+                }
+            });
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to submit log task to executor", e);
+            try {
+                callback.onLogsReady("无法启动日志收集任务: " + e.getMessage());
+            } catch (Exception callbackException) {
+                Log.e(TAG, "Error calling callback", callbackException);
+            }
+        }
     }
     
     /**
@@ -71,6 +97,10 @@ public class LogManager {
      */
     @NonNull
     public String getLogs(Context context) {
+        if (context == null) {
+            return "错误：上下文为空";
+        }
+        
         List<String> logLines = new ArrayList<>();
         
         try {
@@ -97,9 +127,16 @@ public class LogManager {
             }
             
             bufferedReader.close();
-        } catch (IOException e) {
+            
+            // 检查进程退出状态
+            int exitValue = process.waitFor();
+            if (exitValue != 0) {
+                Log.w(TAG, "Log command exited with non-zero status: " + exitValue);
+            }
+            
+        } catch (IOException | InterruptedException e) {
             Log.e(TAG, "Failed to get logs", e);
-            return "Error retrieving logs: " + e.getMessage();
+            return "获取日志时出错: " + e.getMessage();
         }
         
         // 如果没有日志，尝试从缓冲区读取
@@ -107,6 +144,10 @@ public class LogManager {
             synchronized (logBuffer) {
                 logLines.addAll(logBuffer);
             }
+        }
+        
+        if (logLines.isEmpty()) {
+            return "没有找到日志";
         }
         
         StringBuilder sb = new StringBuilder();

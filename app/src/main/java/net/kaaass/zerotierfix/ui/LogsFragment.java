@@ -5,6 +5,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuInflater;
@@ -40,6 +41,7 @@ public class LogsFragment extends Fragment {
 
     private LogManager logManager;
     private String currentLogs = "";
+    private boolean isFragmentActive = false;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -60,29 +62,32 @@ public class LogsFragment extends Fragment {
         bottomAppBar = view.findViewById(R.id.bottom_app_bar);
         fabShare = view.findViewById(R.id.fab_share);
 
-        // 设置底部工具栏菜单
-        bottomAppBar.setOnMenuItemClickListener(item -> {
-            int id = item.getItemId();
-            if (id == R.id.menu_copy_logs) {
-                copyLogsToClipboard();
-                return true;
-            } else if (id == R.id.menu_clear_logs) {
-                clearLogs();
-                return true;
+        try {
+            // 设置底部工具栏菜单
+            bottomAppBar.setOnMenuItemClickListener(item -> {
+                int id = item.getItemId();
+                if (id == R.id.menu_copy_logs) {
+                    copyLogsToClipboard();
+                    return true;
+                } else if (id == R.id.menu_clear_logs) {
+                    clearLogs();
+                    return true;
+                }
+                return false;
+            });
+
+            // 设置分享按钮
+            fabShare.setOnClickListener(v -> shareLogs());
+
+            // 创建菜单
+            if (getActivity() != null) {
+                MenuInflater inflater1 = getActivity().getMenuInflater();
+                Menu menu = bottomAppBar.getMenu();
+                inflater1.inflate(R.menu.menu_logs, menu);
             }
-            return false;
-        });
-
-        // 设置分享按钮
-        fabShare.setOnClickListener(v -> shareLogs());
-
-        // 创建菜单
-        MenuInflater inflater1 = getActivity().getMenuInflater();
-        Menu menu = bottomAppBar.getMenu();
-        inflater1.inflate(R.menu.menu_logs, menu);
-
-        // 加载日志
-        loadLogs();
+        } catch (Exception e) {
+            Log.e(TAG, "Error setting up UI components", e);
+        }
 
         return view;
     }
@@ -90,8 +95,15 @@ public class LogsFragment extends Fragment {
     @Override
     public void onResume() {
         super.onResume();
+        isFragmentActive = true;
         // 每次回到页面刷新日志
         loadLogs();
+    }
+    
+    @Override
+    public void onPause() {
+        super.onPause();
+        isFragmentActive = false;
     }
 
     /**
@@ -100,30 +112,58 @@ public class LogsFragment extends Fragment {
     private void loadLogs() {
         if (getContext() == null) return;
 
-        logManager.getLogsAsync(requireContext(), logs -> {
-            if (getActivity() == null) return;
+        try {
+            logManager.getLogsAsync(requireContext(), logs -> {
+                if (getActivity() == null || !isFragmentActive) return;
 
-            getActivity().runOnUiThread(() -> {
-                currentLogs = logs;
-                updateUI(logs);
+                try {
+                    getActivity().runOnUiThread(() -> {
+                        try {
+                            if (!isFragmentActive) return;
+                            currentLogs = logs;
+                            updateUI(logs);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error updating UI with logs", e);
+                        }
+                    });
+                } catch (Exception e) {
+                    Log.e(TAG, "Error posting to main thread", e);
+                }
             });
-        });
+        } catch (Exception e) {
+            Log.e(TAG, "Error loading logs", e);
+            if (isFragmentActive) {
+                updateUI("加载日志时出错: " + e.getMessage());
+            }
+        }
     }
 
     /**
      * 更新UI显示
      */
     private void updateUI(String logs) {
-        if (logs == null || logs.isEmpty()) {
-            emptyView.setVisibility(View.VISIBLE);
-            logsContentView.setVisibility(View.GONE);
-        } else {
-            emptyView.setVisibility(View.GONE);
-            logsContentView.setVisibility(View.VISIBLE);
-            logsContentView.setText(logs);
+        if (!isFragmentActive) return;
+        
+        try {
+            if (logs == null || logs.isEmpty()) {
+                emptyView.setVisibility(View.VISIBLE);
+                logsContentView.setVisibility(View.GONE);
+            } else {
+                emptyView.setVisibility(View.GONE);
+                logsContentView.setVisibility(View.VISIBLE);
+                logsContentView.setText(logs);
 
-            // 滚动到底部
-            scrollView.post(() -> scrollView.fullScroll(View.FOCUS_DOWN));
+                // 滚动到底部
+                scrollView.post(() -> {
+                    try {
+                        scrollView.fullScroll(View.FOCUS_DOWN);
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error scrolling to bottom", e);
+                    }
+                });
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error in updateUI", e);
         }
     }
 
@@ -136,20 +176,30 @@ public class LogsFragment extends Fragment {
             return;
         }
 
-        ClipboardManager clipboard = (ClipboardManager) requireContext().getSystemService(Context.CLIPBOARD_SERVICE);
-        ClipData clip = ClipData.newPlainText("Zerotier Fix Logs", currentLogs);
-        clipboard.setPrimaryClip(clip);
-        Toast.makeText(getContext(), R.string.logs_copied, Toast.LENGTH_SHORT).show();
+        try {
+            ClipboardManager clipboard = (ClipboardManager) requireContext().getSystemService(Context.CLIPBOARD_SERVICE);
+            ClipData clip = ClipData.newPlainText("Zerotier Fix Logs", currentLogs);
+            clipboard.setPrimaryClip(clip);
+            Toast.makeText(getContext(), R.string.logs_copied, Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Log.e(TAG, "Error copying to clipboard", e);
+            Toast.makeText(getContext(), "复制失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
     }
 
     /**
      * 清空日志
      */
     private void clearLogs() {
-        logManager.clearLogs();
-        currentLogs = "";
-        updateUI("");
-        Toast.makeText(getContext(), R.string.logs_cleared, Toast.LENGTH_SHORT).show();
+        try {
+            logManager.clearLogs();
+            currentLogs = "";
+            updateUI("");
+            Toast.makeText(getContext(), R.string.logs_cleared, Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Log.e(TAG, "Error clearing logs", e);
+            Toast.makeText(getContext(), "清除失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
     }
 
     /**
@@ -161,10 +211,15 @@ public class LogsFragment extends Fragment {
             return;
         }
 
-        Intent shareIntent = new Intent(Intent.ACTION_SEND);
-        shareIntent.setType("text/plain");
-        shareIntent.putExtra(Intent.EXTRA_SUBJECT, "Zerotier Fix Logs");
-        shareIntent.putExtra(Intent.EXTRA_TEXT, currentLogs);
-        startActivity(Intent.createChooser(shareIntent, getString(R.string.logs_share)));
+        try {
+            Intent shareIntent = new Intent(Intent.ACTION_SEND);
+            shareIntent.setType("text/plain");
+            shareIntent.putExtra(Intent.EXTRA_SUBJECT, "Zerotier Fix Logs");
+            shareIntent.putExtra(Intent.EXTRA_TEXT, currentLogs);
+            startActivity(Intent.createChooser(shareIntent, getString(R.string.logs_share)));
+        } catch (Exception e) {
+            Log.e(TAG, "Error sharing logs", e);
+            Toast.makeText(getContext(), "分享失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
     }
 }
