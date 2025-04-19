@@ -881,7 +881,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 
                 // 2. 保护局域网连接
                 try {
-                    NetworkInterface[] networkInterfaces = NetworkInterface.getNetworkInterfaces()
+                    NetworkInterface[] networkInterfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
                             .toArray(new NetworkInterface[0]);
                     for (NetworkInterface networkInterface : networkInterfaces) {
                         if (networkInterface.isUp() && !networkInterface.isLoopback() && 
