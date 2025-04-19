@@ -69,6 +69,7 @@
     <string name="toast_mobile_data">设备正在使用移动网络，必须开启“允许移动网络下使用”选项以启动 ZeroTier</string>
     <string name="menu_peers">结点列表</string>
     <string name="menu_orbit">入轨</string>
+    <string name="menu_logs">日志</string>
     <string name="enabled">启用</string>
     <string name="disabled">禁用</string>
     <string name="moon_world_id">Moon 地址:</string>
@@ -151,4 +152,11 @@
     <string name="dialog_no_notification_alert_title">未开启通知权限</string>
     <string name="open_notification_settings">打开通知设置</string>
     <string name="dont_show_again">不再提示</string>
+    <string name="logs_activity_title">应用日志</string>
+    <string name="logs_empty">暂无日志</string>
+    <string name="logs_copy">复制日志</string>
+    <string name="logs_clear">清空日志</string>
+    <string name="logs_share">分享日志</string>
+    <string name="logs_copied">日志已复制到剪贴板</string>
+    <string name="logs_cleared">日志已清空</string>
 </resources>

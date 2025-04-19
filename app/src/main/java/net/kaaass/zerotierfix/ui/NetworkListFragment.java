@@ -325,6 +325,10 @@ public class NetworkListFragment extends Fragment {
             Log.d(TAG, "Selected orbit");
             startActivity(new Intent(getActivity(), MoonOrbitActivity.class));
             return true;
+        } else if (menuId == R.id.menu_item_logs) {
+            Log.d(TAG, "Selected logs");
+            startActivity(new Intent(getActivity(), LogsActivity.class));
+            return true;
         }
         return super.onOptionsItemSelected(menuItem);
     }
