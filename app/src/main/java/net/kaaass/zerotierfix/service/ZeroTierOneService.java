@@ -860,6 +860,27 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
 
+        // 如果启用了全局路由，添加默认路由(0.0.0.0/0 和 ::/0)
+        if (isRouteViaZeroTier) {
+            try {
+                // 添加 IPv4 全局路由 (0.0.0.0/0)
+                InetAddress v4DefaultRoute = InetAddress.getByName("0.0.0.0");
+                builder.addRoute(v4DefaultRoute, 0);
+                Log.i(TAG, "添加IPv4全局路由 0.0.0.0/0");
+                this.tunTapAdapter.addRouteAndNetwork(new Route(v4DefaultRoute, 0), networkId);
+                
+                // 添加 IPv6 全局路由 (::/0)，如果IPv6未禁用
+                if (!this.disableIPv6) {
+                    InetAddress v6DefaultRoute = InetAddress.getByName("::");
+                    builder.addRoute(v6DefaultRoute, 0);
+                    Log.i(TAG, "添加IPv6全局路由 ::/0");
+                    this.tunTapAdapter.addRouteAndNetwork(new Route(v6DefaultRoute, 0), networkId);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "添加默认路由时出错: " + e.getMessage(), e);
+            }
+        }
+
         // 遍历网络的路由规则，将网络负责路由的地址路由至 VPN
         try {
             var v4Loopback = InetAddress.getByName("0.0.0.0");
