@@ -194,13 +194,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         var gateway = route != null ? route.getGateway() : null;
 
         // 查找当前节点的 v4 地址
-        var ztAddresses = virtualNetworkConfig.getAssignedAddresses();
+        InetSocketAddress[] ztAddresses = virtualNetworkConfig.getAssignedAddresses();
         InetAddress localV4Address = null;
         int cidr = 0;
 
-        int addressCount = ztAddresses.size();
+        int addressCount = ztAddresses.length;
         for (int i = 0; i < addressCount; i++) {
-            InetSocketAddress address = ztAddresses.get(i);
+            InetSocketAddress address = ztAddresses[i];
             if (address.getAddress() instanceof Inet4Address) {
                 localV4Address = address.getAddress();
                 cidr = address.getPort();
@@ -271,16 +271,17 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             }
         }
         var route = routeForDestination(destIP);
+        var gateway = route != null ? route.getGateway() : null;
         // 查找当前节点的 v6 地址
-        var ztAddresses = virtualNetworkConfig.getAssignedAddresses();
-        InetAddress localV4Address = null;
+        InetSocketAddress[] ztAddresses = virtualNetworkConfig.getAssignedAddresses();
+        InetAddress localV6Address = null;
         int cidr = 0;
 
-        int addressCount = ztAddresses.size();
+        int addressCount = ztAddresses.length;
         for (int i = 0; i < addressCount; i++) {
-            InetSocketAddress address = ztAddresses.get(i);
+            InetSocketAddress address = ztAddresses[i];
             if (address.getAddress() instanceof Inet6Address) {
-                localV4Address = address.getAddress();
+                localV6Address = address.getAddress();
                 cidr = address.getPort();
                 break;
             }
@@ -291,7 +292,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         if (gateway != null && !Objects.equals(destRoute, sourceRoute)) {
             destIP = gateway;
         }
-        if (localV4Address == null) {
+        if (localV6Address == null) {
             Log.e(TAG, "Couldn't determine local address");
             return;
         }
