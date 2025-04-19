@@ -21,4 +21,38 @@
             android:summary="@string/preferences_network_disable_ipv6_summary"
             android:title="@string/preferences_network_disable_ipv6" />
     </PreferenceCategory>
+    
+    <!-- 代理设置部分 -->
+    <PreferenceCategory android:title="@string/proxy_settings">
+        <SwitchPreference
+            android:defaultValue="false"
+            android:key="proxy_enabled"
+            android:title="@string/proxy_enable"
+            android:summary="@string/proxy_enable_summary" />
+        <ListPreference
+            android:defaultValue="0"
+            android:dependency="proxy_enabled"
+            android:entries="@array/proxy_type_entries"
+            android:entryValues="@array/proxy_type_values"
+            android:key="proxy_type"
+            android:title="@string/proxy_type" />
+        <EditTextPreference
+            android:dependency="proxy_enabled"
+            android:key="proxy_host"
+            android:title="@string/proxy_host" />
+        <EditTextPreference
+            android:dependency="proxy_enabled"
+            android:key="proxy_port"
+            android:inputType="number"
+            android:title="@string/proxy_port" />
+        <EditTextPreference
+            android:dependency="proxy_enabled"
+            android:key="proxy_username"
+            android:title="@string/proxy_username" />
+        <EditTextPreference
+            android:dependency="proxy_enabled"
+            android:key="proxy_password"
+            android:inputType="textPassword"
+            android:title="@string/proxy_password" />
+    </PreferenceCategory>
 </PreferenceScreen>

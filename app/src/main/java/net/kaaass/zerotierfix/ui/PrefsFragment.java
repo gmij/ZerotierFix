@@ -139,6 +139,16 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
             return true;
         });
         updatePlanetSetting();
+        
+        // 注册监听器，使偏好设置变化能够被捕获
+        getPreferenceScreen().getSharedPreferences().registerOnSharedPreferenceChangeListener(this);
+    }
+    
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        // 取消注册监听器，避免内存泄漏
+        getPreferenceScreen().getSharedPreferences().unregisterOnSharedPreferenceChangeListener(this);
     }
 
     /**
@@ -261,6 +271,66 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
             // 移动网络数据配置
             if (sharedPreferences.getBoolean(Constants.PREF_NETWORK_USE_CELLULAR_DATA, false)) {
                 requireActivity().startService(new Intent(getActivity(), ZeroTierOneService.class));
+            }
+        } else if (key.equals(Constants.PREF_PROXY_ENABLED)) {
+            // 代理启用状态改变
+            boolean enabled = sharedPreferences.getBoolean(Constants.PREF_PROXY_ENABLED, false);
+            Preference proxyHostPref = findPreference(Constants.PREF_PROXY_HOST);
+            Preference proxyPortPref = findPreference(Constants.PREF_PROXY_PORT);
+            Preference proxyTypePref = findPreference(Constants.PREF_PROXY_TYPE);
+            
+            if (proxyHostPref != null) {
+                proxyHostPref.setEnabled(enabled);
+            }
+            if (proxyPortPref != null) {
+                proxyPortPref.setEnabled(enabled);
+            }
+            if (proxyTypePref != null) {
+                proxyTypePref.setEnabled(enabled);
+            }
+            
+            // 记录代理启用状态变化
+            Log.i(TAG, "代理" + (enabled ? "已启用" : "已禁用"));
+            
+            // 如果启用了代理，提示用户检查设置
+            if (enabled) {
+                String proxyHost = sharedPreferences.getString(Constants.PREF_PROXY_HOST, "");
+                String proxyPort = sharedPreferences.getString(Constants.PREF_PROXY_PORT, "");
+                if (proxyHost.isEmpty() || proxyPort.isEmpty()) {
+                    Toast.makeText(getContext(), "请设置代理服务器地址和端口", Toast.LENGTH_SHORT).show();
+                }
+            }
+        } else if (key.equals(Constants.PREF_PROXY_TYPE)) {
+            // 代理类型变化
+            String proxyTypeStr = sharedPreferences.getString(Constants.PREF_PROXY_TYPE, "0");
+            try {
+                int proxyType = Integer.parseInt(proxyTypeStr);
+                String proxyTypeName = "未知";
+                switch (proxyType) {
+                    case Constants.PROXY_TYPE_NONE:
+                        proxyTypeName = "无";
+                        break;
+                    case Constants.PROXY_TYPE_SOCKS5:
+                        proxyTypeName = "SOCKS5";
+                        break;
+                    case Constants.PROXY_TYPE_HTTP:
+                        proxyTypeName = "HTTP";
+                        break;
+                }
+                Log.i(TAG, "代理类型已设置为: " + proxyTypeName);
+                
+                // 更新用户名密码字段状态
+                boolean needsAuth = proxyType != Constants.PROXY_TYPE_NONE;
+                Preference usernamePref = findPreference(Constants.PREF_PROXY_USERNAME);
+                Preference passwordPref = findPreference(Constants.PREF_PROXY_PASSWORD);
+                if (usernamePref != null) {
+                    usernamePref.setEnabled(needsAuth);
+                }
+                if (passwordPref != null) {
+                    passwordPref.setEnabled(needsAuth);
+                }
+            } catch (NumberFormatException e) {
+                Log.e(TAG, "解析代理类型出错", e);
             }
         }
     }

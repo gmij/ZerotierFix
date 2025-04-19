@@ -165,4 +165,14 @@
     <string name="menu_refresh">Refresh</string>
     <string name="menu_clear">Clear</string>
     <string name="no_logs_found">No logs found</string>
+
+    <!-- 代理设置相关字符串 -->
+    <string name="proxy_settings">Proxy Settings</string>
+    <string name="proxy_enable">Enable Proxy</string>
+    <string name="proxy_enable_summary">Use proxy server when global routing is enabled</string>
+    <string name="proxy_type">Proxy Type</string>
+    <string name="proxy_host">Proxy Host</string>
+    <string name="proxy_port">Proxy Port</string>
+    <string name="proxy_username">Username</string>
+    <string name="proxy_password">Password</string>
 </resources>
