@@ -159,7 +159,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     this.subscriptions = groups;
                     Thread.sleep(1000);
                 } catch (InterruptedException e) {
-                    LogUtil.d(ZeroTierOneService.TAG, "V4 Multicast Scanner Thread Interrupted", e);
+                    LogUtil.e(ZeroTierOneService.TAG, "V4 Multicast Scanner Thread Interrupted", e);
                     break;
                 }
             }
@@ -204,7 +204,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     this.subscriptions = groups;
                     Thread.sleep(1000);
                 } catch (InterruptedException e) {
-                    LogUtil.d(ZeroTierOneService.TAG, "V6 Multicast Scanner Thread Interrupted", e);
+                    LogUtil.e(ZeroTierOneService.TAG, "V6 Multicast Scanner Thread Interrupted", e);
                     break;
                 }
             }
