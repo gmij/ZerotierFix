@@ -32,6 +32,7 @@ public class LogManager {
     
     private static LogManager instance;
     private final LinkedList<String> logBuffer = new LinkedList<>();
+    private final LinkedList<String> internalLogBuffer = new LinkedList<>(); // 应用内部日志缓冲区
     private final ExecutorService executorService;
     private volatile boolean isShutdown = false;
     private final AtomicBoolean isTaskRunning = new AtomicBoolean(false);
@@ -40,6 +41,8 @@ public class LogManager {
     private LogManager() {
         // 私有构造函数
         executorService = Executors.newSingleThreadExecutor();
+        // 记录初始化日志
+        internalLog("LogManager", "初始化完成", LogLevel.INFO);
     }
     
     public static synchronized LogManager getInstance() {
@@ -47,6 +50,115 @@ public class LogManager {
             instance = new LogManager();
         }
         return instance;
+    }
+    
+    /**
+     * 日志级别枚举
+     */
+    public enum LogLevel {
+        VERBOSE("V"),
+        DEBUG("D"),
+        INFO("I"),
+        WARN("W"),
+        ERROR("E");
+        
+        private final String label;
+        
+        LogLevel(String label) {
+            this.label = label;
+        }
+        
+        public String getLabel() {
+            return label;
+        }
+    }
+    
+    /**
+     * 添加内部日志
+     * @param tag 日志标签
+     * @param message 日志信息
+     * @param level 日志级别
+     */
+    public void internalLog(String tag, String message, LogLevel level) {
+        if (tag == null || message == null || level == null) return;
+        
+        // 获取当前时间
+        String timestamp = new java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", 
+                java.util.Locale.getDefault()).format(new java.util.Date());
+        
+        // 获取线程信息
+        String threadInfo = Thread.currentThread().getName() + "(" + 
+                Thread.currentThread().getId() + ")";
+        
+        // 格式化日志条目
+        String logEntry = timestamp + " " + threadInfo + " " + level.getLabel() + "/" + 
+                tag + ": " + message;
+        
+        // 记录到Android日志系统
+        switch (level) {
+            case VERBOSE:
+                Log.v(tag, message);
+                break;
+            case DEBUG:
+                Log.d(tag, message);
+                break;
+            case INFO:
+                Log.i(tag, message);
+                break;
+            case WARN:
+                Log.w(tag, message);
+                break;
+            case ERROR:
+                Log.e(tag, message);
+                break;
+        }
+        
+        // 添加到内部缓冲区
+        synchronized (internalLogBuffer) {
+            internalLogBuffer.add(logEntry);
+            // 限制缓冲区大小
+            while (internalLogBuffer.size() > MAX_LOG_LINES) {
+                internalLogBuffer.removeFirst();
+            }
+        }
+    }
+    
+    /**
+     * 记录调试日志
+     */
+    public void debug(String tag, String message) {
+        internalLog(tag, message, LogLevel.DEBUG);
+    }
+    
+    /**
+     * 记录信息日志
+     */
+    public void info(String tag, String message) {
+        internalLog(tag, message, LogLevel.INFO);
+    }
+    
+    /**
+     * 记录警告日志
+     */
+    public void warn(String tag, String message) {
+        internalLog(tag, message, LogLevel.WARN);
+    }
+    
+    /**
+     * 记录错误日志
+     */
+    public void error(String tag, String message) {
+        internalLog(tag, message, LogLevel.ERROR);
+    }
+    
+    /**
+     * 记录带异常的错误日志
+     */
+    public void error(String tag, String message, Throwable throwable) {
+        StringWriter sw = new StringWriter();
+        PrintWriter pw = new PrintWriter(sw);
+        throwable.printStackTrace(pw);
+        internalLog(tag, message + "\n" + sw.toString(), LogLevel.ERROR);
     }
     
     /**
@@ -80,6 +192,10 @@ public class LogManager {
     public void clearLogs() {
         synchronized (logBuffer) {
             logBuffer.clear();
+        }
+        
+        synchronized (internalLogBuffer) {
+            internalLogBuffer.clear();
         }
         
         Process process = null;
@@ -270,6 +386,15 @@ public class LogManager {
             }
         }
         
+        // 添加应用内部日志
+        synchronized (internalLogBuffer) {
+            if (!internalLogBuffer.isEmpty()) {
+                logLines.add("=== 应用内部日志 ===");
+                logLines.addAll(internalLogBuffer);
+                logLines.add("=== 应用内部日志结束 ===");
+            }
+        }
+        
         if (logLines.isEmpty()) {
             return "没有找到日志";
         }
@@ -286,6 +411,50 @@ public class LogManager {
         }
         
         return sb.toString();
+    }
+    
+    /**
+     * 获取应用信息
+     */
+    public String getAppInfo(Context context) {
+        if (context == null) return "";
+        
+        try {
+            StringBuilder info = new StringBuilder();
+            info.append("=== 应用信息 ===\n");
+            
+            // 应用版本
+            String versionName = context.getPackageManager()
+                    .getPackageInfo(context.getPackageName(), 0).versionName;
+            int versionCode = context.getPackageManager()
+                    .getPackageInfo(context.getPackageName(), 0).versionCode;
+            info.append("应用版本: ").append(versionName).append(" (").append(versionCode).append(")\n");
+            
+            // 设备信息
+            info.append("设备厂商: ").append(android.os.Build.MANUFACTURER).append("\n");
+            info.append("设备型号: ").append(android.os.Build.MODEL).append("\n");
+            info.append("Android 版本: ").append(android.os.Build.VERSION.RELEASE)
+                    .append(" (API ").append(android.os.Build.VERSION.SDK_INT).append(")\n");
+            
+            // 系统信息
+            info.append("系统架构: ").append(System.getProperty("os.arch")).append("\n");
+            
+            // 内存信息
+            Runtime runtime = Runtime.getRuntime();
+            long maxMemory = runtime.maxMemory() / 1024 / 1024;
+            long totalMemory = runtime.totalMemory() / 1024 / 1024;
+            long freeMemory = runtime.freeMemory() / 1024 / 1024;
+            info.append("最大内存: ").append(maxMemory).append("MB\n");
+            info.append("已分配内存: ").append(totalMemory).append("MB\n");
+            info.append("空闲内存: ").append(freeMemory).append("MB\n");
+            
+            info.append("=== 应用信息结束 ===\n");
+            
+            return info.toString();
+        } catch (Exception e) {
+            Log.e(TAG, "获取应用信息失败", e);
+            return "获取应用信息失败: " + e.getMessage();
+        }
     }
     
     /**

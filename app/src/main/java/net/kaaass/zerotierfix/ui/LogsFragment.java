@@ -4,6 +4,8 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -28,11 +30,15 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.snackbar.Snackbar;
 
 import net.kaaass.zerotierfix.R;
+import net.kaaass.zerotierfix.ZerotierFixApplication;
+import net.kaaass.zerotierfix.model.AppNode;
+import net.kaaass.zerotierfix.model.Network;
 import net.kaaass.zerotierfix.util.LogManager;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.ref.WeakReference;
+import java.util.List;
 
 /**
  * 日志显示Fragment
@@ -65,68 +71,90 @@ public class LogsFragment extends Fragment {
         
         // 设置全局异常处理
         setupExceptionHandler();
+        
+        // 添加一条初始日志，确保有内容显示
+        addInitialLog();
+        
+        // 收集ZeroTier状态信息
+        collectZerotierStatus();
     }
     
     /**
-     * 设置全局异常处理器，防止应用直接崩溃
+     * 添加初始日志
      */
-    private void setupExceptionHandler() {
+    private void addInitialLog() {
+        // 使用内部应用信息收集
+        String appInfo = logManager.getAppInfo(requireContext());
+        
+        // 添加操作系统版本信息
+        String initialLog = "=== ZeroTier Fix 日志 ===\n"
+                + "当前时间：" + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", 
+                java.util.Locale.getDefault()).format(new java.util.Date()) + "\n"
+                + appInfo
+                + "======================\n\n"
+                + "正在加载系统日志...\n";
+                
+        // 添加网络信息
         try {
-            // 保存默认异常处理器
-            defaultExceptionHandler = Thread.getDefaultUncaughtExceptionHandler();
-            
-            // 设置自定义异常处理器
-            Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
-                try {
-                    // 获取异常详细信息
-                    StringWriter sw = new StringWriter();
-                    PrintWriter pw = new PrintWriter(sw);
-                    throwable.printStackTrace(pw);
-                    String stackTrace = sw.toString();
-                    
-                    // 记录日志
-                    Log.e(TAG, "捕获到未处理异常: " + throwable.getMessage(), throwable);
-                    
-                    // 使用主线程显示错误
-                    if (mainHandler != null && rootView != null && isAdded()) {
-                        mainHandler.post(() -> {
-                            try {
-                                // 用Snackbar显示错误提示
-                                if (rootView != null && isAdded()) {
-                                    Snackbar.make(rootView, "发生错误: " + throwable.getMessage(), 
-                                            Snackbar.LENGTH_LONG).show();
-                                    
-                                    // 将异常详情添加到日志内容中
-                                    String errorDetail = "--- 应用发生异常 ---\n" + 
-                                            stackTrace + 
-                                            "\n--- 异常信息结束 ---\n\n";
-                                    currentLogs = errorDetail + currentLogs;
-                                    updateUI(currentLogs);
-                                }
-                            } catch (Exception e) {
-                                Log.e(TAG, "显示错误信息时发生异常", e);
-                                // 如果显示失败，交给默认处理器
-                                if (defaultExceptionHandler != null) {
-                                    defaultExceptionHandler.uncaughtException(thread, throwable);
-                                }
-                            }
-                        });
-                    } else {
-                        // 如果无法在UI上显示，交给默认处理器
-                        if (defaultExceptionHandler != null) {
-                            defaultExceptionHandler.uncaughtException(thread, throwable);
-                        }
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, "处理异常时出错", e);
-                    // 如果异常处理器本身出错，使用默认处理器
-                    if (defaultExceptionHandler != null) {
-                        defaultExceptionHandler.uncaughtException(thread, throwable);
-                    }
-                }
-            });
+            boolean isNetworkConnected = isNetworkConnected();
+            initialLog += "网络连接状态: " + (isNetworkConnected ? "已连接" : "未连接") + "\n";
         } catch (Exception e) {
-            Log.e(TAG, "设置异常处理器失败", e);
+            initialLog += "无法获取网络状态信息\n";
+        }
+        
+        // 记录初始日志
+        currentLogs = initialLog;
+        
+        // 添加到LogManager的内部日志
+        logManager.info("LogsFragment", "日志界面已初始化");
+    }
+    
+    /**
+     * 检查网络连接状态
+     */
+    private boolean isNetworkConnected() {
+        ConnectivityManager cm = (ConnectivityManager) requireContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return false;
+        
+        NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
+        return activeNetwork != null && activeNetwork.isConnectedOrConnecting();
+    }
+    
+    /**
+     * 收集ZeroTier状态信息
+     */
+    private void collectZerotierStatus() {
+        try {
+            logManager.info("LogsFragment", "开始收集ZeroTier状态信息");
+            
+            // 获取ZeroTier节点ID
+            List<AppNode> nodes = ((ZerotierFixApplication) requireActivity().getApplication())
+                    .getDaoSession().getAppNodeDao().loadAll();
+            if (nodes != null && !nodes.isEmpty()) {
+                String nodeId = nodes.get(0).getNodeIdStr();
+                logManager.info("ZeroTierStatus", "节点ID: " + nodeId);
+            } else {
+                logManager.warn("ZeroTierStatus", "未找到节点ID");
+            }
+            
+            // 获取已加入的网络列表
+            List<Network> networks = ((ZerotierFixApplication) requireActivity().getApplication())
+                    .getDaoSession().getNetworkDao().loadAll();
+            
+            if (networks != null && !networks.isEmpty()) {
+                logManager.info("ZeroTierStatus", "发现 " + networks.size() + " 个网络配置");
+                for (Network network : networks) {
+                    logManager.info("ZeroTierStatus", "网络: " 
+                            + network.getNetworkIdStr() 
+                            + (network.getNetworkName() != null ? " (" + network.getNetworkName() + ")" : "")
+                            + " - " + (network.getLastActivated() ? "活跃" : "非活跃"));
+                }
+            } else {
+                logManager.info("ZeroTierStatus", "未找到网络配置");
+            }
+            
+        } catch (Exception e) {
+            logManager.error("LogsFragment", "收集ZeroTier状态信息失败", e);
         }
     }
 
@@ -143,6 +171,9 @@ public class LogsFragment extends Fragment {
         fabShare = rootView.findViewById(R.id.fab_share);
 
         try {
+            // 立即显示初始日志
+            updateUI(currentLogs);
+            
             // 设置底部工具栏菜单
             bottomAppBar.setOnMenuItemClickListener(item -> {
                 try {
