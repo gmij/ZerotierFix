@@ -925,9 +925,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 String[] commonPrivateNetworks = {
                     "10.0.0.0", "172.16.0.0", "192.168.0.0", "127.0.0.0" 
                 };
-                for (String network : commonPrivateNetworks) {
-                    protectSocketConnection(network, 0);
-                    LogUtil.i(TAG, "保护私有网络: " + network);
+                for (String privateNet : commonPrivateNetworks) {
+                    protectSocketConnection(privateNet, 0);
+                    LogUtil.i(TAG, "保护私有网络: " + privateNet);
                 }
                 
                 try {
