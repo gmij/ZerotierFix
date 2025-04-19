@@ -7,161 +7,191 @@ import net.kaaass.zerotierfix.util.IPPacketUtils;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 // TODO: clear up
 public class NDPTable {
     public static final String TAG = "NDPTable";
     private static final long ENTRY_TIMEOUT = 120000;
-    private final HashMap<Long, NDPEntry> entriesMap = new HashMap<>();
-    private final HashMap<InetAddress, Long> inetAddressToMacAddress = new HashMap<>();
-    private final HashMap<InetAddress, NDPEntry> ipEntriesMap = new HashMap<>();
-    private final HashMap<Long, InetAddress> macAddressToInetAddress = new HashMap<>();
-    private final Thread timeoutThread = new Thread("NDP Timeout Thread") {
-        /* class com.zerotier.one.service.NDPTable.AnonymousClass1 */
-
-        @Override
-        public void run() {
-            while (!isInterrupted()) {
-                try {
-                    for (NDPEntry nDPEntry : new HashMap<>(NDPTable.this.entriesMap).values()) {
-                        if (nDPEntry.getTime() + NDPTable.ENTRY_TIMEOUT < System.currentTimeMillis()) {
-                            synchronized (NDPTable.this.macAddressToInetAddress) {
-                                NDPTable.this.macAddressToInetAddress.remove(nDPEntry.getMac());
-                            }
-                            synchronized (NDPTable.this.inetAddressToMacAddress) {
-                                NDPTable.this.inetAddressToMacAddress.remove(nDPEntry.getAddress());
-                            }
-                            synchronized (NDPTable.this.entriesMap) {
-                                NDPTable.this.entriesMap.remove(nDPEntry.getMac());
-                            }
-                            synchronized (NDPTable.this.ipEntriesMap) {
-                                NDPTable.this.ipEntriesMap.remove(nDPEntry.getAddress());
-                            }
-                        }
-                    }
-                    Thread.sleep(1000);
-                } catch (Exception e) {
-                    Log.d(NDPTable.TAG, e.toString());
-                    return;
-                }
-            }
-        }
-    };
+    private final Map<Long, NDPEntry> entriesMap = new ConcurrentHashMap<>();
+    private final Map<InetAddress, Long> inetAddressToMacAddress = new ConcurrentHashMap<>();
+    private final Map<InetAddress, NDPEntry> ipEntriesMap = new ConcurrentHashMap<>();
+    private final Map<Long, InetAddress> macAddressToInetAddress = new ConcurrentHashMap<>();
+    private final Thread timeoutThread;
+    private volatile boolean running = true;
 
     public NDPTable() {
-        this.timeoutThread.start();
+        timeoutThread = new Thread("NDP Timeout Thread") {
+            @Override
+            public void run() {
+                Log.d(TAG, "NDP Timeout Thread Started.");
+                while (!isInterrupted() && running) {
+                    try {
+                        // 使用临时集合避免并发修改异常
+                        Map<Long, NDPEntry> tempEntries = new HashMap<>(entriesMap);
+                        for (NDPEntry ndpEntry : tempEntries.values()) {
+                            if (ndpEntry.getTime() + ENTRY_TIMEOUT < System.currentTimeMillis()) {
+                                Log.d(TAG, "Removing " + ndpEntry.getAddress().toString() + " from NDP cache");
+                                // 移除过期表项
+                                macAddressToInetAddress.remove(ndpEntry.getMac());
+                                inetAddressToMacAddress.remove(ndpEntry.getAddress());
+                                entriesMap.remove(ndpEntry.getMac());
+                                ipEntriesMap.remove(ndpEntry.getAddress());
+                            }
+                        }
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        Log.d(TAG, "NDP Timeout Thread Interrupted");
+                        break;
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error in NDP Timeout Thread: " + e.getMessage(), e);
+                        // 继续执行，不要让单个异常终止整个线程
+                    }
+                }
+                Log.d(TAG, "NDP Timeout Thread Ended.");
+            }
+        };
+        timeoutThread.start();
     }
 
     /* access modifiers changed from: protected */
     public void stop() {
+        running = false;
         try {
-            this.timeoutThread.interrupt();
-            this.timeoutThread.join();
+            if (timeoutThread != null && timeoutThread.isAlive()) {
+                timeoutThread.interrupt();
+                timeoutThread.join(1000); // 等待最多1秒
+                if (timeoutThread.isAlive()) {
+                    Log.w(TAG, "NDP Timeout Thread did not terminate gracefully");
+                }
+            }
         } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt(); // 保持中断状态
+        } catch (Exception e) {
+            Log.e(TAG, "Error stopping NDP Timeout Thread: " + e.getMessage(), e);
         }
+        
+        // 清理集合
+        entriesMap.clear();
+        inetAddressToMacAddress.clear();
+        ipEntriesMap.clear();
+        macAddressToInetAddress.clear();
     }
 
     /* access modifiers changed from: package-private */
     public void setAddress(InetAddress inetAddress, long j) {
-        synchronized (this.inetAddressToMacAddress) {
-            this.inetAddressToMacAddress.put(inetAddress, Long.valueOf(j));
+        if (inetAddress == null) {
+            return; // 避免空指针异常
         }
-        synchronized (this.macAddressToInetAddress) {
-            this.macAddressToInetAddress.put(Long.valueOf(j), inetAddress);
-        }
-        NDPEntry nDPEntry = new NDPEntry(j, inetAddress);
-        synchronized (this.entriesMap) {
-            this.entriesMap.put(Long.valueOf(j), nDPEntry);
-        }
-        synchronized (this.ipEntriesMap) {
-            this.ipEntriesMap.put(inetAddress, nDPEntry);
-        }
+        inetAddressToMacAddress.put(inetAddress, j);
+        macAddressToInetAddress.put(j, inetAddress);
+        NDPEntry ndpEntry = new NDPEntry(j, inetAddress);
+        entriesMap.put(j, ndpEntry);
+        ipEntriesMap.put(inetAddress, ndpEntry);
     }
 
     /* access modifiers changed from: package-private */
     public boolean hasMacForAddress(InetAddress inetAddress) {
-        boolean containsKey;
-        synchronized (this.inetAddressToMacAddress) {
-            containsKey = this.inetAddressToMacAddress.containsKey(inetAddress);
+        if (inetAddress == null) {
+            return false;
         }
-        return containsKey;
+        return inetAddressToMacAddress.containsKey(inetAddress);
     }
 
     /* access modifiers changed from: package-private */
     public boolean hasAddressForMac(long j) {
-        boolean containsKey;
-        synchronized (this.macAddressToInetAddress) {
-            containsKey = this.macAddressToInetAddress.containsKey(Long.valueOf(j));
-        }
-        return containsKey;
+        return macAddressToInetAddress.containsKey(j);
     }
 
     /* access modifiers changed from: package-private */
     public long getMacForAddress(InetAddress inetAddress) {
-        synchronized (this.inetAddressToMacAddress) {
-            if (!this.inetAddressToMacAddress.containsKey(inetAddress)) {
-                return -1;
-            }
-            long longValue = this.inetAddressToMacAddress.get(inetAddress).longValue();
-            updateNDPEntryTime(longValue);
-            return longValue;
+        if (inetAddress == null) {
+            return -1;
         }
+        
+        if (!inetAddressToMacAddress.containsKey(inetAddress)) {
+            return -1;
+        }
+        
+        Long macAddress = inetAddressToMacAddress.get(inetAddress);
+        if (macAddress != null) {
+            updateNDPEntryTime(macAddress);
+            return macAddress;
+        }
+        return -1;
     }
 
     /* access modifiers changed from: package-private */
     public InetAddress getAddressForMac(long j) {
-        synchronized (this.macAddressToInetAddress) {
-            if (!this.macAddressToInetAddress.containsKey(Long.valueOf(j))) {
-                return null;
-            }
-            InetAddress inetAddress = this.macAddressToInetAddress.get(Long.valueOf(j));
-            updateNDPEntryTime(inetAddress);
-            return inetAddress;
+        if (!macAddressToInetAddress.containsKey(j)) {
+            return null;
         }
+        
+        InetAddress inetAddress = macAddressToInetAddress.get(j);
+        if (inetAddress != null) {
+            updateNDPEntryTime(inetAddress);
+        }
+        return inetAddress;
     }
 
     private void updateNDPEntryTime(InetAddress inetAddress) {
-        synchronized (this.ipEntriesMap) {
-            NDPEntry nDPEntry = this.ipEntriesMap.get(inetAddress);
-            if (nDPEntry != null) {
-                nDPEntry.updateTime();
-            }
+        if (inetAddress == null) {
+            return;
+        }
+        
+        NDPEntry ndpEntry = ipEntriesMap.get(inetAddress);
+        if (ndpEntry != null) {
+            ndpEntry.updateTime();
         }
     }
 
     private void updateNDPEntryTime(long j) {
-        synchronized (this.entriesMap) {
-            NDPEntry nDPEntry = this.entriesMap.get(Long.valueOf(j));
-            if (nDPEntry != null) {
-                nDPEntry.updateTime();
-            }
+        NDPEntry ndpEntry = entriesMap.get(j);
+        if (ndpEntry != null) {
+            ndpEntry.updateTime();
         }
     }
 
     /* access modifiers changed from: package-private */
     public byte[] getNeighborSolicitationPacket(InetAddress inetAddress, InetAddress inetAddress2, long j) {
-        byte[] bArr = new byte[72];
-        System.arraycopy(inetAddress.getAddress(), 0, bArr, 0, 16);
-        System.arraycopy(inetAddress2.getAddress(), 0, bArr, 16, 16);
-        System.arraycopy(ByteBuffer.allocate(4).putInt(32).array(), 0, bArr, 32, 4);
-        bArr[39] = 58;
-        bArr[40] = -121;
-        System.arraycopy(inetAddress2.getAddress(), 0, bArr, 48, 16);
-        byte[] array = ByteBuffer.allocate(8).putLong(j).array();
-        bArr[64] = 1;
-        bArr[65] = 1;
-        System.arraycopy(array, 2, bArr, 66, 6);
-        System.arraycopy(ByteBuffer.allocate(2).putShort((short) ((int) IPPacketUtils.calculateChecksum(bArr, 0, 0, 72))).array(), 0, bArr, 42, 2);
-        for (int i = 0; i < 40; i++) {
-            bArr[i] = 0;
+        if (inetAddress == null || inetAddress2 == null) {
+            Log.e(TAG, "Invalid addresses for Neighbor Solicitation packet");
+            return new byte[72]; // 返回空包而不是空引用
         }
-        bArr[0] = 96;
-        System.arraycopy(ByteBuffer.allocate(2).putShort((short) 32).array(), 0, bArr, 4, 2);
-        bArr[6] = 58;
-        bArr[7] = -1;
-        System.arraycopy(inetAddress.getAddress(), 0, bArr, 8, 16);
-        System.arraycopy(inetAddress2.getAddress(), 0, bArr, 24, 16);
+        
+        byte[] bArr = new byte[72];
+        
+        try {
+            System.arraycopy(inetAddress.getAddress(), 0, bArr, 0, 16);
+            System.arraycopy(inetAddress2.getAddress(), 0, bArr, 16, 16);
+            System.arraycopy(ByteBuffer.allocate(4).putInt(32).array(), 0, bArr, 32, 4);
+            bArr[39] = 58;
+            bArr[40] = -121;
+            System.arraycopy(inetAddress2.getAddress(), 0, bArr, 48, 16);
+            byte[] array = ByteBuffer.allocate(8).putLong(j).array();
+            bArr[64] = 1;
+            bArr[65] = 1;
+            System.arraycopy(array, 2, bArr, 66, 6);
+            
+            // 计算校验和
+            System.arraycopy(ByteBuffer.allocate(2).putShort((short) ((int) IPPacketUtils.calculateChecksum(bArr, 0, 0, 72))).array(), 0, bArr, 42, 2);
+            
+            // 重置前40字节
+            for (int i = 0; i < 40; i++) {
+                bArr[i] = 0;
+            }
+            
+            bArr[0] = 96;
+            System.arraycopy(ByteBuffer.allocate(2).putShort((short) 32).array(), 0, bArr, 4, 2);
+            bArr[6] = 58;
+            bArr[7] = -1;
+            System.arraycopy(inetAddress.getAddress(), 0, bArr, 8, 16);
+            System.arraycopy(inetAddress2.getAddress(), 0, bArr, 24, 16);
+        } catch (Exception e) {
+            Log.e(TAG, "Error creating Neighbor Solicitation packet: " + e.getMessage(), e);
+        }
+        
         return bArr;
     }
-
 }

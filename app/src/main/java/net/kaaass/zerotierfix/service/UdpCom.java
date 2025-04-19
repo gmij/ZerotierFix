@@ -20,6 +20,7 @@ public class UdpCom implements PacketSender, Runnable {
     private Node node;
     private final DatagramSocket svrSocket;
     private final ZeroTierOneService ztService;
+    private volatile boolean running = true;
 
     UdpCom(ZeroTierOneService zeroTierOneService, DatagramSocket datagramSocket) {
         this.svrSocket = datagramSocket;
@@ -41,9 +42,14 @@ public class UdpCom implements PacketSender, Runnable {
             DebugLog.d(TAG, "onSendPacketRequested: Sent " + datagramPacket.getLength() + " bytes to " + inetSocketAddress.toString());
             this.svrSocket.send(datagramPacket);
             return 0;
-        } catch (Exception unused) {
+        } catch (Exception e) {
+            Log.e(TAG, "Error sending packet: " + e.getMessage());
             return -1;
         }
+    }
+
+    public void stopRunning() {
+        running = false;
     }
 
     public void run() {
@@ -51,7 +57,7 @@ public class UdpCom implements PacketSender, Runnable {
         try {
             long[] jArr = new long[1];
             byte[] bArr = new byte[16384];
-            while (!Thread.interrupted()) {
+            while (!Thread.interrupted() && running) {
                 jArr[0] = 0;
                 DatagramPacket datagramPacket = new DatagramPacket(bArr, 16384);
                 try {
@@ -60,19 +66,40 @@ public class UdpCom implements PacketSender, Runnable {
                         byte[] bArr2 = new byte[datagramPacket.getLength()];
                         System.arraycopy(datagramPacket.getData(), 0, bArr2, 0, datagramPacket.getLength());
                         DebugLog.d(TAG, "Got " + datagramPacket.getLength() + " Bytes From: " + datagramPacket.getAddress().toString() + ":" + datagramPacket.getPort());
-                        ResultCode processWirePacket = this.node.processWirePacket(System.currentTimeMillis(), -1, new InetSocketAddress(datagramPacket.getAddress(), datagramPacket.getPort()), bArr2, jArr);
-                        if (processWirePacket != ResultCode.RESULT_OK) {
-                            Log.e(TAG, "processWirePacket returned: " + processWirePacket.toString());
-                            this.ztService.shutdown();
+                        
+                        // 确保 node 不为空
+                        if (this.node != null) {
+                            ResultCode processWirePacket = this.node.processWirePacket(System.currentTimeMillis(), -1, 
+                                new InetSocketAddress(datagramPacket.getAddress(), datagramPacket.getPort()), 
+                                bArr2, jArr);
+                            
+                            if (processWirePacket != ResultCode.RESULT_OK) {
+                                Log.e(TAG, "processWirePacket returned: " + processWirePacket.toString());
+                                // 不要直接调用 shutdown，通过服务来处理
+                                if (this.ztService != null) {
+                                    this.ztService.setNextBackgroundTaskDeadline(jArr[0]);
+                                    if (processWirePacket != ResultCode.RESULT_FATAL_ERROR_ALREADY_EXISTS) {
+                                        this.ztService.shutdown();
+                                    }
+                                }
+                            } else if (this.ztService != null) {
+                                this.ztService.setNextBackgroundTaskDeadline(jArr[0]);
+                            }
+                        } else {
+                            Log.e(TAG, "Node is null, cannot process packet");
                         }
-                        this.ztService.setNextBackgroundTaskDeadline(jArr[0]);
                     }
                 } catch (SocketTimeoutException ignored) {
+                    // 超时是正常的，不需要处理
+                } catch (Exception e) {
+                    Log.e(TAG, "Error receiving packet: " + e.getMessage());
+                    // 不终止循环，继续尝试接收数据包
                 }
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.e(TAG, "Fatal error in UDP thread: ", e);
+        } finally {
+            Log.d(TAG, "UDP Listen Thread Ended.");
         }
-        Log.d(TAG, "UDP Listen Thread Ended.");
     }
 }
