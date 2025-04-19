@@ -59,6 +59,7 @@ import net.kaaass.zerotierfix.util.DatabaseUtils;
 import net.kaaass.zerotierfix.util.InetAddressUtils;
 import net.kaaass.zerotierfix.util.LogUtil;
 import net.kaaass.zerotierfix.util.NetworkInfoUtils;
+import net.kaaass.zerotierfix.util.ProxyManager;
 import net.kaaass.zerotierfix.util.StringUtils;
 
 import org.greenrobot.eventbus.EventBus;
@@ -1207,7 +1208,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 配置直接通过ZeroTier的IPv4全局路由(不使用代理)
      */
     private void configureDirectGlobalRouting(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig, 
-                                             com.zerotier.sdk.InetAddressAssignment[] assignedAddresses) throws Exception {
+                                             VirtualNetworkConfig.InetAddressAssignment[] assignedAddresses) throws Exception {
         // 获取ZeroTier网络中的网关
         InetAddress zerotierGateway = null;
         
@@ -1256,7 +1257,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 配置直接通过ZeroTier的IPv6全局路由(不使用代理)
      */
     private void configureDirectIPv6Routing(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig,
-                                           com.zerotier.sdk.InetAddressAssignment[] assignedAddresses) throws Exception {
+                                           VirtualNetworkConfig.InetAddressAssignment[] assignedAddresses) throws Exception {
         InetAddress v6DefaultRoute = InetAddress.getByName("::");
         builder.addRoute(v6DefaultRoute, 0);
         LogUtil.i(TAG, "添加IPv6全局路由 ::/0");
