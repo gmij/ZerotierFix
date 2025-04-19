@@ -198,7 +198,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         InetAddress localV4Address = null;
         int cidr = 0;
 
-        for (var address : ztAddresses) {
+        int addressCount = ztAddresses.size();
+        for (int i = 0; i < addressCount; i++) {
+            InetSocketAddress address = ztAddresses.get(i);
             if (address.getAddress() instanceof Inet4Address) {
                 localV4Address = address.getAddress();
                 cidr = address.getPort();
@@ -269,14 +271,14 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             }
         }
         var route = routeForDestination(destIP);
-        var gateway = route != null ? route.getGateway() : null;
-
         // 查找当前节点的 v6 地址
         var ztAddresses = virtualNetworkConfig.getAssignedAddresses();
         InetAddress localV4Address = null;
         int cidr = 0;
 
-        for (var address : ztAddresses) {
+        int addressCount = ztAddresses.size();
+        for (int i = 0; i < addressCount; i++) {
+            InetSocketAddress address = ztAddresses.get(i);
             if (address.getAddress() instanceof Inet6Address) {
                 localV4Address = address.getAddress();
                 cidr = address.getPort();
