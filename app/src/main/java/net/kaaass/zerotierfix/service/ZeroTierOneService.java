@@ -74,6 +74,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -863,19 +864,43 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 如果启用了全局路由，添加默认路由(0.0.0.0/0 和 ::/0)
         if (isRouteViaZeroTier) {
             try {
+                // 改进的全局路由处理方式
                 // 添加 IPv4 全局路由 (0.0.0.0/0)
                 InetAddress v4DefaultRoute = InetAddress.getByName("0.0.0.0");
                 builder.addRoute(v4DefaultRoute, 0);
                 Log.i(TAG, "添加IPv4全局路由 0.0.0.0/0");
                 this.tunTapAdapter.addRouteAndNetwork(new Route(v4DefaultRoute, 0), networkId);
                 
-                // 保护本地连接，避免VPN路由循环
-                DatagramSocket socket = new DatagramSocket();
-                socket.connect(InetAddress.getByName("8.8.8.8"), 53);
-                if (!protect(socket)) {
-                    Log.e(TAG, "无法保护UDP套接字以防止反馈循环");
+                // 增强对本地连接的保护，避免VPN路由循环
+                // 1. 保护DNS查询连接
+                protectSocketConnection("8.8.8.8", 53);
+                protectSocketConnection("114.114.114.114", 53);
+                protectSocketConnection("223.5.5.5", 53);
+                
+                // 2. 保护局域网连接
+                try {
+                    NetworkInterface[] networkInterfaces = NetworkInterface.getNetworkInterfaces()
+                            .toArray(new NetworkInterface[0]);
+                    for (NetworkInterface networkInterface : networkInterfaces) {
+                        if (networkInterface.isUp() && !networkInterface.isLoopback() && 
+                                !networkInterface.getName().equals("tun0") && 
+                                !networkInterface.getName().startsWith("zt")) {
+                            for (InetAddress address : Collections.list(networkInterface.getInetAddresses())) {
+                                if (address instanceof Inet4Address) {
+                                    // 保护到局域网的路由
+                                    String ip = address.getHostAddress();
+                                    if (ip != null && ip.contains(".")) {
+                                        String subnet = ip.substring(0, ip.lastIndexOf(".")) + ".0";
+                                        protectSocketConnection(subnet, 0);
+                                        Log.i(TAG, "保护局域网连接: " + subnet);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "保护局域网连接时出错: " + e.getMessage());
                 }
-                socket.close();
                 
                 // 添加 IPv6 全局路由 (::/0)，如果IPv6未禁用
                 if (!this.disableIPv6) {
@@ -884,18 +909,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     Log.i(TAG, "添加IPv6全局路由 ::/0");
                     this.tunTapAdapter.addRouteAndNetwork(new Route(v6DefaultRoute, 0), networkId);
                     
-                    // 保护IPv6本地连接
-                    DatagramSocket socketV6 = new DatagramSocket();
-                    try {
-                        socketV6.connect(InetAddress.getByName("2001:4860:4860::8888"), 53);
-                        if (!protect(socketV6)) {
-                            Log.e(TAG, "无法保护IPv6 UDP套接字以防止反馈循环");
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "连接IPv6测试服务器失败: " + e.getMessage());
-                    } finally {
-                        socketV6.close();
-                    }
+                    // 保护IPv6连接
+                    protectSocketConnection("2001:4860:4860::8888", 53);
+                    protectSocketConnection("2400:3200::1", 53);
                 }
             } catch (Exception e) {
                 Log.e(TAG, "添加默认路由时出错: " + e.getMessage(), e);
@@ -936,10 +952,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return false;
         }
 
+        // 配置DNS和MTU
         if (Build.VERSION.SDK_INT >= 29) {
             builder.setMetered(false);
         }
+        
+        // 增强DNS服务器配置
         addDNSServers(builder, network);
+        
+        // 配置允许绕过的APP包
+        configureAllowedDisallowedApps(builder, isRouteViaZeroTier);
 
         // 配置 MTU
         int mtu = virtualNetworkConfig.getMtu();
@@ -951,17 +973,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         builder.setMtu(mtu);
 
         builder.setSession(Constants.VPN_SESSION_NAME);
-
-        // 设置部分 APP 不经过 VPN
-        if (!isRouteViaZeroTier && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            for (var app : DISALLOWED_APPS) {
-                try {
-                    builder.addDisallowedApplication(app);
-                } catch (Exception e3) {
-                    Log.e(TAG, "Cannot disallow app", e3);
-                }
-            }
-        }
 
         // 建立 VPN 连接
         this.vpnSocket = builder.establish();
@@ -1018,6 +1029,63 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
         return true;
+    }
+    
+    /**
+     * 保护套接字连接，避免VPN路由循环
+     */
+    private void protectSocketConnection(String host, int port) {
+        try {
+            DatagramSocket socket = new DatagramSocket();
+            socket.connect(InetAddress.getByName(host), port);
+            boolean success = protect(socket);
+            Log.i(TAG, "保护连接到 " + host + ":" + port + (success ? " 成功" : " 失败"));
+            socket.close();
+            
+            // 同时尝试保护TCP连接
+            Socket tcpSocket = new Socket();
+            tcpSocket.connect(new InetSocketAddress(host, port == 0 ? 80 : port), 500);
+            success = protect(tcpSocket);
+            Log.i(TAG, "保护TCP连接到 " + host + ":" + (port == 0 ? 80 : port) + (success ? " 成功" : " 失败"));
+            tcpSocket.close();
+        } catch (Exception e) {
+            // 忽略连接错误，不是所有地址都能连接成功
+            Log.d(TAG, "保护连接尝试: " + host + ":" + port + " - " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 配置允许/不允许的应用
+     */
+    private void configureAllowedDisallowedApps(VpnService.Builder builder, boolean isRouteViaZeroTier) {
+        if (!isRouteViaZeroTier && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            // 设置部分 APP 不经过 VPN
+            for (var app : DISALLOWED_APPS) {
+                try {
+                    builder.addDisallowedApplication(app);
+                    Log.d(TAG, "添加排除应用: " + app);
+                } catch (Exception e3) {
+                    Log.e(TAG, "无法排除应用 " + app, e3);
+                }
+            }
+            
+            // 排除更多常见需要直连的应用
+            String[] commonDisallowedApps = {
+                "com.android.vending", // Google Play商店
+                "com.google.android.gms", // Google Play服务
+                "com.google.android.gsf", // Google服务框架
+                "com.android.providers.downloads", // 下载管理器
+            };
+            
+            for (String app : commonDisallowedApps) {
+                try {
+                    builder.addDisallowedApplication(app);
+                    Log.d(TAG, "添加排除应用: " + app);
+                } catch (Exception e) {
+                    // 可能应用不存在，忽略错误
+                }
+            }
+        }
     }
 
     private void addDNSServers(VpnService.Builder builder, Network network) {
