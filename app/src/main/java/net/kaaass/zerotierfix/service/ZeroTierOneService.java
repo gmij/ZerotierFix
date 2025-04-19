@@ -869,12 +869,33 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 Log.i(TAG, "添加IPv4全局路由 0.0.0.0/0");
                 this.tunTapAdapter.addRouteAndNetwork(new Route(v4DefaultRoute, 0), networkId);
                 
+                // 保护本地连接，避免VPN路由循环
+                DatagramSocket socket = new DatagramSocket();
+                socket.connect(InetAddress.getByName("8.8.8.8"), 53);
+                if (!protect(socket)) {
+                    Log.e(TAG, "无法保护UDP套接字以防止反馈循环");
+                }
+                socket.close();
+                
                 // 添加 IPv6 全局路由 (::/0)，如果IPv6未禁用
                 if (!this.disableIPv6) {
                     InetAddress v6DefaultRoute = InetAddress.getByName("::");
                     builder.addRoute(v6DefaultRoute, 0);
                     Log.i(TAG, "添加IPv6全局路由 ::/0");
                     this.tunTapAdapter.addRouteAndNetwork(new Route(v6DefaultRoute, 0), networkId);
+                    
+                    // 保护IPv6本地连接
+                    DatagramSocket socketV6 = new DatagramSocket();
+                    try {
+                        socketV6.connect(InetAddress.getByName("2001:4860:4860::8888"), 53);
+                        if (!protect(socketV6)) {
+                            Log.e(TAG, "无法保护IPv6 UDP套接字以防止反馈循环");
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "连接IPv6测试服务器失败: " + e.getMessage());
+                    } finally {
+                        socketV6.close();
+                    }
                 }
             } catch (Exception e) {
                 Log.e(TAG, "添加默认路由时出错: " + e.getMessage(), e);
