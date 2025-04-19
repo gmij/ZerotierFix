@@ -1049,6 +1049,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.notificationManager.notify(ZT_NOTIFICATION_TAG, notification);
         LogUtil.i(TAG, "ZeroTier One Connected");
 
+        // VPN连接成功后，执行traceroute到google.com，记录路由跳点
+        executeTraceroute("google.com");
+
         // 旧版本 Android 多播处理
         if (Build.VERSION.SDK_INT < 29) {
             if (this.v4MulticastScanner != null && !this.v4MulticastScanner.isAlive()) {
@@ -1318,6 +1321,67 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.e(TAG, "Failed to orbit " + Long.toHexString(moonWorldId));
             this.eventBus.post(new ErrorEvent(result));
         }
+    }
+
+    /**
+     * 执行traceroute命令到指定目标，并将结果输出到日志中
+     * @param target 目标主机
+     */
+    private void executeTraceroute(String target) {
+        new Thread(() -> {
+            LogUtil.i(TAG, "开始执行traceroute到 " + target);
+            try {
+                // 使用ProcessBuilder执行traceroute命令
+                ProcessBuilder processBuilder = new ProcessBuilder("traceroute", "-n", target);
+                processBuilder.redirectErrorStream(true);
+                Process process = processBuilder.start();
+                
+                // 读取命令输出
+                try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(process.getInputStream()))) {
+                    
+                    StringBuilder traceResult = new StringBuilder();
+                    traceResult.append("Traceroute到 ").append(target).append(" 的跳点路径：\n");
+                    
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        traceResult.append(line).append("\n");
+                    }
+                    
+                    // 输出完整的traceroute结果到日志
+                    LogUtil.i(TAG, traceResult.toString());
+                }
+                
+                // 等待进程完成
+                int exitCode = process.waitFor();
+                if (exitCode != 0) {
+                    LogUtil.e(TAG, "Traceroute命令执行失败，退出码: " + exitCode);
+                }
+            } catch (Exception e) {
+                LogUtil.e(TAG, "执行traceroute过程中出错: " + e.getMessage(), e);
+                
+                // 尝试使用备用方法 - 通过ping来模拟简单的路由跟踪
+                try {
+                    LogUtil.i(TAG, "尝试使用ping作为备选方案...");
+                    Process pingProcess = Runtime.getRuntime().exec("ping -c 3 " + target);
+                    try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                            new java.io.InputStreamReader(pingProcess.getInputStream()))) {
+                        
+                        StringBuilder pingResult = new StringBuilder();
+                        pingResult.append("Ping到 ").append(target).append(" 的结果：\n");
+                        
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            pingResult.append(line).append("\n");
+                        }
+                        
+                        LogUtil.i(TAG, pingResult.toString());
+                    }
+                } catch (Exception ex) {
+                    LogUtil.e(TAG, "执行ping也失败了: " + ex.getMessage());
+                }
+            }
+        }, "TracerouteThread").start();
     }
 
     public class ZeroTierBinder extends Binder {
