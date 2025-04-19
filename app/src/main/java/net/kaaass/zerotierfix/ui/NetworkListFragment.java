@@ -327,12 +327,7 @@ public class NetworkListFragment extends Fragment {
             return true;
         } else if (menuId == R.id.menu_item_logs) {
             Log.d(TAG, "Selected logs");
-            try {
-                startActivity(new Intent(getActivity(), LogsActivity.class));
-            } catch (Exception e) {
-                Log.e(TAG, "启动日志窗口失败", e);
-                Toast.makeText(getContext(), "启动日志窗口失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            }
+            startActivity(new Intent(getActivity(), LogsActivity.class));
             return true;
         }
         return super.onOptionsItemSelected(menuItem);

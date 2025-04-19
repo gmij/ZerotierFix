@@ -159,4 +159,8 @@
     <string name="logs_share">分享日志</string>
     <string name="logs_copied">日志已复制到剪贴板</string>
     <string name="logs_cleared">日志已清空</string>
+    <string name="logs_title">应用日志</string>
+    <string name="menu_refresh">刷新</string>
+    <string name="menu_clear">清空</string>
+    <string name="no_logs_found">未找到日志</string>
 </resources>

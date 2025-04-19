@@ -161,4 +161,8 @@
     <string name="logs_share">Share logs</string>
     <string name="logs_copied">Logs copied to clipboard</string>
     <string name="logs_cleared">Logs cleared</string>
+    <string name="logs_title">Application Logs</string>
+    <string name="menu_refresh">Refresh</string>
+    <string name="menu_clear">Clear</string>
+    <string name="no_logs_found">No logs found</string>
 </resources>
