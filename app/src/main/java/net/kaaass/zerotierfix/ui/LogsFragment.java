@@ -80,6 +80,69 @@ public class LogsFragment extends Fragment {
     }
     
     /**
+     * 设置全局异常处理器，防止应用直接崩溃
+     */
+    private void setupExceptionHandler() {
+        try {
+            // 保存默认异常处理器
+            defaultExceptionHandler = Thread.getDefaultUncaughtExceptionHandler();
+            
+            // 设置自定义异常处理器
+            Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+                try {
+                    // 获取异常详细信息
+                    StringWriter sw = new StringWriter();
+                    PrintWriter pw = new PrintWriter(sw);
+                    throwable.printStackTrace(pw);
+                    String stackTrace = sw.toString();
+                    
+                    // 记录日志
+                    Log.e(TAG, "捕获到未处理异常: " + throwable.getMessage(), throwable);
+                    
+                    // 使用主线程显示错误
+                    if (mainHandler != null) {
+                        mainHandler.post(() -> {
+                            try {
+                                // 用Snackbar显示错误提示
+                                if (rootView != null && isAdded()) {
+                                    Snackbar.make(rootView, "发生错误: " + throwable.getMessage(), 
+                                            Snackbar.LENGTH_LONG).show();
+                                    
+                                    // 将异常详情添加到日志内容中
+                                    String errorDetail = "--- 应用发生异常 ---\n" + 
+                                            stackTrace + 
+                                            "\n--- 异常信息结束 ---\n\n";
+                                    currentLogs = errorDetail + currentLogs;
+                                    updateUI(currentLogs);
+                                }
+                            } catch (Exception e) {
+                                Log.e(TAG, "显示错误信息时发生异常", e);
+                                // 如果显示失败，交给默认处理器
+                                if (defaultExceptionHandler != null) {
+                                    defaultExceptionHandler.uncaughtException(thread, throwable);
+                                }
+                            }
+                        });
+                    } else {
+                        // 如果无法在UI上显示，交给默认处理器
+                        if (defaultExceptionHandler != null) {
+                            defaultExceptionHandler.uncaughtException(thread, throwable);
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "处理异常时出错", e);
+                    // 如果异常处理器本身出错，使用默认处理器
+                    if (defaultExceptionHandler != null) {
+                        defaultExceptionHandler.uncaughtException(thread, throwable);
+                    }
+                }
+            });
+        } catch (Exception e) {
+            Log.e(TAG, "设置异常处理器失败", e);
+        }
+    }
+    
+    /**
      * 添加初始日志
      */
     private void addInitialLog() {
