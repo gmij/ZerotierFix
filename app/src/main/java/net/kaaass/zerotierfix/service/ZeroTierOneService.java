@@ -253,7 +253,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     /* access modifiers changed from: protected */
-    public void setNextBackgroundTaskDeadline(long j) {
+    protected void setNextBackgroundTaskDeadline(long j) {
         synchronized (this) {
             this.nextBackgroundTaskDeadline = j;
         }
@@ -874,10 +874,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
                     boolean isIPv6Route = (targetAddress instanceof Inet6Address) || (viaAddress instanceof Inet6Address);
                     boolean isDisabledV6Route = this.disableIPv6 && isIPv6Route;
+                    
+                    // 修改路由判断逻辑，避免默认路由进VPN导致路由循环
+                    boolean isDefaultRoute = viaAddress != null && 
+                            (viaAddress.equals(v4Loopback) || viaAddress.equals(v6Loopback));
                     boolean shouldRouteToZerotier = viaAddress != null && (
-                            isRouteViaZeroTier
-                                    || (!viaAddress.equals(v4Loopback) && !viaAddress.equals(v6Loopback))
+                            // 全局路由模式下，默认路由不经过VPN
+                            (isRouteViaZeroTier && !isDefaultRoute) 
+                            // 非全局路由模式下，保持原有逻辑
+                            || (!isRouteViaZeroTier && !viaAddress.equals(v4Loopback) && !viaAddress.equals(v6Loopback))
                     );
+
                     if (!isDisabledV6Route && shouldRouteToZerotier) {
                         builder.addRoute(viaAddress, targetPort);
                         Route route = new Route(viaAddress, targetPort);
@@ -982,10 +989,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         var networkConfig = network.getNetworkConfig();
         var virtualNetworkConfig = getVirtualNetworkConfig(network.getNetworkId());
         var dnsMode = DNSMode.fromInt(networkConfig.getDnsMode());
+        boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
 
         switch (dnsMode) {
             case NETWORK_DNS:
                 if (virtualNetworkConfig.getDns() == null) {
+                    // 若无网络DNS，但在全局路由模式下，添加可信DNS
+                    if (isRouteViaZeroTier) {
+                        addTrustedDNSServers(builder);
+                    }
                     return;
                 }
                 builder.addSearchDomain(virtualNetworkConfig.getDns().getDomain());
@@ -997,7 +1009,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         builder.addDnsServer(address);
                     }
                 }
+                
+                // 在全局路由模式下，额外添加可信DNS作为备用
+                if (isRouteViaZeroTier) {
+                    Log.i(TAG, "全局路由模式：添加可信DNS服务器");
+                    addTrustedDNSServers(builder);
+                }
                 break;
+                
             case CUSTOM_DNS:
                 for (var dnsServer : networkConfig.getDnsServers()) {
                     try {
@@ -1012,8 +1031,34 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     }
                 }
                 break;
+                
             default:
+                // 默认情况下，全局路由模式添加可信DNS
+                if (isRouteViaZeroTier) {
+                    Log.i(TAG, "默认DNS模式：添加可信DNS服务器");
+                    addTrustedDNSServers(builder);
+                }
                 break;
+        }
+    }
+    
+    /**
+     * 添加可信的DNS服务器，避免DNS污染
+     * @param builder VPN构建器
+     */
+    private void addTrustedDNSServers(VpnService.Builder builder) {
+        try {
+            // 添加Cloudflare的DNS
+            builder.addDnsServer(InetAddress.getByName("1.1.1.1"));
+            builder.addDnsServer(InetAddress.getByName("1.0.0.1"));
+            
+            // 添加Google的DNS
+            builder.addDnsServer(InetAddress.getByName("8.8.8.8"));
+            builder.addDnsServer(InetAddress.getByName("8.8.4.4"));
+            
+            Log.i(TAG, "已添加Cloudflare和Google可信DNS服务器");
+        } catch (Exception e) {
+            Log.e(TAG, "添加可信DNS服务器失败: " + e.getMessage(), e);
         }
     }
 
