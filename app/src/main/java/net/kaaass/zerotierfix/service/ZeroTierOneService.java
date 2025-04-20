@@ -1139,6 +1139,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 if (virtualNetworkConfig.getDns() == null) {
                     // 若无网络DNS，但在全局路由模式下，添加可信DNS
                     if (isRouteViaZeroTier) {
+                        LogUtil.i(TAG, "全局路由模式：添加可信DNS服务器");
                         addTrustedDNSServers(builder);
                     }
                     return;
@@ -1155,7 +1156,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 
                 // 在全局路由模式下，额外添加可信DNS作为备用
                 if (isRouteViaZeroTier) {
-                    Log.i(TAG, "全局路由模式：添加可信DNS服务器");
+                    LogUtil.i(TAG, "全局路由模式：添加可信DNS服务器");
                     addTrustedDNSServers(builder);
                 }
                 break;
@@ -1166,7 +1167,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         InetAddress byName = InetAddress.getByName(dnsServer.getNameserver());
                         if (byName instanceof Inet4Address) {
                             builder.addDnsServer(byName);
-                        } else if ((byName instanceof Inet6Address) && !this.disableIPv6) {
+                        } else if ((address instanceof Inet6Address) && !this.disableIPv6) {
                             builder.addDnsServer(byName);
                         }
                     } catch (Exception e) {
@@ -1178,7 +1179,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             default:
                 // 默认情况下，全局路由模式添加可信DNS
                 if (isRouteViaZeroTier) {
-                    Log.i(TAG, "默认DNS模式：添加可信DNS服务器");
+                    LogUtil.i(TAG, "默认DNS模式：添加可信DNS服务器");
                     addTrustedDNSServers(builder);
                 }
                 break;
@@ -1199,9 +1200,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             builder.addDnsServer(InetAddress.getByName("8.8.8.8"));
             builder.addDnsServer(InetAddress.getByName("8.8.4.4"));
             
-            Log.i(TAG, "已添加Cloudflare和Google可信DNS服务器");
+            LogUtil.i(TAG, "已添加Cloudflare和Google可信DNS服务器");
         } catch (Exception e) {
-            Log.e(TAG, "添加可信DNS服务器失败: " + e.getMessage(), e);
+            LogUtil.e(TAG, "添加可信DNS服务器失败: " + e.getMessage(), e);
         }
     }
 
