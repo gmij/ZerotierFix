@@ -882,12 +882,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 
                 // 大幅增强对本地连接的保护，避免VPN路由循环
                 // 1. 保护常用DNS查询连接
-                protectSocketConnection("8.8.8.8", 53);
-                protectSocketConnection("8.8.4.4", 53);
-                protectSocketConnection("114.114.114.114", 53);
-                protectSocketConnection("223.5.5.5", 53);
-                protectSocketConnection("1.1.1.1", 53);
-                protectSocketConnection("119.29.29.29", 53);
+                // protectSocketConnection("8.8.8.8", 53);
+                // protectSocketConnection("8.8.4.4", 53);
+                // protectSocketConnection("114.114.114.114", 53);
+                // protectSocketConnection("223.5.5.5", 53);
+                // protectSocketConnection("1.1.1.1", 53);
+                // protectSocketConnection("119.29.29.29", 53);
                 
                 // // 2. 保护关键Google服务
                 // protectSocketConnection("googleapis.com", 443);
@@ -1075,23 +1075,23 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 保护套接字连接，避免VPN路由循环
      */
     private void protectSocketConnection(String host, int port) {
-        try {
-            DatagramSocket socket = new DatagramSocket();
-            socket.connect(InetAddress.getByName(host), port);
-            boolean success = protect(socket);
-            LogUtil.i(TAG, "保护连接到 " + host + ":" + port + (success ? " 成功" : " 失败"));
-            socket.close();
+        // try {
+        //     DatagramSocket socket = new DatagramSocket();
+        //     socket.connect(InetAddress.getByName(host), port);
+        //     boolean success = protect(socket);
+        //     LogUtil.i(TAG, "保护连接到 " + host + ":" + port + (success ? " 成功" : " 失败"));
+        //     socket.close();
             
-            // 同时尝试保护TCP连接
-            Socket tcpSocket = new Socket();
-            tcpSocket.connect(new InetSocketAddress(host, port == 0 ? 80 : port), 500);
-            success = protect(tcpSocket);
-            LogUtil.i(TAG, "保护TCP连接到 " + host + ":" + (port == 0 ? 80 : port) + (success ? " 成功" : " 失败"));
-            tcpSocket.close();
-        } catch (Exception e) {
-            // 忽略连接错误，不是所有地址都能连接成功
-            LogUtil.d(TAG, "保护连接尝试: " + host + ":" + port + " - " + e.getMessage());
-        }
+        //     // 同时尝试保护TCP连接
+        //     Socket tcpSocket = new Socket();
+        //     tcpSocket.connect(new InetSocketAddress(host, port == 0 ? 80 : port), 500);
+        //     success = protect(tcpSocket);
+        //     LogUtil.i(TAG, "保护TCP连接到 " + host + ":" + (port == 0 ? 80 : port) + (success ? " 成功" : " 失败"));
+        //     tcpSocket.close();
+        // } catch (Exception e) {
+        //     // 忽略连接错误，不是所有地址都能连接成功
+        //     LogUtil.d(TAG, "保护连接尝试: " + host + ":" + port + " - " + e.getMessage());
+        // }
     }
     
     /**
@@ -1110,12 +1110,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             // }
             
             // 排除更多常见需要直连的应用
-            String[] commonDisallowedApps = {
-                "com.android.vending", // Google Play商店
-                "com.google.android.gms", // Google Play服务
-                "com.google.android.gsf", // Google服务框架
-                "com.android.providers.downloads", // 下载管理器
-            };
+            // String[] commonDisallowedApps = {
+            //     "com.android.vending", // Google Play商店
+            //     "com.google.android.gms", // Google Play服务
+            //     "com.google.android.gsf", // Google服务框架
+            //     "com.android.providers.downloads", // 下载管理器
+            // };
             
             // for (String app : commonDisallowedApps) {
             //     try {
@@ -1217,14 +1217,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         
         // 确保代理服务器的流量不通过VPN隧道
         InetAddress proxyAddr = InetAddress.getByName(proxyHost);
-        protectSocketConnection(proxyHost, proxyManager.getProxyPort());
+        // protectSocketConnection(proxyHost, proxyManager.getProxyPort());
         
         // 确保我们能访问代理服务器 - 排除代理服务器网络
         String proxyIp = proxyAddr.getHostAddress();
         if (proxyIp != null && proxyIp.contains(".")) {
             // 保护代理服务器所在的C段网络，确保能直接访问代理
             String proxySubnet = proxyIp.substring(0, proxyIp.lastIndexOf(".")) + ".0";
-            protectSocketConnection(proxySubnet, 0);
+            // protectSocketConnection(proxySubnet, 0);
             LogUtil.i(TAG, "保护代理服务器所在网段: " + proxySubnet);
         }
                 
