@@ -1167,7 +1167,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         InetAddress byName = InetAddress.getByName(dnsServer.getNameserver());
                         if (byName instanceof Inet4Address) {
                             builder.addDnsServer(byName);
-                        } else if ((address instanceof Inet6Address) && !this.disableIPv6) {
+                        } else if ((byName instanceof Inet6Address) && !this.disableIPv6) {
                             builder.addDnsServer(byName);
                         }
                     } catch (Exception e) {
