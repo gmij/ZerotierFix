@@ -11,7 +11,6 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.preference.PreferenceManager;
-import android.util.Log;
 import android.widget.Toast;
 
 import androidx.core.app.NotificationCompat;
@@ -58,7 +57,9 @@ import net.kaaass.zerotierfix.ui.NetworkListActivity;
 import net.kaaass.zerotierfix.util.Constants;
 import net.kaaass.zerotierfix.util.DatabaseUtils;
 import net.kaaass.zerotierfix.util.InetAddressUtils;
+import net.kaaass.zerotierfix.util.LogUtil;
 import net.kaaass.zerotierfix.util.NetworkInfoUtils;
+import net.kaaass.zerotierfix.util.ProxyManager;
 import net.kaaass.zerotierfix.util.StringUtils;
 
 import org.greenrobot.eventbus.EventBus;
@@ -72,8 +73,11 @@ import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -112,7 +116,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         @Override
         public void run() {
-            Log.d(ZeroTierOneService.TAG, "IPv4 Multicast Scanner Thread Started.");
+            LogUtil.d(ZeroTierOneService.TAG, "IPv4 Multicast Scanner Thread Started.");
             while (!isInterrupted()) {
                 try {
                     List<String> groups = NetworkInfoUtils.listMulticastGroupOnInterface("tun0", false);
@@ -130,10 +134,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                             }
                             ResultCode multicastSubscribe = ZeroTierOneService.this.node.multicastSubscribe(ZeroTierOneService.this.networkId, TunTapAdapter.multicastAddressToMAC(InetAddress.getByAddress(hexStringToByteArray)));
                             if (multicastSubscribe != ResultCode.RESULT_OK) {
-                                Log.e(ZeroTierOneService.TAG, "Error when calling multicastSubscribe: " + multicastSubscribe);
+                                LogUtil.e(ZeroTierOneService.TAG, "Error when calling multicastSubscribe: " + multicastSubscribe);
                             }
                         } catch (Exception e) {
-                            Log.e(ZeroTierOneService.TAG, e.toString(), e);
+                            LogUtil.e(ZeroTierOneService.TAG, e.toString(), e);
                         }
                     }
                     arrayList2.removeAll(new ArrayList<>(groups));
@@ -147,20 +151,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                             }
                             ResultCode multicastUnsubscribe = ZeroTierOneService.this.node.multicastUnsubscribe(ZeroTierOneService.this.networkId, TunTapAdapter.multicastAddressToMAC(InetAddress.getByAddress(hexStringToByteArray2)));
                             if (multicastUnsubscribe != ResultCode.RESULT_OK) {
-                                Log.e(ZeroTierOneService.TAG, "Error when calling multicastUnsubscribe: " + multicastUnsubscribe);
+                                LogUtil.e(ZeroTierOneService.TAG, "Error when calling multicastUnsubscribe: " + multicastUnsubscribe);
                             }
                         } catch (Exception e) {
-                            Log.e(ZeroTierOneService.TAG, e.toString(), e);
+                            LogUtil.e(ZeroTierOneService.TAG, e.toString(), e);
                         }
                     }
                     this.subscriptions = groups;
                     Thread.sleep(1000);
                 } catch (InterruptedException e) {
-                    Log.d(ZeroTierOneService.TAG, "V4 Multicast Scanner Thread Interrupted", e);
+                    LogUtil.e(ZeroTierOneService.TAG, "V4 Multicast Scanner Thread Interrupted", e);
                     break;
                 }
             }
-            Log.d(ZeroTierOneService.TAG, "IPv4 Multicast Scanner Thread Ended.");
+            LogUtil.d(ZeroTierOneService.TAG, "IPv4 Multicast Scanner Thread Ended.");
         }
     };
     private Thread v6MulticastScanner = new Thread() {
@@ -169,7 +173,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         @Override
         public void run() {
-            Log.d(ZeroTierOneService.TAG, "IPv6 Multicast Scanner Thread Started.");
+            LogUtil.d(ZeroTierOneService.TAG, "IPv6 Multicast Scanner Thread Started.");
             while (!isInterrupted()) {
                 try {
                     List<String> groups = NetworkInfoUtils.listMulticastGroupOnInterface("tun0", true);
@@ -181,10 +185,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         try {
                             ResultCode multicastSubscribe = ZeroTierOneService.this.node.multicastSubscribe(ZeroTierOneService.this.networkId, TunTapAdapter.multicastAddressToMAC(InetAddress.getByAddress(StringUtils.hexStringToBytes(str))));
                             if (multicastSubscribe != ResultCode.RESULT_OK) {
-                                Log.e(ZeroTierOneService.TAG, "Error when calling multicastSubscribe: " + multicastSubscribe);
+                                LogUtil.e(ZeroTierOneService.TAG, "Error when calling multicastSubscribe: " + multicastSubscribe);
                             }
                         } catch (Exception e) {
-                            Log.e(ZeroTierOneService.TAG, e.toString(), e);
+                            LogUtil.e(ZeroTierOneService.TAG, e.toString(), e);
                         }
                     }
                     arrayList2.removeAll(new ArrayList<>(groups));
@@ -192,20 +196,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         try {
                             ResultCode multicastUnsubscribe = ZeroTierOneService.this.node.multicastUnsubscribe(ZeroTierOneService.this.networkId, TunTapAdapter.multicastAddressToMAC(InetAddress.getByAddress(StringUtils.hexStringToBytes(str2))));
                             if (multicastUnsubscribe != ResultCode.RESULT_OK) {
-                                Log.e(ZeroTierOneService.TAG, "Error when calling multicastUnsubscribe: " + multicastUnsubscribe);
+                                LogUtil.e(ZeroTierOneService.TAG, "Error when calling multicastUnsubscribe: " + multicastUnsubscribe);
                             }
                         } catch (Exception e) {
-                            Log.e(ZeroTierOneService.TAG, e.toString(), e);
+                            LogUtil.e(ZeroTierOneService.TAG, e.toString(), e);
                         }
                     }
                     this.subscriptions = groups;
                     Thread.sleep(1000);
                 } catch (InterruptedException e) {
-                    Log.d(ZeroTierOneService.TAG, "V6 Multicast Scanner Thread Interrupted", e);
+                    LogUtil.e(ZeroTierOneService.TAG, "V6 Multicast Scanner Thread Interrupted", e);
                     break;
                 }
             }
-            Log.d(ZeroTierOneService.TAG, "IPv6 Multicast Scanner Thread Ended.");
+            LogUtil.d(ZeroTierOneService.TAG, "IPv6 Multicast Scanner Thread Ended.");
         }
     };
     private Thread vpnThread;
@@ -235,18 +239,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     private void logBindCount() {
-        Log.i(TAG, "Bind Count: " + this.bindCount);
+        LogUtil.i(TAG, "Bind Count: " + this.bindCount);
     }
 
     public IBinder onBind(Intent intent) {
-        Log.d(TAG, "Bound by: " + getPackageManager().getNameForUid(Binder.getCallingUid()));
+        LogUtil.d(TAG, "Bound by: " + getPackageManager().getNameForUid(Binder.getCallingUid()));
         this.bindCount++;
         logBindCount();
         return this.mBinder;
     }
 
     public boolean onUnbind(Intent intent) {
-        Log.d(TAG, "Unbound by: " + getPackageManager().getNameForUid(Binder.getCallingUid()));
+        LogUtil.d(TAG, "Unbound by: " + getPackageManager().getNameForUid(Binder.getCallingUid()));
         this.bindCount--;
         logBindCount();
         return false;
@@ -265,12 +269,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         long networkId;
-        Log.d(TAG, "onStartCommand");
+        LogUtil.d(TAG, "onStartCommand");
         if (startId == 3) {
-            Log.i(TAG, "Authorizing VPN");
+            LogUtil.i(TAG, "Authorizing VPN");
             return START_NOT_STICKY;
         } else if (intent == null) {
-            Log.e(TAG, "NULL intent.  Cannot start");
+            LogUtil.e(TAG, "NULL intent.  Cannot start");
             return START_NOT_STICKY;
         }
         this.mStartID = startId;
@@ -294,24 +298,24 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         .where(NetworkDao.Properties.LastActivated.eq(true))
                         .list();
                 if (lastActivatedNetworks == null || lastActivatedNetworks.isEmpty()) {
-                    Log.e(TAG, "Couldn't find last activated connection");
+                    LogUtil.e(TAG, "Couldn't find last activated connection");
                     return START_NOT_STICKY;
                 } else if (lastActivatedNetworks.size() > 1) {
-                    Log.e(TAG, "Multiple networks marked as last connected: " + lastActivatedNetworks.size());
+                    LogUtil.e(TAG, "Multiple networks marked as last connected: " + lastActivatedNetworks.size());
                     for (Network network : lastActivatedNetworks) {
-                        Log.e(TAG, "ID: " + Long.toHexString(network.getNetworkId()));
+                        LogUtil.e(TAG, "ID: " + Long.toHexString(network.getNetworkId()));
                     }
                     throw new IllegalStateException("Database is inconsistent");
                 } else {
                     networkId = lastActivatedNetworks.get(0).getNetworkId();
-                    Log.i(TAG, "Got Always On request for ZeroTier");
+                    LogUtil.i(TAG, "Got Always On request for ZeroTier");
                 }
             } finally {
                 DatabaseUtils.readLock.unlock();
             }
         }
         if (networkId == 0) {
-            Log.e(TAG, "Network ID not provided to service");
+            LogUtil.e(TAG, "Network ID not provided to service");
             stopSelf(startId);
             return START_NOT_STICKY;
         }
@@ -347,7 +351,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     this.svrSocket.bind(new InetSocketAddress(9994));
                 }
                 if (!protect(this.svrSocket)) {
-                    Log.e(TAG, "Error protecting UDP socket from feedback loop.");
+                    LogUtil.e(TAG, "Error protecting UDP socket from feedback loop.");
                 }
 
                 // 创建本地节点
@@ -361,9 +365,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     var result = this.node.init(dataStore, dataStore, this.udpCom, this, this.tunTapAdapter, this, null);
 
                     if (result == ResultCode.RESULT_OK) {
-                        Log.d(TAG, "ZeroTierOne Node Initialized");
+                        LogUtil.d(TAG, "ZeroTierOne Node Initialized");
                     } else {
-                        Log.e(TAG, "Error starting ZT1 Node: " + result);
+                        LogUtil.e(TAG, "Error starting ZT1 Node: " + result);
                         return START_NOT_STICKY;
                     }
                     this.onNodeStatusRequest(null);
@@ -413,7 +417,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     this.udpThread.start();
                 }
             } catch (Exception e) {
-                Log.e(TAG, e.toString(), e);
+                LogUtil.e(TAG, e.toString(), e);
                 return START_NOT_STICKY;
             }
         }
@@ -470,7 +474,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             try {
                 this.vpnSocket.close();
             } catch (Exception e) {
-                Log.e(TAG, "Error closing VPN socket: " + e, e);
+                LogUtil.e(TAG, "Error closing VPN socket: " + e, e);
             }
             this.vpnSocket = null;
         }
@@ -486,7 +490,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             this.notificationManager.cancel(ZT_NOTIFICATION_TAG);
         }
         if (!stopSelfResult(this.mStartID)) {
-            Log.e(TAG, "stopSelfResult() failed!");
+            LogUtil.e(TAG, "stopSelfResult() failed!");
         }
     }
 
@@ -497,7 +501,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 try {
                     this.vpnSocket.close();
                 } catch (Exception e) {
-                    Log.e(TAG, "Error closing VPN socket: " + e, e);
+                    LogUtil.e(TAG, "Error closing VPN socket: " + e, e);
                 }
                 this.vpnSocket = null;
             }
@@ -506,7 +510,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 this.eventBus.unregister(this);
             }
         } catch (Exception e) {
-            Log.e(TAG, e.toString(), e);
+            LogUtil.e(TAG, e.toString(), e);
         } finally {
             super.onDestroy();
         }
@@ -518,7 +522,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             try {
                 this.vpnSocket.close();
             } catch (Exception e) {
-                Log.e(TAG, "Error closing VPN socket: " + e, e);
+                LogUtil.e(TAG, "Error closing VPN socket: " + e, e);
             }
             this.vpnSocket = null;
         }
@@ -530,8 +534,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     public void run() {
-        Log.d(TAG, "ZeroTierOne Service Started");
-        Log.d(TAG, "This Node Address: " + com.zerotier.sdk.util.StringUtils.addressToString(this.node.address()));
+        LogUtil.d(TAG, "ZeroTierOne Service Started");
+        LogUtil.d(TAG, "This Node Address: " + com.zerotier.sdk.util.StringUtils.addressToString(this.node.address()));
         while (!Thread.interrupted()) {
             try {
                 // 在后台任务截止期前循环进行后台任务
@@ -545,7 +549,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         this.nextBackgroundTaskDeadline = newDeadline[0];
                     }
                     if (taskResult != ResultCode.RESULT_OK) {
-                        Log.e(TAG, "Error on processBackgroundTasks: " + taskResult.toString());
+                        LogUtil.e(TAG, "Error on processBackgroundTasks: " + taskResult.toString());
                         shutdown();
                     }
                 }
@@ -553,10 +557,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             } catch (InterruptedException ignored) {
                 break;
             } catch (Exception e) {
-                Log.e(TAG, e.toString(), e);
+                LogUtil.e(TAG, e.toString(), e);
             }
         }
-        Log.d(TAG, "ZeroTierOne Service Ended");
+        LogUtil.d(TAG, "ZeroTierOne Service Ended");
     }
 
     @Subscribe(threadMode = ThreadMode.POSTING)
@@ -579,7 +583,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     public void joinNetwork(long networkId) {
         if (this.node == null) {
-            Log.e(TAG, "Can't join network if ZeroTier isn't running");
+            LogUtil.e(TAG, "Can't join network if ZeroTier isn't running");
             return;
         }
         // 连接到新网络
@@ -597,7 +601,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     public void leaveNetwork(long networkId) {
         if (this.node == null) {
-            Log.e(TAG, "Can't leave network if ZeroTier isn't running");
+            LogUtil.e(TAG, "Can't leave network if ZeroTier isn't running");
             return;
         }
         var result = this.node.leave(networkId);
@@ -614,7 +618,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             try {
                 this.vpnSocket.close();
             } catch (Exception e) {
-                Log.e(TAG, "Error closing VPN socket", e);
+                LogUtil.e(TAG, "Error closing VPN socket", e);
             }
             this.vpnSocket = null;
         }
@@ -697,7 +701,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     @Override
     public void onEvent(Event event) {
-        Log.d(TAG, "Event: " + event.toString());
+        LogUtil.d(TAG, "Event: " + event.toString());
         // 更新节点状态
         if (this.node.isInited()) {
             this.eventBus.post(new NodeStatusEvent(this.node.status(), this.node.getVersion()));
@@ -706,7 +710,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
     @Override // com.zerotier.sdk.EventListener
     public void onTrace(String str) {
-        Log.d(TAG, "Trace: " + str);
+        LogUtil.d(TAG, "Trace: " + str);
     }
 
     /**
@@ -714,7 +718,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     @Override
     public int onNetworkConfigurationUpdated(long networkId, VirtualNetworkConfigOperation op, VirtualNetworkConfig config) {
-        Log.i(TAG, "Virtual Network Config Operation: " + op);
+        LogUtil.i(TAG, "Virtual Network Config Operation: " + op);
         DatabaseUtils.writeLock.lock();
         try {
             // 查找网络 ID 对应的配置
@@ -731,17 +735,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             // 根据当前网络状态确定更改配置的行为
             switch (op) {
                 case VIRTUAL_NETWORK_CONFIG_OPERATION_UP:
-                    Log.d(TAG, "Network Type: " + config.getType() + " Network Status: " + config.getStatus() + " Network Name: " + config.getName() + " ");
+                    LogUtil.d(TAG, "Network Type: " + config.getType() + " Network Status: " + config.getStatus() + " Network Name: " + config.getName() + " ");
                     // 将网络配置的更新交给第一次 Update
                     break;
                 case VIRTUAL_NETWORK_CONFIG_OPERATION_CONFIG_UPDATE:
-                    Log.i(TAG, "Network Config Update!");
+                    LogUtil.i(TAG, "Network Config Update!");
                     boolean isChanged = setVirtualNetworkConfigAndUpdateDatabase(network, config);
                     this.eventBus.post(new NetworkReconfigureEvent(isChanged, network, config));
                     break;
                 case VIRTUAL_NETWORK_CONFIG_OPERATION_DOWN:
                 case VIRTUAL_NETWORK_CONFIG_OPERATION_DESTROY:
-                    Log.d(TAG, "Network Down!");
+                    LogUtil.d(TAG, "Network Down!");
                     clearVirtualNetworkConfig(networkId);
                     break;
             }
@@ -771,7 +775,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             try {
                 this.vpnSocket.close();
             } catch (Exception e) {
-                Log.e(TAG, "Error closing VPN socket", e);
+                LogUtil.e(TAG, "Error closing VPN socket", e);
             }
             this.vpnSocket = null;
         }
@@ -803,7 +807,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 this.in.close();
                 this.out.close();
             } catch (Exception e) {
-                Log.e(TAG, "Error closing VPN socket: " + e, e);
+                LogUtil.e(TAG, "Error closing VPN socket: " + e, e);
             }
             this.vpnSocket = null;
             this.in = null;
@@ -811,15 +815,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
 
         // 配置 VPN
-        Log.i(TAG, "Configuring VpnService.Builder");
+        LogUtil.i(TAG, "Configuring VpnService.Builder");
         var builder = new VpnService.Builder();
         var assignedAddresses = virtualNetworkConfig.getAssignedAddresses();
-        Log.i(TAG, "address length: " + assignedAddresses.length);
+        LogUtil.i(TAG, "address length: " + assignedAddresses.length);
         boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
 
         // 遍历 ZT 网络中当前设备的 IP 地址，组播配置
         for (var vpnAddress : assignedAddresses) {
-            Log.d(TAG, "Adding VPN Address: " + vpnAddress.getAddress()
+            LogUtil.d(TAG, "Adding VPN Address: " + vpnAddress.getAddress()
                     + " Mac: " + com.zerotier.sdk.util.StringUtils.macAddressToString(virtualNetworkConfig.getMac()));
             byte[] rawAddress = vpnAddress.getAddress().getAddress();
 
@@ -828,7 +832,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 var port = vpnAddress.getPort();
                 var route = InetAddressUtils.addressToRoute(address, port);
                 if (route == null) {
-                    Log.e(TAG, "NULL route calculated!");
+                    LogUtil.e(TAG, "NULL route calculated!");
                     continue;
                 }
 
@@ -850,13 +854,97 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 // 订阅组播并添加至 TUN TAP 路由
                 var result = this.node.multicastSubscribe(networkId, multicastGroup, multicastAdi);
                 if (result != ResultCode.RESULT_OK) {
-                    Log.e(TAG, "Error joining multicast group");
+                    LogUtil.e(TAG, "Error joining multicast group");
                 } else {
-                    Log.d(TAG, "Joined multicast group");
+                    LogUtil.d(TAG, "Joined multicast group");
                 }
                 builder.addAddress(address, port);
                 builder.addRoute(route, port);
                 this.tunTapAdapter.addRouteAndNetwork(new Route(route, port), networkId);
+            }
+        }
+
+        // 如果启用了全局路由，添加默认路由(0.0.0.0/0 和 ::/0)
+        if (isRouteViaZeroTier) {
+            try {
+                // 检查是否使用代理
+                var proxyManager = ProxyManager.getInstance(this);
+                boolean useProxy = proxyManager.isProxyConfigValid();
+                
+                if (useProxy) {
+                    // 使用代理服务器，记录日志
+                    LogUtil.i(TAG, "全局路由模式：使用代理服务器 " + proxyManager.getProxyUrl());
+                    configureProxyRouting(builder, proxyManager);
+                } else {
+                    // 常规ZeroTier全局路由，不使用代理
+                    configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses);
+                }
+                
+                // 大幅增强对本地连接的保护，避免VPN路由循环
+                // 1. 保护常用DNS查询连接
+                protectSocketConnection("8.8.8.8", 53);
+                protectSocketConnection("8.8.4.4", 53);
+                protectSocketConnection("114.114.114.114", 53);
+                protectSocketConnection("223.5.5.5", 53);
+                protectSocketConnection("1.1.1.1", 53);
+                protectSocketConnection("119.29.29.29", 53);
+                
+                // // 2. 保护关键Google服务
+                // protectSocketConnection("googleapis.com", 443);
+                // protectSocketConnection("google.com", 443);
+                
+                // // 3. 保护局域网连接 - 更完整的方式
+                // String[] commonPrivateNetworks = {
+                //     "10.0.0.0", "172.16.0.0", "192.168.0.0", "127.0.0.0" 
+                // };
+                // for (String privateNet : commonPrivateNetworks) {
+                //     protectSocketConnection(privateNet, 0);
+                //     LogUtil.i(TAG, "保护私有网络: " + privateNet);
+                // }
+                
+                try {
+                    NetworkInterface[] networkInterfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+                            .toArray(new NetworkInterface[0]);
+                    for (NetworkInterface networkInterface : networkInterfaces) {
+                        if (networkInterface.isUp() && !networkInterface.isLoopback() && 
+                                !networkInterface.getName().equals("tun0") && 
+                                !networkInterface.getName().startsWith("zt")) {
+                            for (InetAddress address : Collections.list(networkInterface.getInetAddresses())) {
+                                if (address instanceof Inet4Address) {
+                                    // 保护到局域网的路由
+                                    String ip = address.getHostAddress();
+                                    if (ip != null && ip.contains(".")) {
+                                        String subnet = ip.substring(0, ip.lastIndexOf(".")) + ".0";
+                                        protectSocketConnection(subnet, 0);
+                                        LogUtil.i(TAG, "保护局域网连接: " + subnet);
+                                        
+                                        // 保护整个C类网络
+                                        if (ip.indexOf(".") > 0) {
+                                            String classC = ip.substring(0, ip.indexOf(".")) + ".0.0.0";
+                                            protectSocketConnection(classC, 0);
+                                            LogUtil.i(TAG, "保护C类网络: " + classC);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    LogUtil.e(TAG, "保护局域网连接时出错: " + e.getMessage());
+                }
+                
+                // 添加IPv6全局路由 (::/0)，如果IPv6未禁用
+                if (!this.disableIPv6) {
+                    if (useProxy) {
+                        // 当使用代理时，如果代理支持IPv6，添加IPv6路由
+                        configureProxyIPv6Routing(builder, proxyManager);
+                    } else {
+                        configureDirectIPv6Routing(builder, virtualNetworkConfig, assignedAddresses);
+                    }
+                }
+                
+            } catch (Exception e) {
+                LogUtil.e(TAG, "添加默认路由时出错: " + e.getMessage(), e);
             }
         }
 
@@ -901,32 +989,27 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return false;
         }
 
+        // 配置DNS和MTU
         if (Build.VERSION.SDK_INT >= 29) {
             builder.setMetered(false);
         }
+        
+        // 增强DNS服务器配置
         addDNSServers(builder, network);
+        
+        // 配置允许绕过的APP包
+        configureAllowedDisallowedApps(builder, isRouteViaZeroTier);
 
         // 配置 MTU
         int mtu = virtualNetworkConfig.getMtu();
-        Log.i(TAG, "MTU from Network Config: " + mtu);
+        LogUtil.i(TAG, "MTU from Network Config: " + mtu);
         if (mtu == 0) {
             mtu = 2800;
         }
-        Log.i(TAG, "MTU Set: " + mtu);
+        LogUtil.i(TAG, "MTU Set: " + mtu);
         builder.setMtu(mtu);
 
         builder.setSession(Constants.VPN_SESSION_NAME);
-
-        // 设置部分 APP 不经过 VPN
-        if (!isRouteViaZeroTier && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            for (var app : DISALLOWED_APPS) {
-                try {
-                    builder.addDisallowedApplication(app);
-                } catch (Exception e3) {
-                    Log.e(TAG, "Cannot disallow app", e3);
-                }
-            }
-        }
 
         // 建立 VPN 连接
         this.vpnSocket = builder.establish();
@@ -971,7 +1054,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 .setColor(ContextCompat.getColor(getApplicationContext(), R.color.zerotier_orange))
                 .setContentIntent(pendingIntent).build();
         this.notificationManager.notify(ZT_NOTIFICATION_TAG, notification);
-        Log.i(TAG, "ZeroTier One Connected");
+        LogUtil.i(TAG, "ZeroTier One Connected");
+
+        // VPN连接成功后，执行traceroute到google.com，记录路由跳点
+        executeTraceroute("google.com");
 
         // 旧版本 Android 多播处理
         if (Build.VERSION.SDK_INT < 29) {
@@ -983,6 +1069,63 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
         return true;
+    }
+    
+    /**
+     * 保护套接字连接，避免VPN路由循环
+     */
+    private void protectSocketConnection(String host, int port) {
+        try {
+            DatagramSocket socket = new DatagramSocket();
+            socket.connect(InetAddress.getByName(host), port);
+            boolean success = protect(socket);
+            LogUtil.i(TAG, "保护连接到 " + host + ":" + port + (success ? " 成功" : " 失败"));
+            socket.close();
+            
+            // 同时尝试保护TCP连接
+            Socket tcpSocket = new Socket();
+            tcpSocket.connect(new InetSocketAddress(host, port == 0 ? 80 : port), 500);
+            success = protect(tcpSocket);
+            LogUtil.i(TAG, "保护TCP连接到 " + host + ":" + (port == 0 ? 80 : port) + (success ? " 成功" : " 失败"));
+            tcpSocket.close();
+        } catch (Exception e) {
+            // 忽略连接错误，不是所有地址都能连接成功
+            LogUtil.d(TAG, "保护连接尝试: " + host + ":" + port + " - " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 配置允许/不允许的应用
+     */
+    private void configureAllowedDisallowedApps(VpnService.Builder builder, boolean isRouteViaZeroTier) {
+        if (!isRouteViaZeroTier && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            // 设置部分 APP 不经过 VPN
+            // for (var app : DISALLOWED_APPS) {
+            //     try {
+            //         builder.addDisallowedApplication(app);
+            //         LogUtil.d(TAG, "添加排除应用: " + app);
+            //     } catch (Exception e3) {
+            //         LogUtil.e(TAG, "无法排除应用 " + app, e3);
+            //     }
+            // }
+            
+            // 排除更多常见需要直连的应用
+            String[] commonDisallowedApps = {
+                "com.android.vending", // Google Play商店
+                "com.google.android.gms", // Google Play服务
+                "com.google.android.gsf", // Google服务框架
+                "com.android.providers.downloads", // 下载管理器
+            };
+            
+            // for (String app : commonDisallowedApps) {
+            //     try {
+            //         builder.addDisallowedApplication(app);
+            //         LogUtil.d(TAG, "添加排除应用: " + app);
+            //     } catch (Exception e) {
+            //         // 可能应用不存在，忽略错误
+            //     }
+            // }
+        }
     }
 
     private void addDNSServers(VpnService.Builder builder, Network network) {
@@ -1027,7 +1170,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                             builder.addDnsServer(byName);
                         }
                     } catch (Exception e) {
-                        Log.e(TAG, "Exception parsing DNS server: " + e, e);
+                        LogUtil.e(TAG, "Exception parsing DNS server: " + e, e);
                     }
                 }
                 break;
@@ -1063,17 +1206,167 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     /**
+     * 配置使用代理服务器的IPv4路由
+     * @param builder VPN构建器
+     * @param proxyManager 代理管理器
+     */
+    private void configureProxyRouting(VpnService.Builder builder, ProxyManager proxyManager) throws Exception {
+        // 添加代理服务器地址
+        String proxyHost = proxyManager.getProxyHost();
+        
+        // 确保代理服务器的流量不通过VPN隧道
+        InetAddress proxyAddr = InetAddress.getByName(proxyHost);
+        protectSocketConnection(proxyHost, proxyManager.getProxyPort());
+        
+        // 确保我们能访问代理服务器 - 排除代理服务器网络
+        String proxyIp = proxyAddr.getHostAddress();
+        if (proxyIp != null && proxyIp.contains(".")) {
+            // 保护代理服务器所在的C段网络，确保能直接访问代理
+            String proxySubnet = proxyIp.substring(0, proxyIp.lastIndexOf(".")) + ".0";
+            protectSocketConnection(proxySubnet, 0);
+            LogUtil.i(TAG, "保护代理服务器所在网段: " + proxySubnet);
+        }
+                
+        // 添加全局路由(0.0.0.0/0)，所有IPv4流量将通过VPN接口
+        InetAddress v4DefaultRoute = InetAddress.getByName("0.0.0.0");
+        builder.addRoute(v4DefaultRoute, 0);
+        LogUtil.i(TAG, "添加IPv4全局路由 0.0.0.0/0 - 流量将通过代理: " + proxyManager.getProxyUrl());
+        
+        // 创建代理处理器并配置到TunTapAdapter
+        try {
+            // 检查代理配置有效性
+            if (!proxyManager.isProxyConfigValid()) {
+                LogUtil.e(TAG, "代理配置无效，无法启用代理");
+                return;
+            }
+            
+            // 创建代理处理器
+            var proxyHandler = new net.kaaass.zerotierfix.proxy.ProxyHandler(proxyManager);
+            
+            // 设置到TunTapAdapter
+            if (this.tunTapAdapter != null) {
+                this.tunTapAdapter.setProxyHandler(proxyHandler);
+                LogUtil.i(TAG, "代理处理器已设置，类型: " + proxyManager.getProxyTypeString());
+            } else {
+                LogUtil.e(TAG, "无法设置代理处理器：TunTapAdapter为空");
+            }
+        } catch (Exception e) {
+            LogUtil.e(TAG, "初始化代理处理器失败: " + e.getMessage(), e);
+        }
+        
+        // 在应用中记录代理设置
+        LogUtil.logNetworkEvent("启用代理", proxyManager.getProxyTypeString() + " " + proxyHost + ":" + proxyManager.getProxyPort());
+    }
+
+    /**
+     * 配置使用代理服务器的IPv6路由
+     * @param builder VPN构建器
+     * @param proxyManager 代理管理器
+     */
+    private void configureProxyIPv6Routing(VpnService.Builder builder, ProxyManager proxyManager) throws Exception {
+        // 大多数SOCKS5代理都支持IPv6，但HTTP代理可能不支持
+        if (proxyManager.getProxyType() == Constants.PROXY_TYPE_SOCKS5) {
+            InetAddress v6DefaultRoute = InetAddress.getByName("::");
+            builder.addRoute(v6DefaultRoute, 0);
+            LogUtil.i(TAG, "添加IPv6全局路由 ::/0 - 流量将通过SOCKS5代理");
+        } else {
+            LogUtil.i(TAG, "HTTP代理可能不支持IPv6，跳过IPv6全局路由配置");
+        }
+    }
+    
+    /**
+     * 配置直接通过ZeroTier的IPv4全局路由(不使用代理)
+     */
+    private void configureDirectGlobalRouting(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig, 
+                                             InetSocketAddress[] assignedAddresses) throws Exception {
+        // 获取ZeroTier网络中的网关
+        InetAddress zerotierGateway = null;
+        
+        // 1. 尝试从路由配置中找到网关
+        if (virtualNetworkConfig.getRoutes().length > 0) {
+            for (var routeConfig : virtualNetworkConfig.getRoutes()) {
+                var via = routeConfig.getVia();
+                if (via != null) {
+                    zerotierGateway = via.getAddress();
+                    LogUtil.i(TAG, "找到ZeroTier网关: " + zerotierGateway.getHostAddress());
+                    break;
+                }
+            }
+        }
+        
+        // 2. 如果没有明确的网关，尝试使用分配给本设备的第一个IP作为默认网关
+        if (zerotierGateway == null && assignedAddresses.length > 0) {
+            for (var addr : assignedAddresses) {
+                if (addr.getAddress() instanceof Inet4Address) {
+                    // 尝试从IPv4地址推断网关 (通常是网络的第一个地址)
+                    byte[] ipBytes = addr.getAddress().getAddress();
+                    ipBytes[3] = 1; // 将最后一位改为1，通常是网关
+                    zerotierGateway = InetAddress.getByAddress(ipBytes);
+                    LogUtil.i(TAG, "推断的网关地址: " + zerotierGateway.getHostAddress());
+                    break;
+                }
+            }
+        }
+        
+        // 添加IPv4全局路由 (0.0.0.0/0)
+        InetAddress v4DefaultRoute = InetAddress.getByName("0.0.0.0");
+        builder.addRoute(v4DefaultRoute, 0);
+        LogUtil.i(TAG, "添加IPv4全局路由 0.0.0.0/0" + (zerotierGateway != null ? 
+                " 网关: " + zerotierGateway.getHostAddress() : " 无指定网关"));
+        
+        // 添加路由到TunTap，如果有网关则设置网关
+        Route defaultRoute = new Route(v4DefaultRoute, 0);
+        if (zerotierGateway != null) {
+            defaultRoute.setGateway(zerotierGateway);
+        }
+        this.tunTapAdapter.addRouteAndNetwork(defaultRoute, networkId);
+        LogUtil.i(TAG, "全局路由模式：直接通过ZeroTier网络");
+    }
+    
+    /**
+     * 配置直接通过ZeroTier的IPv6全局路由(不使用代理)
+     */
+    private void configureDirectIPv6Routing(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig,
+                                           InetSocketAddress[] assignedAddresses) throws Exception {
+        InetAddress v6DefaultRoute = InetAddress.getByName("::");
+        builder.addRoute(v6DefaultRoute, 0);
+        LogUtil.i(TAG, "添加IPv6全局路由 ::/0");
+        
+        // 创建IPv6路由
+        Route ipv6Route = new Route(v6DefaultRoute, 0);
+        
+        // 尝试找到IPv6网关
+        if (assignedAddresses.length > 0) {
+            for (var addr : assignedAddresses) {
+                if (addr.getAddress() instanceof Inet6Address) {
+                    // 推断IPv6网关
+                    ipv6Route.setGateway(addr.getAddress());
+                    LogUtil.i(TAG, "IPv6推断网关: " + addr.getAddress().getHostAddress());
+                    break;
+                }
+            }
+        }
+        
+        this.tunTapAdapter.addRouteAndNetwork(ipv6Route, networkId);
+        
+        // 保护IPv6连接
+        protectSocketConnection("2001:4860:4860::8888", 53);
+        protectSocketConnection("2400:3200::1", 53);
+        protectSocketConnection("2606:4700:4700::1111", 53);
+    }
+
+    /**
      * 入轨事件
      */
     @Subscribe
     public void onOrbitMoonEvent(OrbitMoonEvent event) {
         if (this.node == null) {
-            Log.e(TAG, "Can't orbit network if ZeroTier isn't running");
+            LogUtil.e(TAG, "Can't orbit network if ZeroTier isn't running");
             return;
         }
         // 入轨
         for (MoonOrbit moonOrbit : event.getMoonOrbits()) {
-            Log.i(TAG, "Orbiting moon: " + Long.toHexString(moonOrbit.getMoonWorldId()));
+            LogUtil.i(TAG, "Orbiting moon: " + Long.toHexString(moonOrbit.getMoonWorldId()));
             this.orbitNetwork(moonOrbit.getMoonWorldId(), moonOrbit.getMoonSeed());
         }
     }
@@ -1086,15 +1379,76 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     public void orbitNetwork(Long moonWorldId, Long moonSeed) {
         if (this.node == null) {
-            Log.e(TAG, "Can't orbit network if ZeroTier isn't running");
+            LogUtil.e(TAG, "Can't orbit network if ZeroTier isn't running");
             return;
         }
         // 入轨
         ResultCode result = this.node.orbit(moonWorldId, moonSeed);
         if (result != ResultCode.RESULT_OK) {
-            Log.e(TAG, "Failed to orbit " + Long.toHexString(moonWorldId));
+            LogUtil.e(TAG, "Failed to orbit " + Long.toHexString(moonWorldId));
             this.eventBus.post(new ErrorEvent(result));
         }
+    }
+
+    /**
+     * 执行traceroute命令到指定目标，并将结果输出到日志中
+     * @param target 目标主机
+     */
+    private void executeTraceroute(String target) {
+        new Thread(() -> {
+            LogUtil.i(TAG, "开始执行traceroute到 " + target);
+            try {
+                // 使用ProcessBuilder执行traceroute命令
+                ProcessBuilder processBuilder = new ProcessBuilder("traceroute", "-n", target);
+                processBuilder.redirectErrorStream(true);
+                Process process = processBuilder.start();
+                
+                // 读取命令输出
+                try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(process.getInputStream()))) {
+                    
+                    StringBuilder traceResult = new StringBuilder();
+                    traceResult.append("Traceroute到 ").append(target).append(" 的跳点路径：\n");
+                    
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        traceResult.append(line).append("\n");
+                    }
+                    
+                    // 输出完整的traceroute结果到日志
+                    LogUtil.i(TAG, traceResult.toString());
+                }
+                
+                // 等待进程完成
+                int exitCode = process.waitFor();
+                if (exitCode != 0) {
+                    LogUtil.e(TAG, "Traceroute命令执行失败，退出码: " + exitCode);
+                }
+            } catch (Exception e) {
+                LogUtil.e(TAG, "执行traceroute过程中出错: " + e.getMessage(), e);
+                
+                // 尝试使用备用方法 - 通过ping来模拟简单的路由跟踪
+                try {
+                    LogUtil.i(TAG, "尝试使用ping作为备选方案...");
+                    Process pingProcess = Runtime.getRuntime().exec("ping -c 3 " + target);
+                    try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                            new java.io.InputStreamReader(pingProcess.getInputStream()))) {
+                        
+                        StringBuilder pingResult = new StringBuilder();
+                        pingResult.append("Ping到 ").append(target).append(" 的结果：\n");
+                        
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            pingResult.append(line).append("\n");
+                        }
+                        
+                        LogUtil.i(TAG, pingResult.toString());
+                    }
+                } catch (Exception ex) {
+                    LogUtil.e(TAG, "执行ping也失败了: " + ex.getMessage());
+                }
+            }
+        }, "TracerouteThread").start();
     }
 
     public class ZeroTierBinder extends Binder {

@@ -10,6 +10,7 @@ import com.zerotier.sdk.VirtualNetworkConfig;
 import com.zerotier.sdk.VirtualNetworkFrameListener;
 import com.zerotier.sdk.util.StringUtils;
 
+import net.kaaass.zerotierfix.proxy.ProxyHandler;
 import net.kaaass.zerotierfix.util.DebugLog;
 import net.kaaass.zerotierfix.util.IPPacketUtils;
 import net.kaaass.zerotierfix.util.InetAddressUtils;
@@ -33,6 +34,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private static final int ARP_PACKET = 2054;
     private static final int IPV4_PACKET = 2048;
     private static final int IPV6_PACKET = 34525;
+    private static final int TCP_PROTOCOL = 6;
+    private static final int UDP_PROTOCOL = 17;
+
     private final HashMap<Route, Long> routeMap = new HashMap<>();
     private final long networkId;
     private final ZeroTierOneService ztService;
@@ -44,9 +48,68 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private Thread receiveThread;
     private ParcelFileDescriptor vpnSocket;
 
+    // 代理处理相关
+    private ProxyHandler proxyHandler;
+    private boolean useProxy = false;
+
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
         this.ztService = zeroTierOneService;
         this.networkId = j;
+    }
+
+    /**
+     * 设置代理处理器
+     *
+     * @param proxyHandler 代理处理器实例
+     */
+    public void setProxyHandler(ProxyHandler proxyHandler) {
+        this.proxyHandler = proxyHandler;
+        this.useProxy = (proxyHandler != null);
+        Log.i(TAG, "代理模式 " + (useProxy ? "已启用" : "未启用"));
+    }
+
+    /**
+     * 判断是否为TCP数据包
+     */
+    private boolean isTcpPacket(byte[] data) {
+        if (data.length < 20) { // 至少需要一个IP头部
+            return false;
+        }
+
+        // 获取IP版本
+        int version = (data[0] >> 4) & 0xF;
+
+        if (version == 4) { // IPv4
+            // 协议字段在第9字节
+            return data[9] == TCP_PROTOCOL;
+        } else if (version == 6) { // IPv6
+            // IPv6的下一个头部字段在第6字节
+            return data[6] == TCP_PROTOCOL;
+        }
+
+        return false;
+    }
+
+    /**
+     * 尝试通过代理发送数据包
+     *
+     * @return true如果数据包已通过代理发送，false表示未处理
+     */
+    private boolean trySendViaProxy(byte[] packetData, InetAddress sourceIP, InetAddress destIP) {
+        if (!useProxy || proxyHandler == null) {
+            return false;
+        }
+
+        try {
+            // 判断是TCP还是UDP
+            boolean isTCP = isTcpPacket(packetData);
+
+            // 使用代理处理器发送数据包
+            return proxyHandler.sendPacketViaProxy(packetData, sourceIP, destIP, isTCP);
+        } catch (Exception e) {
+            Log.e(TAG, "代理转发数据包失败: " + e.getMessage(), e);
+            return false;
+        }
     }
 
     public static long multicastAddressToMAC(InetAddress inetAddress) {
@@ -181,6 +244,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             Log.e(TAG, "sourceAddress is null");
             return;
         }
+
+        // 尝试通过代理发送数据包
+        if (trySendViaProxy(packetData, sourceIP, destIP)) {
+            Log.d(TAG, "Packet sent via proxy");
+            return;
+        }
+
         if (isIPv4Multicast(destIP)) {
             var result = this.node.multicastSubscribe(this.networkId, multicastAddressToMAC(destIP));
             if (result != ResultCode.RESULT_OK) {
@@ -194,11 +264,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         var gateway = route != null ? route.getGateway() : null;
 
         // 查找当前节点的 v4 地址
-        var ztAddresses = virtualNetworkConfig.getAssignedAddresses();
+        InetSocketAddress[] ztAddresses = virtualNetworkConfig.getAssignedAddresses();
         InetAddress localV4Address = null;
         int cidr = 0;
 
-        for (var address : ztAddresses) {
+        int addressCount = ztAddresses.length;
+        for (int i = 0; i < addressCount; i++) {
+            InetSocketAddress address = ztAddresses[i];
             if (address.getAddress() instanceof Inet4Address) {
                 localV4Address = address.getAddress();
                 cidr = address.getPort();
@@ -262,6 +334,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             Log.e(TAG, "sourceAddress is null");
             return;
         }
+
+        // 尝试通过代理发送数据包
+        if (trySendViaProxy(packetData, sourceIP, destIP)) {
+            Log.d(TAG, "Packet sent via proxy");
+            return;
+        }
+
         if (this.isIPv6Multicast(destIP)) {
             var result = this.node.multicastSubscribe(this.networkId, multicastAddressToMAC(destIP));
             if (result != ResultCode.RESULT_OK) {
@@ -270,15 +349,16 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         }
         var route = routeForDestination(destIP);
         var gateway = route != null ? route.getGateway() : null;
-
         // 查找当前节点的 v6 地址
-        var ztAddresses = virtualNetworkConfig.getAssignedAddresses();
-        InetAddress localV4Address = null;
+        InetSocketAddress[] ztAddresses = virtualNetworkConfig.getAssignedAddresses();
+        InetAddress localV6Address = null;
         int cidr = 0;
 
-        for (var address : ztAddresses) {
+        int addressCount = ztAddresses.length;
+        for (int i = 0; i < addressCount; i++) {
+            InetSocketAddress address = ztAddresses[i];
             if (address.getAddress() instanceof Inet6Address) {
-                localV4Address = address.getAddress();
+                localV6Address = address.getAddress();
                 cidr = address.getPort();
                 break;
             }
@@ -289,7 +369,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         if (gateway != null && !Objects.equals(destRoute, sourceRoute)) {
             destIP = gateway;
         }
-        if (localV4Address == null) {
+        if (localV6Address == null) {
             Log.e(TAG, "Couldn't determine local address");
             return;
         }

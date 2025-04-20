@@ -7,6 +7,9 @@
         android:id="@+id/menu_item_orbit"
         android:title="@string/menu_orbit" />
     <item
+        android:id="@+id/menu_item_logs"
+        android:title="@string/menu_logs" />
+    <item
         android:id="@+id/menu_item_settings"
         android:title="@string/settings" />
 </menu>

@@ -51,6 +51,9 @@
         <activity
             android:name=".ui.PeerListActivity"
             android:label="@string/peer_list" />
+        <activity
+            android:name=".ui.LogsActivity"
+            android:label="@string/logs_title" />
 
         <receiver
             android:name=".service.StartupReceiver"

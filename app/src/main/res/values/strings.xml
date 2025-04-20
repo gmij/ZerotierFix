@@ -70,6 +70,7 @@
     <string name="toast_mobile_data">Currently using mobile data.  Enable \"Use Cellular Data\" in order to start ZeroTier.</string>
     <string name="menu_peers">Peers</string>
     <string name="menu_orbit">Orbit</string>
+    <string name="menu_logs">Logs</string>
     <string name="enabled">Enabled</string>
     <string name="disabled">Disabled</string>
     <string name="moon_world_id">Moon World ID:</string>
@@ -153,4 +154,25 @@
     <string name="dialog_no_notification_alert_title">Notification Permission Not Granted</string>
     <string name="open_notification_settings">Goto notification settings</string>
     <string name="dont_show_again">Don\'t show again</string>
+    <string name="logs_activity_title">Application Logs</string>
+    <string name="logs_empty">No logs available</string>
+    <string name="logs_copy">Copy logs</string>
+    <string name="logs_clear">Clear logs</string>
+    <string name="logs_share">Share logs</string>
+    <string name="logs_copied">Logs copied to clipboard</string>
+    <string name="logs_cleared">Logs cleared</string>
+    <string name="logs_title">Application Logs</string>
+    <string name="menu_refresh">Refresh</string>
+    <string name="menu_clear">Clear</string>
+    <string name="no_logs_found">No logs found</string>
+
+    <!-- 代理设置相关字符串 -->
+    <string name="proxy_settings">Proxy Settings</string>
+    <string name="proxy_enable">Enable Proxy</string>
+    <string name="proxy_enable_summary">Use proxy server when global routing is enabled</string>
+    <string name="proxy_type">Proxy Type</string>
+    <string name="proxy_host">Proxy Host</string>
+    <string name="proxy_port">Proxy Port</string>
+    <string name="proxy_username">Username</string>
+    <string name="proxy_password">Password</string>
 </resources>

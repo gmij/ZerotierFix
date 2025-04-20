@@ -33,6 +33,11 @@ public class DataStore implements DataStoreGetListener, DataStorePutListener {
 
     @Override
     public int onDataStorePut(String name, byte[] buffer, boolean secure) {
+        if (name == null || buffer == null) {
+            Log.e(TAG, "写入文件时参数为空: " + (name == null ? "文件名为空" : "缓冲区为空"));
+            return -3;
+        }
+
         Log.d(TAG, "Writing File: " + name + ", to: " + this.context.getFilesDir());
         // 保护自定义 Planet 文件
         if (hookPlanetFile(name)) {
@@ -40,91 +45,152 @@ public class DataStore implements DataStoreGetListener, DataStorePutListener {
         }
         try {
             if (name.contains("/")) {
-                File file = new File(this.context.getFilesDir(), name.substring(0, name.lastIndexOf('/')));
-                if (!file.exists()) {
-                    file.mkdirs();
+                // 处理路径中的 ".." 和 "." 避免路径遍历漏洞
+                if (name.contains("..")) {
+                    Log.e(TAG, "文件路径不安全: " + name);
+                    return -3;
                 }
-                FileOutputStream fileOutputStream = new FileOutputStream(new File(file, name.substring(name.lastIndexOf('/') + 1)));
-                fileOutputStream.write(buffer);
-                fileOutputStream.flush();
-                fileOutputStream.close();
+                
+                // 创建目录
+                File directory = new File(this.context.getFilesDir(), name.substring(0, name.lastIndexOf('/')));
+                if (!directory.exists()) {
+                    boolean created = directory.mkdirs();
+                    if (!created) {
+                        Log.e(TAG, "无法创建目录: " + directory.getAbsolutePath());
+                        return -4;
+                    }
+                }
+                
+                // 写入文件
+                File targetFile = new File(directory, name.substring(name.lastIndexOf('/') + 1));
+                try (FileOutputStream fileOutputStream = new FileOutputStream(targetFile)) {
+                    fileOutputStream.write(buffer);
+                    fileOutputStream.flush();
+                }
+                return 0;
+            } else {
+                // 写入到应用私有存储区
+                try (FileOutputStream openFileOutput = this.context.openFileOutput(name, 0)) {
+                    openFileOutput.write(buffer);
+                    openFileOutput.flush();
+                }
                 return 0;
             }
-            FileOutputStream openFileOutput = this.context.openFileOutput(name, 0);
-            openFileOutput.write(buffer);
-            openFileOutput.flush();
-            openFileOutput.close();
-            return 0;
         } catch (FileNotFoundException e) {
-            e.printStackTrace();
+            Log.e(TAG, "文件未找到: " + name, e);
             return -1;
         } catch (IOException e2) {
-            StringWriter stringWriter = new StringWriter();
-            e2.printStackTrace(new PrintWriter(stringWriter));
-            Log.e(TAG, stringWriter.toString());
+            Log.e(TAG, "IO异常: " + name, e2);
             return -2;
-        } catch (IllegalArgumentException e3) {
-            StringWriter stringWriter2 = new StringWriter();
-            e3.printStackTrace(new PrintWriter(stringWriter2));
-            Log.e(TAG, stringWriter2.toString());
+        } catch (IllegalArgumentException | SecurityException e3) {
+            Log.e(TAG, "参数或权限错误: " + name, e3);
             return -3;
+        } catch (Exception e4) {
+            Log.e(TAG, "未知错误: " + name, e4);
+            return -5;
         }
     }
 
     @Override
     public int onDelete(String name) {
+        if (name == null) {
+            Log.e(TAG, "删除文件失败: 文件名为空");
+            return 1;
+        }
+
         boolean deleted;
         Log.d(TAG, "Deleting File: " + name);
+        
         // 保护自定义 Planet 文件
         if (hookPlanetFile(name)) {
             return 0;
         }
-        if (name.contains("/")) {
-            File file = new File(this.context.getFilesDir(), name);
-            if (!file.exists()) {
-                deleted = true;
+        
+        try {
+            if (name.contains("/")) {
+                // 处理路径中的 ".." 和 "." 避免路径遍历漏洞
+                if (name.contains("..")) {
+                    Log.e(TAG, "文件路径不安全: " + name);
+                    return 1;
+                }
+                
+                File file = new File(this.context.getFilesDir(), name);
+                if (!file.exists()) {
+                    deleted = true;
+                } else {
+                    deleted = file.delete();
+                    if (!deleted) {
+                        Log.e(TAG, "无法删除文件: " + file.getAbsolutePath());
+                    }
+                }
             } else {
-                deleted = file.delete();
+                deleted = this.context.deleteFile(name);
+                if (!deleted) {
+                    Log.e(TAG, "无法删除文件: " + name);
+                }
             }
-        } else {
-            deleted = this.context.deleteFile(name);
+            return !deleted ? 1 : 0;
+        } catch (SecurityException e) {
+            Log.e(TAG, "删除文件时权限错误: " + name, e);
+            return 1;
         }
-        return !deleted ? 1 : 0;
     }
 
     @Override
     public long onDataStoreGet(String name, byte[] out_buffer) {
+        if (name == null || out_buffer == null) {
+            Log.e(TAG, "读取文件时参数为空: " + (name == null ? "文件名为空" : "缓冲区为空"));
+            return -3;
+        }
+        
         Log.d(TAG, "Reading File: " + name);
         if (hookPlanetFile(name)) {
             name = Constants.FILE_CUSTOM_PLANET;
         }
+        
         // 读入文件
         try {
             if (name.contains("/")) {
-                File file = new File(this.context.getFilesDir(), name.substring(0, name.lastIndexOf('/')));
-                if (!file.exists()) {
-                    file.mkdirs();
+                // 处理路径中的 ".." 和 "." 避免路径遍历漏洞
+                if (name.contains("..")) {
+                    Log.e(TAG, "文件路径不安全: " + name);
+                    return -3;
                 }
-                File file2 = new File(file, name.substring(name.lastIndexOf('/') + 1));
-                if (!file2.exists()) {
+                
+                // 确保目录存在
+                File directory = new File(this.context.getFilesDir(), name.substring(0, name.lastIndexOf('/')));
+                if (!directory.exists()) {
+                    boolean created = directory.mkdirs();
+                    if (!created) {
+                        Log.e(TAG, "无法创建目录: " + directory.getAbsolutePath());
+                        return -4;
+                    }
+                }
+                
+                File file = new File(directory, name.substring(name.lastIndexOf('/') + 1));
+                if (!file.exists() || !file.isFile() || !file.canRead()) {
+                    Log.w(TAG, "文件不存在或无法读取: " + file.getAbsolutePath());
                     return 0;
                 }
-                FileInputStream fileInputStream = new FileInputStream(file2);
-                int read = fileInputStream.read(out_buffer);
-                fileInputStream.close();
-                return read;
+                
+                try (FileInputStream fileInputStream = new FileInputStream(file)) {
+                    int read = fileInputStream.read(out_buffer);
+                    return read;
+                }
+            } else {
+                try (FileInputStream openFileInput = this.context.openFileInput(name)) {
+                    int read = openFileInput.read(out_buffer);
+                    return read;
+                }
             }
-            FileInputStream openFileInput = this.context.openFileInput(name);
-            int read2 = openFileInput.read(out_buffer);
-            openFileInput.close();
-            return read2;
-        } catch (FileNotFoundException unused) {
+        } catch (FileNotFoundException e) {
+            Log.w(TAG, "文件未找到: " + name);
             return -1;
         } catch (IOException e) {
-            Log.e(TAG, "", e);
+            Log.e(TAG, "读取文件时IO异常: " + name, e);
             return -2;
         } catch (Exception e) {
-            Log.e(TAG, "", e);
+            Log.e(TAG, "读取文件时未知错误: " + name, e);
             return -3;
         }
     }
