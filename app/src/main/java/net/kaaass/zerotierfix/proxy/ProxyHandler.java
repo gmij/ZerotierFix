@@ -134,45 +134,71 @@ public class ProxyHandler {
         // 提取目标端口（TCP/UDP头部的前两个字节为源端口，接下来两个字节为目标端口）
         int ipHeaderLength = (packetData[0] & 0x0F) * 4; // IPv4头部长度
         int destPort;
+        int sourcePort;
         
         // 处理IPv6
         if (destIP instanceof Inet6Address) {
             // IPv6头部是固定的40字节
             ipHeaderLength = 40;
+            LogUtil.d(TAG, "处理IPv6数据包，头部长度=40字节");
+        } else if (destIP instanceof Inet4Address) {
+            LogUtil.d(TAG, "处理IPv4数据包，头部长度=" + ipHeaderLength + "字节");
         }
         
         // 提取端口号
         if (packetData.length >= ipHeaderLength + 4) {
+            sourcePort = ((packetData[ipHeaderLength] & 0xFF) << 8) | (packetData[ipHeaderLength + 1] & 0xFF);
             destPort = ((packetData[ipHeaderLength + 2] & 0xFF) << 8) | (packetData[ipHeaderLength + 3] & 0xFF);
+            LogUtil.d(TAG, "数据包端口信息: 源端口=" + sourcePort + ", 目标端口=" + destPort);
         } else {
-            LogUtil.e(TAG, "数据包太短，无法提取端口信息");
+            LogUtil.e(TAG, "数据包太短，无法提取端口信息: 数据包长度=" + packetData.length + ", 所需最小长度=" + (ipHeaderLength + 4));
             return false;
         }
         
-        // 过滤一些不需要代理的常用端口（可选）
+        // 获取协议类型
+        int protocol = -1;
+        if (destIP instanceof Inet4Address && packetData.length > 9) {
+            protocol = packetData[9] & 0xFF;
+            LogUtil.d(TAG, "IPv4协议类型: " + protocol + (protocol == 6 ? " (TCP)" : protocol == 17 ? " (UDP)" : ""));
+        } else if (destIP instanceof Inet6Address && packetData.length > 6) {
+            protocol = packetData[6] & 0xFF;
+            LogUtil.d(TAG, "IPv6下一报头: " + protocol);
+        }
+        
+        // 过滤一些不需要代理的常用端口
         if (!shouldProxy(destIP, destPort)) {
+            LogUtil.d(TAG, "跳过代理: 目标" + destIP.getHostAddress() + ":" + destPort + "无需代理");
             return false;
         }
+        
+        LogUtil.i(TAG, "尝试通过代理发送数据包: 源=" + sourceIP.getHostAddress() + ":" + sourcePort + 
+                " -> 目标=" + destIP.getHostAddress() + ":" + destPort + 
+                ", 协议=" + (isTCP ? "TCP" : "UDP/其他") +
+                ", 数据包大小=" + packetData.length + "字节");
         
         // 获取或创建到目标的代理连接
         ProxyClient proxyClient = getOrCreateConnection(destIP, destPort);
         if (proxyClient == null) {
+            LogUtil.e(TAG, "无法获取或创建代理连接: 目标=" + destIP.getHostAddress() + ":" + destPort);
             return false;
         }
         
         try {
             // 通过代理发送数据包
             proxyClient.sendData(packetData);
-            LogUtil.d(TAG, "通过代理成功发送 " + packetData.length + " 字节到 " + 
-                    destIP.getHostAddress() + ":" + destPort);
+            LogUtil.d(TAG, "通过代理成功发送数据: 目标=" + destIP.getHostAddress() + ":" + destPort + 
+                    ", 大小=" + packetData.length + "字节, 代理服务器=" + proxyManager.getProxyHost() + ":" + 
+                    proxyManager.getProxyPort());
             return true;
         } catch (IOException e) {
-            LogUtil.e(TAG, "通过代理发送数据失败: " + e.getMessage(), e);
+            LogUtil.e(TAG, "通过代理发送数据失败: 目标=" + destIP.getHostAddress() + ":" + destPort + 
+                    ", 错误=" + e.getMessage(), e);
             
             // 关闭失败的连接并从缓存中移除
             String connectionKey = destIP.getHostAddress() + ":" + destPort;
             connectionCache.remove(connectionKey);
             proxyClient.close();
+            LogUtil.d(TAG, "已移除失败的代理连接: " + connectionKey);
             
             return false;
         }
