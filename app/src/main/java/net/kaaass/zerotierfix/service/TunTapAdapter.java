@@ -627,6 +627,8 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 var target = route.getTarget();
                 if (target.getAddress().equals(InetAddress.getByName("0.0.0.0")) ||
                     target.getAddress().equals(InetAddress.getByName("::"))) {
+                        
+                    Log.d(TAG, "== Global traffic VPN is working. ==");
                     return true;
                 }
             }
@@ -635,6 +637,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             return false;
         }
 
+        Log.d(TAG, "== Global traffic VPN is not working. ==");
         return false;
     }
 }
