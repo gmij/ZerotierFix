@@ -49,4 +49,12 @@ public class Constants {
     public static final int PROXY_TYPE_NONE = 0;
     public static final int PROXY_TYPE_SOCKS5 = 1;
     public static final int PROXY_TYPE_HTTP = 2;
+
+    // 全局流量 VPN 功能相关常量
+    public static final String PREF_GLOBAL_TRAFFIC_VPN_ENABLED = "global_traffic_vpn_enabled";
+    public static final String PREF_GLOBAL_TRAFFIC_VPN_ROUTE = "global_traffic_vpn_route";
+    public static final String PREF_GLOBAL_TRAFFIC_VPN_DNS = "global_traffic_vpn_dns";
+
+    // 检查全局流量 VPN 功能是否正常工作的常量
+    public static final String CHECK_GLOBAL_TRAFFIC_VPN_WORKING = "check_global_traffic_vpn_working";
 }

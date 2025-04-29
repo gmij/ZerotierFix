@@ -47,7 +47,6 @@ import net.kaaass.zerotierfix.events.StopEvent;
 import net.kaaass.zerotierfix.events.VPNErrorEvent;
 import net.kaaass.zerotierfix.events.VirtualNetworkConfigChangedEvent;
 import net.kaaass.zerotierfix.events.VirtualNetworkConfigReplyEvent;
-import net.kaaass.zerotierfix.events.VirtualNetworkConfigRequestEvent;
 import net.kaaass.zerotierfix.model.AppNode;
 import net.kaaass.zerotierfix.model.MoonOrbit;
 import net.kaaass.zerotierfix.model.Network;
@@ -1389,7 +1388,42 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
     }
 
-   
+    /**
+     * 检查全局流量 VPN 功能是否正常工作
+     */
+    public boolean isGlobalTrafficVpnWorking() {
+        // 检查 VPN 是否已建立
+        if (this.vpnSocket == null) {
+            return false;
+        }
+
+        // 检查 TUN TAP 适配器是否正在运行
+        if (this.tunTapAdapter == null || !this.tunTapAdapter.isRunning()) {
+            return false;
+        }
+
+        // 检查代理设置是否有效
+        var proxyManager = ProxyManager.getInstance(this);
+        if (proxyManager.isProxyEnabled() && !proxyManager.isProxyConfigValid()) {
+            return false;
+        }
+
+        // 检查是否有全局路由
+        var virtualNetworkConfig = getVirtualNetworkConfig(this.networkId);
+        if (virtualNetworkConfig == null) {
+            return false;
+        }
+        var routes = virtualNetworkConfig.getRoutes();
+        for (var route : routes) {
+            var target = route.getTarget();
+            if (target.getAddress().equals(InetAddress.getByName("0.0.0.0")) ||
+                target.getAddress().equals(InetAddress.getByName("::"))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public class ZeroTierBinder extends Binder {
         public ZeroTierBinder() {

@@ -145,4 +145,28 @@ public class ProxyManager {
         sb.append(getProxyHost()).append(":").append(getProxyPort());
         return sb.toString();
     }
+
+    /**
+     * 检查全局流量 VPN 功能是否正常工作
+     */
+    public boolean isGlobalTrafficVpnWorking() {
+        // 检查代理配置是否有效
+        if (isProxyEnabled() && !isProxyConfigValid()) {
+            return false;
+        }
+
+        // 检查是否有全局路由
+        String globalTrafficVpnRoute = preferences.getString(Constants.PREF_GLOBAL_TRAFFIC_VPN_ROUTE, "");
+        if (TextUtils.isEmpty(globalTrafficVpnRoute)) {
+            return false;
+        }
+
+        // 检查是否有全局 DNS 配置
+        String globalTrafficVpnDns = preferences.getString(Constants.PREF_GLOBAL_TRAFFIC_VPN_DNS, "");
+        if (TextUtils.isEmpty(globalTrafficVpnDns)) {
+            return false;
+        }
+
+        return true;
+    }
 }

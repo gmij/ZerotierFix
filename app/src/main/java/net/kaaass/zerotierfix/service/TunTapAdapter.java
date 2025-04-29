@@ -586,4 +586,40 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             return 0;
         }
     }
+
+    /**
+     * 检查全局流量 VPN 功能是否正常工作
+     */
+    public boolean isGlobalTrafficVpnWorking() {
+        // 检查 VPN 是否已建立
+        if (this.vpnSocket == null) {
+            return false;
+        }
+
+        // 检查 TUN TAP 适配器是否正在运行
+        if (this.receiveThread == null || !this.receiveThread.isAlive()) {
+            return false;
+        }
+
+        // 检查代理设置是否有效
+        if (this.useProxy && (this.proxyHandler == null || !this.proxyHandler.isProxyConfigValid())) {
+            return false;
+        }
+
+        // 检查是否有全局路由
+        var virtualNetworkConfig = this.ztService.getVirtualNetworkConfig(this.networkId);
+        if (virtualNetworkConfig == null) {
+            return false;
+        }
+        var routes = virtualNetworkConfig.getRoutes();
+        for (var route : routes) {
+            var target = route.getTarget();
+            if (target.getAddress().equals(InetAddress.getByName("0.0.0.0")) ||
+                target.getAddress().equals(InetAddress.getByName("::"))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
