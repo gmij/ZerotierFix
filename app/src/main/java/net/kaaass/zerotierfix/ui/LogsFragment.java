@@ -16,6 +16,7 @@ import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ImageButton;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -52,6 +53,7 @@ public class LogsFragment extends Fragment {
     private NestedScrollView scrollView;
     private BottomAppBar bottomAppBar;
     private FloatingActionButton fabShare;
+    private ImageButton copyLogsButton;
     private View rootView;
 
     private LogManager logManager;
@@ -232,6 +234,7 @@ public class LogsFragment extends Fragment {
         scrollView = rootView.findViewById(R.id.logs_scroll_view);
         bottomAppBar = rootView.findViewById(R.id.bottom_app_bar);
         fabShare = rootView.findViewById(R.id.fab_share);
+        copyLogsButton = rootView.findViewById(R.id.copy_logs_button);
 
         try {
             // 立即显示初始日志
@@ -260,6 +263,15 @@ public class LogsFragment extends Fragment {
                     shareLogs();
                 } catch (Exception e) {
                     showError("分享日志失败", e);
+                }
+            });
+
+            // 设置复制按钮
+            copyLogsButton.setOnClickListener(v -> {
+                try {
+                    copyLogsToClipboard();
+                } catch (Exception e) {
+                    showError("复制日志失败", e);
                 }
             });
 
