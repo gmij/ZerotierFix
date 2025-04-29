@@ -714,7 +714,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             for (var route : routes) {
                 var target = route.getTarget();
                 var via = route.getVia();
-                var gateway = route.getGateway();
+                // 修复：VirtualNetworkRoute没有getGateway方法
+                InetAddress gateway = null;  // 不能直接调用getGateway方法
+                
                 LogUtil.d(TAG, "路由: " + target.getAddress() + "/" + target.getPort() +
                         (via != null ? " via " + via : "") +
                         (gateway != null ? " gateway " + gateway : ""));
