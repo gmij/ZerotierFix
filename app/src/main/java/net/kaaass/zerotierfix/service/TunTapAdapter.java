@@ -69,6 +69,15 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     }
 
     /**
+     * 检查代理配置是否有效
+     *
+     * @return 如果代理配置有效，则返回true
+     */
+    public boolean isProxyConfigValid() {
+        return this.proxyHandler != null && this.proxyHandler.isProxyConfigValid();
+    }
+
+    /**
      * 判断是否为TCP数据包
      */
     private boolean isTcpPacket(byte[] data) {

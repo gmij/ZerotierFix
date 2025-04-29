@@ -75,6 +75,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -1415,12 +1416,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return false;
         }
         var routes = virtualNetworkConfig.getRoutes();
-        for (var route : routes) {
-            var target = route.getTarget();
-            if (target.getAddress().equals(InetAddress.getByName("0.0.0.0")) ||
-                target.getAddress().equals(InetAddress.getByName("::"))) {
-                return true;
+        try {
+            InetAddress v4Loopback = InetAddress.getByName("0.0.0.0");
+            InetAddress v6Loopback = InetAddress.getByName("::");
+            
+            for (var route : routes) {
+                var target = route.getTarget();
+                if (target.getAddress().equals(v4Loopback) || 
+                    target.getAddress().equals(v6Loopback)) {
+                    return true;
+                }
             }
+        } catch (UnknownHostException e) {
+            LogUtil.e(TAG, "解析地址时出错: " + e.getMessage(), e);
+            return false;
         }
 
         return false;
