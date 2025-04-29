@@ -714,8 +714,8 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             for (var route : routes) {
                 var target = route.getTarget();
                 var via = route.getVia();
-                // 正确获取网关信息 - 使用via作为网关地址
-                InetAddress gateway = via;
+                // 正确获取网关信息 - 从InetSocketAddress中提取InetAddress
+                InetAddress gateway = via != null ? via.getAddress() : null;
                 
                 LogUtil.d(TAG, "路由: " + target.getAddress() + "/" + target.getPort() +
                         (via != null ? " via " + via : "") +
