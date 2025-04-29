@@ -35,6 +35,35 @@ public class ProxyHandler {
     }
     
     /**
+     * 检查代理配置是否有效
+     *
+     * @return true 如果代理配置有效，false 否则
+     */
+    public boolean isProxyConfigValid() {
+        // 检查代理主机和端口
+        String host = proxyManager.getProxyHost();
+        int port = proxyManager.getProxyPort();
+        
+        // 主机必须非空且端口必须有效
+        if (host == null || host.isEmpty() || port <= 0 || port > 65535) {
+            LogUtil.e(TAG, "无效的代理配置: 主机=" + host + ", 端口=" + port);
+            return false;
+        }
+        
+        // 如果需要验证，检查用户名和密码是否提供
+        if (proxyManager.isAuthRequired()) {
+            String username = proxyManager.getProxyUsername();
+            String password = proxyManager.getProxyPassword();
+            if (username == null || username.isEmpty() || password == null) {
+                LogUtil.e(TAG, "需要验证但凭据不完整");
+                return false;
+            }
+        }
+        
+        return true;
+    }
+    
+    /**
      * 获取或创建到指定目标的代理连接
      * 
      * @param destAddress 目标地址
