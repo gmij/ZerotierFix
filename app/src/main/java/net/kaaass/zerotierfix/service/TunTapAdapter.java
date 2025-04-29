@@ -280,11 +280,15 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             isMulticast = false;
         }
         var route = routeForDestination(destIP);
-        var gateway = route != null ? route.getGateway() : null;
+        // 修复：VirtualNetworkRoute没有getGateway方法，但Route类有
+        InetAddress gateway = null;
+        if (route != null) {
+            gateway = route.getGateway();
+        }
 
         // 添加详细日志：记录路由决策过程
-        LogUtil.d(TAG, "路由决策: 目的IP=" + destIP + ", 选择路由=" + (route != null ? route.toString() : "无")
-                + ", 网关=" + (gateway != null ? gateway.toString() : "无"));
+        LogUtil.d(TAG, "路由决策: 目的IP=" + destIP + ", 选择路由=" + (route != null ? route.toString() : "无") 
+              + ", 网关=" + (gateway != null ? gateway.toString() : "无"));
 
         // 查找当前节点的 v4 地址
         InetSocketAddress[] ztAddresses = virtualNetworkConfig.getAssignedAddresses();
@@ -324,12 +328,12 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             } else {
                 destMac = this.arpTable.getMacForAddress(destIP);
             }
-
+            
             // 添加详细日志：记录MAC地址和目的地
-            LogUtil.d(TAG, "发送IPv4数据包: 本地MAC=" + StringUtils.macAddressToString(localMac) +
-                    ", 目标MAC=" + StringUtils.macAddressToString(destMac) +
-                    ", 目的IP=" + destIP);
-
+            LogUtil.d(TAG, "发送IPv4数据包: 本地MAC=" + StringUtils.macAddressToString(localMac) + 
+                  ", 目标MAC=" + StringUtils.macAddressToString(destMac) + 
+                  ", 目的IP=" + destIP);
+                  
             var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, IPV4_PACKET, 0, packetData, nextDeadline);
             if (result != ResultCode.RESULT_OK) {
                 LogUtil.e(TAG, "Error calling processVirtualNetworkFrame: " + result.toString());
