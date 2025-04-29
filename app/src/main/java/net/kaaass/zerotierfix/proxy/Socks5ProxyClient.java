@@ -7,293 +7,273 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.Socket;
-import java.nio.ByteBuffer;
-import java.util.Arrays;
+import java.net.SocketTimeoutException;
 
 /**
- * SOCKS5代理客户端实现
- * 符合RFC 1928规范
+ * SOCKS5 代理客户端
  */
 public class Socks5ProxyClient implements ProxyClient {
     private static final String TAG = "Socks5ProxyClient";
-    
-    // SOCKS5协议常量
-    private static final byte SOCKS_VERSION = 5;
-    private static final byte NO_AUTH = 0;
-    private static final byte USERNAME_PASSWORD_AUTH = 2;
-    private static final byte CONNECT_COMMAND = 1;
-    private static final byte RESERVED = 0;
-    private static final byte IPV4_ADDRESS = 1;
-    private static final byte IPV6_ADDRESS = 4;
-    private static final byte REQUEST_GRANTED = 0;
-    
-    // 代理服务器信息
+    private static final int CONNECTION_TIMEOUT = 5000; // 5秒连接超时
+    private static final int SOCKET_TIMEOUT = 10000; // 10秒读写超时
+    private static final int MAX_RETRIES = 2; // 最大重试次数
+
     private final String proxyHost;
     private final int proxyPort;
-    private final String username;
-    private final String password;
-    
-    // 连接对象
     private Socket socket;
-    private InputStream inputStream;
-    private OutputStream outputStream;
-    
+    private InputStream in;
+    private OutputStream out;
+
     /**
-     * 创建SOCKS5代理客户端
-     * 
+     * 构造函数
+     *
      * @param proxyHost 代理服务器地址
      * @param proxyPort 代理服务器端口
-     * @param username 用户名（可为null表示无需认证）
-     * @param password 密码（可为null表示无需认证）
      */
-    public Socks5ProxyClient(String proxyHost, int proxyPort, String username, String password) {
+    public Socks5ProxyClient(String proxyHost, int proxyPort) {
         this.proxyHost = proxyHost;
         this.proxyPort = proxyPort;
-        this.username = username;
-        this.password = password;
     }
-    
+
+    /**
+     * 连接到SOCKS5代理
+     *
+     * @throws IOException 如果连接失败
+     */
     @Override
     public void connect() throws IOException {
-        LogUtil.d(TAG, "连接到SOCKS5代理: " + proxyHost + ":" + proxyPort);
-        
-        // 建立TCP连接
-        socket = new Socket(proxyHost, proxyPort);
-        socket.setSoTimeout(10000); // 10秒超时
-        inputStream = socket.getInputStream();
-        outputStream = socket.getOutputStream();
-        
-        // SOCKS5握手 - 发送支持的认证方法
-        byte[] authRequest;
-        if (username != null && !username.isEmpty() && password != null) {
-            // 支持无认证和用户名密码认证
-            authRequest = new byte[]{SOCKS_VERSION, 2, NO_AUTH, USERNAME_PASSWORD_AUTH};
-        } else {
-            // 仅支持无认证
-            authRequest = new byte[]{SOCKS_VERSION, 1, NO_AUTH};
-        }
-        
-        outputStream.write(authRequest);
-        outputStream.flush();
-        
-        // 接收服务器选择的认证方法
-        byte[] authResponse = new byte[2];
-        if (inputStream.read(authResponse) != 2) {
-            throw new IOException("代理服务器认证协商失败");
-        }
-        
-        // 检查SOCKS5版本号
-        if (authResponse[0] != SOCKS_VERSION) {
-            throw new IOException("不支持的SOCKS协议版本: " + authResponse[0]);
-        }
-        
-        // 处理认证方法
-        byte selectedAuth = authResponse[1];
-        switch (selectedAuth) {
-            case NO_AUTH:
-                // 无需认证，继续处理
-                LogUtil.d(TAG, "代理服务器不需要认证");
-                break;
-            case USERNAME_PASSWORD_AUTH:
-                // 用户名密码认证
-                if (username == null || username.isEmpty() || password == null) {
-                    throw new IOException("代理服务器需要认证，但未提供凭据");
+        int retries = 0;
+        IOException lastException = null;
+
+        while (retries <= MAX_RETRIES) {
+            try {
+                LogUtil.d(TAG, "连接到SOCKS5代理: " + proxyHost + ":" + proxyPort + " (尝试 " + (retries + 1) + "/" + (MAX_RETRIES + 1) + ")");
+                
+                socket = new Socket();
+                socket.setSoTimeout(SOCKET_TIMEOUT);
+                socket.connect(new java.net.InetSocketAddress(proxyHost, proxyPort), CONNECTION_TIMEOUT);
+                
+                in = socket.getInputStream();
+                out = socket.getOutputStream();
+                
+                // SOCKS5 初始握手（无认证方式）
+                out.write(new byte[]{5, 1, 0});
+                out.flush();
+                
+                // 读取服务器响应
+                byte[] response = new byte[2];
+                int bytesRead = in.read(response);
+                
+                if (bytesRead != 2 || response[0] != 5 || response[1] != 0) {
+                    throw new IOException("SOCKS5握手失败，服务器不接受无认证连接");
                 }
-                performUserPassAuth();
-                break;
-            case (byte) 0xFF:
-                throw new IOException("代理服务器不接受提供的认证方法");
-            default:
-                throw new IOException("不支持的认证方法: " + selectedAuth);
+                
+                LogUtil.d(TAG, "成功连接到SOCKS5代理: " + proxyHost + ":" + proxyPort);
+                return; // 连接成功
+            } catch (SocketTimeoutException e) {
+                lastException = e;
+                LogUtil.w(TAG, "连接SOCKS5代理超时: " + e.getMessage() + "，尝试重试 " + (retries + 1) + "/" + MAX_RETRIES);
+            } catch (IOException e) {
+                lastException = e;
+                LogUtil.w(TAG, "连接SOCKS5代理失败: " + e.getMessage() + "，尝试重试 " + (retries + 1) + "/" + MAX_RETRIES);
+            }
+            
+            // 清理失败的连接
+            closeQuietly();
+            retries++;
+            
+            // 重试前等待一段时间
+            if (retries <= MAX_RETRIES) {
+                try {
+                    Thread.sleep(1000 * retries); // 递增等待时间
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
         }
         
-        LogUtil.d(TAG, "成功连接到SOCKS5代理服务器");
+        // 所有重试都失败了
+        throw new IOException("连接SOCKS5代理失败，已达最大重试次数: " + (lastException != null ? lastException.getMessage() : "未知错误"));
     }
-    
+
     /**
-     * 执行用户名密码认证
+     * 通过代理发送UDP数据包
+     *
+     * @param data      UDP数据包内容
+     * @param destAddr  目标地址
+     * @param destPort  目标端口
+     * @throws IOException 如果发送失败
      */
-    private void performUserPassAuth() throws IOException {
-        LogUtil.d(TAG, "执行SOCKS5用户名密码认证");
-        
-        // 构建认证请求 - 子协商版本1
-        ByteBuffer authBuffer = ByteBuffer.allocate(3 + username.length() + password.length());
-        authBuffer.put((byte) 1); // 子协商版本1
-        
-        // 添加用户名
-        authBuffer.put((byte) username.length());
-        authBuffer.put(username.getBytes());
-        
-        // 添加密码
-        authBuffer.put((byte) password.length());
-        authBuffer.put(password.getBytes());
-        
-        // 发送认证请求
-        outputStream.write(authBuffer.array());
-        outputStream.flush();
-        
-        // 接收认证结果
-        byte[] authResult = new byte[2];
-        if (inputStream.read(authResult) != 2) {
-            throw new IOException("代理服务器认证响应接收失败");
-        }
-        
-        // 检查版本和状态码
-        if (authResult[0] != 1) {
-            throw new IOException("认证子协商版本错误: " + authResult[0]);
-        }
-        if (authResult[1] != 0) {
-            throw new IOException("认证失败，状态码: " + authResult[1]);
-        }
-        
-        LogUtil.d(TAG, "SOCKS5用户名密码认证成功");
-    }
-    
     @Override
-    public boolean connectToDestination(InetAddress destAddress, int destPort) throws IOException {
-        LogUtil.d(TAG, "通过SOCKS5代理连接到目标: " + destAddress.getHostAddress() + ":" + destPort);
-        
-        // 构建连接请求
-        byte[] addressBytes = destAddress.getAddress();
-        ByteBuffer requestBuffer = ByteBuffer.allocate(6 + addressBytes.length);
-        
-        requestBuffer.put(SOCKS_VERSION); // SOCKS版本5
-        requestBuffer.put(CONNECT_COMMAND); // 连接命令
-        requestBuffer.put(RESERVED); // 保留字段
-        
-        // 判断IP类型
-        if (addressBytes.length == 4) {
-            requestBuffer.put(IPV4_ADDRESS); // IPv4
-        } else if (addressBytes.length == 16) {
-            requestBuffer.put(IPV6_ADDRESS); // IPv6
-        } else {
-            throw new IOException("不支持的地址类型");
+    public void sendUdpPacket(byte[] data, InetAddress destAddr, int destPort) throws IOException {
+        if (socket == null || !socket.isConnected()) {
+            connect(); // 重连如果需要
         }
-        
-        // 添加目标IP地址和端口
-        requestBuffer.put(addressBytes);
-        requestBuffer.putShort((short) destPort);
-        
-        // 发送连接请求
-        outputStream.write(requestBuffer.array());
-        outputStream.flush();
-        
-        // 接收响应
-        byte[] responseHeader = new byte[4];
-        if (inputStream.read(responseHeader) != 4) {
-            throw new IOException("代理服务器响应接收失败");
-        }
-        
-        // 检查SOCKS版本
-        if (responseHeader[0] != SOCKS_VERSION) {
-            throw new IOException("无效的SOCKS版本响应: " + responseHeader[0]);
-        }
-        
-        // 检查响应状态
-        if (responseHeader[1] != REQUEST_GRANTED) {
-            String errorMessage = getErrorMessage(responseHeader[1]);
-            LogUtil.e(TAG, "代理连接失败: " + errorMessage);
-            return false;
-        }
-        
-        // 跳过绑定地址和端口信息
-        int addressType = responseHeader[3];
-        int addressLength;
-        if (addressType == IPV4_ADDRESS) {
-            addressLength = 4;
-        } else if (addressType == IPV6_ADDRESS) {
-            addressLength = 16;
-        } else {
-            throw new IOException("不支持的地址类型响应: " + addressType);
-        }
-        
-        byte[] skipBytes = new byte[addressLength + 2]; // 地址 + 2字节端口
-        inputStream.read(skipBytes);
-        
-        LogUtil.d(TAG, "SOCKS5代理成功连接到目标");
-        return true;
-    }
-    
-    /**
-     * 根据SOCKS5错误代码获取错误信息
-     */
-    private String getErrorMessage(byte code) {
-        switch (code) {
-            case 1:
-                return "常规性失败";
-            case 2:
-                return "规则不允许连接";
-            case 3:
-                return "网络不可达";
-            case 4:
-                return "主机不可达";
-            case 5:
-                return "连接被拒绝";
-            case 6:
-                return "TTL过期";
-            case 7:
-                return "不支持的命令";
-            case 8:
-                return "不支持的地址类型";
-            default:
-                return "未知错误: " + code;
-        }
-    }
-    
-    @Override
-    public void sendData(byte[] data) throws IOException {
-        if (socket == null || socket.isClosed()) {
-            throw new IOException("代理连接已关闭");
-        }
-        outputStream.write(data);
-        outputStream.flush();
-    }
-    
-    @Override
-    public byte[] receiveData() throws IOException {
-        if (socket == null || socket.isClosed()) {
-            throw new IOException("代理连接已关闭");
-        }
-        
-        byte[] buffer = new byte[4096];
-        int bytesRead = inputStream.read(buffer);
-        
-        if (bytesRead <= 0) {
-            return new byte[0];
-        }
-        
-        return Arrays.copyOf(buffer, bytesRead);
-    }
-    
-    @Override
-    public void close() {
-        LogUtil.d(TAG, "关闭SOCKS5代理连接");
+
         try {
-            if (inputStream != null) {
-                inputStream.close();
+            // SOCKS5 UDP 关联请求
+            byte[] destAddrBytes = destAddr.getAddress();
+            byte addrType = (byte) (destAddr.getAddress().length == 4 ? 1 : 4); // IPv4=1, IPv6=4
+            
+            // 发送UDP关联请求
+            byte[] request = new byte[4 + 1 + destAddrBytes.length + 2];
+            request[0] = 5;  // SOCKS版本
+            request[1] = 3;  // 命令：UDP关联
+            request[2] = 0;  // 保留位
+            request[3] = addrType;  // 地址类型
+            
+            // 复制目标地址
+            System.arraycopy(destAddrBytes, 0, request, 4, destAddrBytes.length);
+            
+            // 设置目标端口（网络字节序）
+            request[4 + destAddrBytes.length] = (byte) ((destPort >> 8) & 0xFF);
+            request[4 + destAddrBytes.length + 1] = (byte) (destPort & 0xFF);
+            
+            // 发送请求
+            out.write(request);
+            out.flush();
+            
+            // 读取响应
+            byte[] response = new byte[4 + 1 + destAddrBytes.length + 2];
+            int bytesRead = in.read(response);
+            
+            if (bytesRead < 4 || response[0] != 5 || response[1] != 0) {
+                throw new IOException("SOCKS5 UDP关联请求失败: 状态码=" + response[1]);
             }
-            if (outputStream != null) {
-                outputStream.close();
+            
+            // 获取UDP中继服务器地址和端口
+            byte[] udpRelayAddr;
+            int udpRelayPort;
+            
+            if (response[3] == 1) {  // IPv4
+                udpRelayAddr = new byte[4];
+                System.arraycopy(response, 4, udpRelayAddr, 0, 4);
+                udpRelayPort = ((response[8] & 0xFF) << 8) | (response[9] & 0xFF);
+            } else if (response[3] == 4) {  // IPv6
+                udpRelayAddr = new byte[16];
+                System.arraycopy(response, 4, udpRelayAddr, 0, 16);
+                udpRelayPort = ((response[20] & 0xFF) << 8) | (response[21] & 0xFF);
+            } else {
+                throw new IOException("SOCKS5服务器返回了不支持的地址类型: " + response[3]);
             }
-            if (socket != null) {
-                socket.close();
+            
+            // 构建UDP头部
+            byte[] udpHeader = new byte[4 + 1 + destAddrBytes.length + 2];
+            udpHeader[0] = 0;  // 保留字段
+            udpHeader[1] = 0;  // 保留字段
+            udpHeader[2] = 0;  // 分段号
+            udpHeader[3] = addrType;  // 地址类型
+            
+            // 复制目标地址
+            System.arraycopy(destAddrBytes, 0, udpHeader, 4, destAddrBytes.length);
+            
+            // 设置目标端口（网络字节序）
+            udpHeader[4 + destAddrBytes.length] = (byte) ((destPort >> 8) & 0xFF);
+            udpHeader[4 + destAddrBytes.length + 1] = (byte) (destPort & 0xFF);
+            
+            // 创建UDP包
+            byte[] udpPacket = new byte[udpHeader.length + data.length];
+            System.arraycopy(udpHeader, 0, udpPacket, 0, udpHeader.length);
+            System.arraycopy(data, 0, udpPacket, udpHeader.length, data.length);
+            
+            // 创建UDP socket发送数据
+            try (java.net.DatagramSocket udpSocket = new java.net.DatagramSocket()) {
+                java.net.DatagramPacket packet = new java.net.DatagramPacket(
+                        udpPacket,
+                        udpPacket.length,
+                        InetAddress.getByAddress(udpRelayAddr),
+                        udpRelayPort);
+                udpSocket.send(packet);
             }
         } catch (IOException e) {
-            LogUtil.e(TAG, "关闭代理连接时出错: " + e.getMessage(), e);
-        } finally {
-            inputStream = null;
-            outputStream = null;
-            socket = null;
+            LogUtil.e(TAG, "发送UDP数据包失败: " + e.getMessage(), e);
+            closeQuietly();  // 关闭可能已损坏的连接
+            throw e;
         }
     }
-    
+
+    /**
+     * 通过代理发送TCP数据包
+     *
+     * @param data      TCP数据包内容
+     * @param destAddr  目标地址
+     * @param destPort  目标端口
+     * @throws IOException 如果发送失败
+     */
     @Override
-    public boolean isClosed() {
-        return socket == null || socket.isClosed();
+    public void sendTcpPacket(byte[] data, InetAddress destAddr, int destPort) throws IOException {
+        if (socket == null || !socket.isConnected()) {
+            connect(); // 重连如果需要
+        }
+
+        try {
+            // SOCKS5 TCP 连接请求
+            byte[] destAddrBytes = destAddr.getAddress();
+            byte addrType = (byte) (destAddr.getAddress().length == 4 ? 1 : 4); // IPv4=1, IPv6=4
+            
+            // 发送连接请求
+            byte[] request = new byte[4 + 1 + destAddrBytes.length + 2];
+            request[0] = 5;  // SOCKS版本
+            request[1] = 1;  // 命令：建立TCP连接
+            request[2] = 0;  // 保留位
+            request[3] = addrType;  // 地址类型
+            
+            // 复制目标地址
+            System.arraycopy(destAddrBytes, 0, request, 4, destAddrBytes.length);
+            
+            // 设置目标端口（网络字节序）
+            request[4 + destAddrBytes.length] = (byte) ((destPort >> 8) & 0xFF);
+            request[4 + destAddrBytes.length + 1] = (byte) (destPort & 0xFF);
+            
+            // 发送请求
+            out.write(request);
+            out.flush();
+            
+            // 读取响应
+            byte[] response = new byte[4 + 1 + destAddrBytes.length + 2];
+            int bytesRead = in.read(response);
+            
+            if (bytesRead < 4 || response[0] != 5 || response[1] != 0) {
+                throw new IOException("SOCKS5 TCP连接请求失败: 状态码=" + response[1]);
+            }
+            
+            // TCP连接已建立，发送数据
+            out.write(data);
+            out.flush();
+        } catch (IOException e) {
+            LogUtil.e(TAG, "发送TCP数据包失败: " + e.getMessage(), e);
+            closeQuietly();  // 关闭可能已损坏的连接
+            throw e;
+        }
+    }
+
+    /**
+     * 关闭连接
+     */
+    @Override
+    public void close() {
+        closeQuietly();
     }
     
-    @Override
-    public String getProxyType() {
-        return "SOCKS5";
+    /**
+     * 安静地关闭连接，不抛出异常
+     */
+    private void closeQuietly() {
+        try {
+            if (in != null) in.close();
+        } catch (IOException ignored) {}
+        
+        try {
+            if (out != null) out.close();
+        } catch (IOException ignored) {}
+        
+        try {
+            if (socket != null) socket.close();
+        } catch (IOException ignored) {}
+        
+        in = null;
+        out = null;
+        socket = null;
     }
 }
