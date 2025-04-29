@@ -50,11 +50,12 @@ public class ProxyHandler {
             return false;
         }
         
-        // 如果需要验证，检查用户名和密码是否提供
-        if (proxyManager.isAuthRequired()) {
-            String username = proxyManager.getProxyUsername();
-            String password = proxyManager.getProxyPassword();
-            if (username == null || username.isEmpty() || password == null) {
+        // 判断是否配置了用户名，如果配置了用户名则认为需要验证
+        String username = proxyManager.getProxyUsername();
+        String password = proxyManager.getProxyPassword();
+        if (username != null && !username.isEmpty()) {
+            // 如果设置了用户名但没有密码
+            if (password == null || password.isEmpty()) {
                 LogUtil.e(TAG, "需要验证但凭据不完整");
                 return false;
             }

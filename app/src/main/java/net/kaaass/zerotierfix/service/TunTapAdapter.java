@@ -620,13 +620,19 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         if (virtualNetworkConfig == null) {
             return false;
         }
-        var routes = virtualNetworkConfig.getRoutes();
-        for (var route : routes) {
-            var target = route.getTarget();
-            if (target.getAddress().equals(InetAddress.getByName("0.0.0.0")) ||
-                target.getAddress().equals(InetAddress.getByName("::"))) {
-                return true;
+        
+        try {
+            var routes = virtualNetworkConfig.getRoutes();
+            for (var route : routes) {
+                var target = route.getTarget();
+                if (target.getAddress().equals(InetAddress.getByName("0.0.0.0")) ||
+                    target.getAddress().equals(InetAddress.getByName("::"))) {
+                    return true;
+                }
             }
+        } catch (UnknownHostException e) {
+            Log.e(TAG, "解析IP地址时出错: " + e.getMessage(), e);
+            return false;
         }
 
         return false;
