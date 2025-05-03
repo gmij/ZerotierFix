@@ -1396,23 +1396,27 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     public boolean isGlobalTrafficVpnWorking() {
         // 检查 VPN 是否已建立
         if (this.vpnSocket == null) {
+            LogUtil.e(TAG, "全局流量VPN未工作: VPN套接字为空");
             return false;
         }
 
         // 检查 TUN TAP 适配器是否正在运行
         if (this.tunTapAdapter == null || !this.tunTapAdapter.isRunning()) {
+            LogUtil.e(TAG, "全局流量VPN未工作: TUN TAP适配器未运行");
             return false;
         }
 
         // 检查代理设置是否有效
         var proxyManager = ProxyManager.getInstance(this);
         if (proxyManager.isProxyEnabled() && !proxyManager.isProxyConfigValid()) {
+            LogUtil.e(TAG, "全局流量VPN未工作: 代理配置无效");
             return false;
         }
 
         // 检查是否有全局路由
         var virtualNetworkConfig = getVirtualNetworkConfig(this.networkId);
         if (virtualNetworkConfig == null) {
+            LogUtil.e(TAG, "全局流量VPN未工作: 虚拟网络配置为空");
             return false;
         }
         var routes = virtualNetworkConfig.getRoutes();
@@ -1424,6 +1428,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 var target = route.getTarget();
                 if (target.getAddress().equals(v4Loopback) || 
                     target.getAddress().equals(v6Loopback)) {
+                    LogUtil.d(TAG, "全局流量VPN正在工作: 发现全局路由 " + target.getAddress());
                     return true;
                 }
             }
@@ -1432,6 +1437,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return false;
         }
 
+        LogUtil.e(TAG, "全局流量VPN未工作: 未发现全局路由");
         return false;
     }
 

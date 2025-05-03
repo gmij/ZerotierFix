@@ -324,7 +324,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         if (isMulticast || this.arpTable.hasMacForAddress(destIP)) {
             // 已确定目标 MAC，直接发送
             if (isIPv4Multicast(destIP)) {
-                destMac = multicastAddressToMAC(destIP);
+                destMac = this.arpTable.getMacForAddress(destIP);
             } else {
                 destMac = this.arpTable.getMacForAddress(destIP);
             }
