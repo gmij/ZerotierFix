@@ -3,6 +3,9 @@
   <br>Zerotier Fix<br>
 </h1>
 
+
+本版本完善了全局路由功能~~~~~~~~
+
 <h4 align="center">An unofficial Zerotier Android client patched from official client.</h4>
 
 <p align="center">
