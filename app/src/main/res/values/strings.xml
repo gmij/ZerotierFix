@@ -166,6 +166,17 @@
     <string name="menu_clear">Clear</string>
     <string name="no_logs_found">No logs found</string>
 
+    <!-- 授权设备列表相关字符串 -->
+    <string name="title_authorized_devices">Authorized Devices</string>
+    <string name="menu_authorized_devices">View Authorized Devices</string>
+    <string name="device_online">Online</string>
+    <string name="device_offline">Offline</string>
+    <string name="device_ip_addresses">IP Addresses:</string>
+    <string name="no_devices">No authorized devices found</string>
+    <string name="fail_retrieve_device_list">Failed to retrieve authorized device list</string>
+    <string name="current_network">Current Network: %s</string>
+    <string name="current_network_none">No network selected</string>
+
     <!-- 代理设置相关字符串 (功能已移除) -->
     <!--
     <string name="proxy_settings">Proxy Settings</string>

@@ -163,5 +163,14 @@
     <string name="menu_refresh">刷新</string>
     <string name="menu_clear">清空</string>
     <string name="no_logs_found">未找到日志</string>
-    <!-- 代理设置相关字符串已移除 -->
+    <!-- 授权设备列表相关字符串 -->
+    <string name="title_authorized_devices">已授权设备</string>
+    <string name="menu_authorized_devices">查看已授权设备</string>
+    <string name="device_online">在线</string>
+    <string name="device_offline">离线</string>
+    <string name="device_ip_addresses">IP地址:</string>
+    <string name="no_devices">未找到已授权设备</string>
+    <string name="fail_retrieve_device_list">获取已授权设备列表失败</string>
+    <string name="current_network">当前网络: %s</string>
+    <string name="current_network_none">未选择网络</string>
 </resources>

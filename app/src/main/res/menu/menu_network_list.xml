@@ -4,6 +4,9 @@
         android:id="@+id/menu_item_peers"
         android:title="@string/menu_peers" />
     <item
+        android:id="@+id/menu_item_authorized_devices"
+        android:title="@string/menu_authorized_devices" />
+    <item
         android:id="@+id/menu_item_orbit"
         android:title="@string/menu_orbit" />
     <item

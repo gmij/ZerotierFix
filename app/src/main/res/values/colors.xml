@@ -14,6 +14,10 @@
 
     <color name="grey_text">#555555</color>
     <color name="grey_text_night">#EDEDED</color>
+    
+    <!-- 设备状态颜色 -->
+    <color name="colorSuccess">#4CAF50</color>
+    <color name="colorError">#F44336</color>
 
     <color name="light_grey_text">#dddddd</color>
     <color name="light_grey_text_night">#ffffff</color>

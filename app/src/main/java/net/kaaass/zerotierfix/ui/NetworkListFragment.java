@@ -329,6 +329,10 @@ public class NetworkListFragment extends Fragment {
             Log.d(TAG, "Selected logs");
             startActivity(new Intent(getActivity(), LogsActivity.class));
             return true;
+        } else if (menuId == R.id.menu_item_authorized_devices) {
+            Log.d(TAG, "Selected authorized devices");
+            startActivity(new Intent(getActivity(), AuthorizedDevicesActivity.class));
+            return true;
         }
         return super.onOptionsItemSelected(menuItem);
     }
