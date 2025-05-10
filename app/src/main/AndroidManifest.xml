@@ -54,9 +54,6 @@
         <activity
             android:name=".ui.LogsActivity"
             android:label="@string/logs_title" />
-        <activity
-            android:name=".ui.AuthorizedDevicesActivity"
-            android:label="@string/title_authorized_devices" />
 
         <receiver
             android:name=".service.StartupReceiver"
