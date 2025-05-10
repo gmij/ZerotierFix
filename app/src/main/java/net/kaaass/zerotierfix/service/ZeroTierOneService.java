@@ -1463,13 +1463,34 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         
                         // 获取分配给当前节点的IP地址
                         List<String> ipAddresses = new ArrayList<>();
-                        for (AssignedAddress address : DatabaseUtils.getAddressesForNetwork(((ZerotierFixApplication) getApplication()).getDaoSession(), networkId)) {
-                            ipAddresses.add(address.getAddressString() + "/" + address.getPrefix());
-                        }
-                        currentDevice.getIpAddresses().addAll(ipAddresses);
+                        List<AssignedAddress> addressList = DatabaseUtils.getAddressesForNetwork(
+                            ((ZerotierFixApplication) getApplication()).getDaoSession(), networkId);
                         
+                        // 处理ZT网络中的地址
+                        if (addressList != null && !addressList.isEmpty()) {
+                            for (AssignedAddress address : addressList) {
+                                if (address.getAddressString() != null && !address.getAddressString().isEmpty()) {
+                                    ipAddresses.add(address.getAddressString() + "/" + address.getPrefix());
+                                }
+                            }
+                        }
+                        
+                        // 如果没有IP地址，使用配置中的分配地址
+                        if (ipAddresses.isEmpty() && config.getAssignedAddresses() != null && config.getAssignedAddresses().length > 0) {
+                            for (InetSocketAddress addr : config.getAssignedAddresses()) {
+                                if (addr != null && addr.getAddress() != null) {
+                                    ipAddresses.add(addr.getAddress().getHostAddress() + 
+                                        (addr.getPort() > 0 ? "/" + addr.getPort() : ""));
+                                }
+                            }
+                        }
+                        
+                        currentDevice.getIpAddresses().addAll(ipAddresses);
                         devices.add(currentDevice);
                     }
+                    
+                    // 存储我们发现的所有对等节点，后面会过滤重复的
+                    Map<String, AuthorizedDevice> deviceMap = new HashMap<>();
                     
                     // 获取peer信息
                     Peer[] peers = this.node.peers();
@@ -1484,27 +1505,102 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                                 continue;
                             }
                             
-                            AuthorizedDevice peerDevice = new AuthorizedDevice();
-                            peerDevice.setNodeId(peerId);
-                            peerDevice.setDeviceName("网络节点");
-                            peerDevice.setOnline(peer.getLatency() < 10000); // 假设延迟小于10秒的节点是在线的
-                            peerDevice.setLastOnline(System.currentTimeMillis());
-                            peerDevice.setNetworkId(Long.toHexString(networkId));
+                            // 检查是否已经有该节点的记录
+                            AuthorizedDevice peerDevice = deviceMap.get(peerId);
+                            if (peerDevice == null) {
+                                peerDevice = new AuthorizedDevice();
+                                peerDevice.setNodeId(peerId);
+                                
+                                // 尝试获取更有意义的名称
+                                String deviceName = getDeviceNameFromPeerId(peerId);
+                                peerDevice.setDeviceName(deviceName != null ? deviceName : "网络节点");
+                                
+                                // 根据延迟判断节点是否在线（小于5秒视为在线）
+                                boolean isOnline = peer.getLatency() < 5000 && peer.getLatency() > 0;
+                                peerDevice.setOnline(isOnline);
+                                peerDevice.setLastOnline(System.currentTimeMillis());
+                                peerDevice.setNetworkId(Long.toHexString(networkId));
+                                
+                                deviceMap.put(peerId, peerDevice);
+                            }
                             
-                            // 我们无法直接获取其他节点的IP地址，但可以显示其物理路径
+                            // 添加物理路径信息和可能的外部IP地址
                             if (peer.getPaths() != null && peer.getPaths().length > 0) {
+                                // 先寻找外部IP路径
                                 for (PeerPhysicalPath path : peer.getPaths()) {
-                                    if (path.isPreferred()) {
-                                        peerDevice.getIpAddresses().add(StringUtils.toString(path.getAddress()) + " (物理路径)");
-                                        break;
+                                    if (path.isPreferred() && path.getAddress() != null) {
+                                        String pathAddress = StringUtils.toString(path.getAddress());
+                                        if (isPublicIpAddress(pathAddress)) {
+                                            peerDevice.getIpAddresses().add(pathAddress + " (公网地址)");
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                // 如果没有找到外部IP，添加首选路径
+                                if (peerDevice.getIpAddresses().isEmpty()) {
+                                    for (PeerPhysicalPath path : peer.getPaths()) {
+                                        if (path.isPreferred()) {
+                                            String pathAddress = StringUtils.toString(path.getAddress());
+                                            peerDevice.getIpAddresses().add(pathAddress + 
+                                                (isPublicIpAddress(pathAddress) ? " (公网地址)" : " (内网地址)"));
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                // 如果仍然没有IP地址，添加第一个可用路径
+                                if (peerDevice.getIpAddresses().isEmpty() && peer.getPaths().length > 0) {
+                                    String pathAddress = StringUtils.toString(peer.getPaths()[0].getAddress());
+                                    peerDevice.getIpAddresses().add(pathAddress + 
+                                        (isPublicIpAddress(pathAddress) ? " (公网地址)" : " (内网地址)"));
+                                }
+                            }
+                        }
+                        
+                        // 将收集到的设备添加到结果列表
+                        devices.addAll(deviceMap.values());
+                    } else {
+                        LogUtil.d(TAG, "未找到对等节点");
+                    }
+                    
+                    // 尝试从ZT网络配置中获取其他设备信息
+                    try {
+                        // 如果有路由配置，可能包含其他节点信息
+                        if (config.getRoutes() != null && config.getRoutes().length > 0) {
+                            for (var route : config.getRoutes()) {
+                                if (route.getTarget() != null && route.getTarget().getAddress() != null) {
+                                    String ipAddr = route.getTarget().getAddress().getHostAddress();
+                                    if (ipAddr != null && isPublicIpAddress(ipAddr)) {
+                                        // 这可能是一个有效的设备IP
+                                        boolean found = false;
+                                        for (AuthorizedDevice device : devices) {
+                                            for (String existingIp : device.getIpAddresses()) {
+                                                if (existingIp.contains(ipAddr)) {
+                                                    found = true;
+                                                    break;
+                                                }
+                                            }
+                                            if (found) break;
+                                        }
+                                        
+                                        // 如果这是一个新IP，添加为未知设备
+                                        if (!found) {
+                                            AuthorizedDevice unknownDevice = new AuthorizedDevice();
+                                            unknownDevice.setNodeId("unknown-" + devices.size());
+                                            unknownDevice.setDeviceName("未识别设备");
+                                            unknownDevice.setOnline(true); // 假设路由中的设备是在线的
+                                            unknownDevice.setLastOnline(System.currentTimeMillis());
+                                            unknownDevice.setNetworkId(Long.toHexString(networkId));
+                                            unknownDevice.getIpAddresses().add(ipAddr + "/" + route.getTarget().getPort() + " (路由目标)");
+                                            devices.add(unknownDevice);
+                                        }
                                     }
                                 }
                             }
-                            
-                            devices.add(peerDevice);
                         }
-                    } else {
-                        LogUtil.d(TAG, "未找到对等节点");
+                    } catch (Exception e) {
+                        LogUtil.w(TAG, "处理路由信息时出错: " + e.getMessage());
                     }
                 }
             }
@@ -1529,6 +1625,123 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         
         return devices;
+    }
+    
+    /**
+     * 判断给定的IP地址是否为公网IP地址
+     * 
+     * @param ipAddress IP地址字符串
+     * @return 如果是公网IP返回true，否则返回false
+     */
+    private boolean isPublicIpAddress(String ipAddress) {
+        if (ipAddress == null || ipAddress.isEmpty()) {
+            return false;
+        }
+        
+        try {
+            // 解析IP地址
+            InetAddress address = InetAddress.getByName(ipAddress);
+            
+            // 检查是否为回环地址或本地地址
+            if (address.isLoopbackAddress() || address.isLinkLocalAddress() || 
+                address.isSiteLocalAddress() || address.isAnyLocalAddress()) {
+                return false;
+            }
+            
+            // 检查是否为私有IP范围
+            String[] parts = ipAddress.split("\\.");
+            if (parts.length == 4) {
+                // 检查是否为私有IP范围:
+                // 10.0.0.0 - 10.255.255.255
+                if (parts[0].equals("10")) {
+                    return false;
+                }
+                
+                // 172.16.0.0 - 172.31.255.255
+                if (parts[0].equals("172")) {
+                    int second = Integer.parseInt(parts[1]);
+                    if (second >= 16 && second <= 31) {
+                        return false;
+                    }
+                }
+                
+                // 192.168.0.0 - 192.168.255.255
+                if (parts[0].equals("192") && parts[1].equals("168")) {
+                    return false;
+                }
+                
+                // 169.254.0.0 - 169.254.255.255 (链路本地地址)
+                if (parts[0].equals("169") && parts[1].equals("254")) {
+                    return false;
+                }
+                
+                // 127.0.0.0 - 127.255.255.255 (回环地址)
+                if (parts[0].equals("127")) {
+                    return false;
+                }
+            }
+            
+            // 检查IPv6特殊地址
+            if (address instanceof Inet6Address) {
+                // fe80::/10 (链路本地地址)
+                if (ipAddress.toLowerCase().startsWith("fe80:")) {
+                    return false;
+                }
+                
+                // fc00::/7 (唯一本地地址)
+                if (ipAddress.toLowerCase().startsWith("fc") || 
+                    ipAddress.toLowerCase().startsWith("fd")) {
+                    return false;
+                }
+                
+                // ::1 (IPv6回环地址)
+                if (ipAddress.equals("::1") || ipAddress.equals("0:0:0:0:0:0:0:1")) {
+                    return false;
+                }
+            }
+            
+            return true;
+        } catch (Exception e) {
+            LogUtil.e(TAG, "检查IP地址类型时出错: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * 尝试根据节点ID获取更有意义的设备名称
+     * 
+     * @param nodeId 节点ID
+     * @return 设备名称，如果无法确定则返回null
+     */
+    private String getDeviceNameFromPeerId(String nodeId) {
+        if (nodeId == null || nodeId.isEmpty()) {
+            return null;
+        }
+        
+        try {
+            // 这里可以实现一个设备名称映射表
+            // 例如，根据已知的节点ID返回自定义名称
+            
+            // 查看设备类型特征
+            // 例如，某些特定的ID前缀可能代表特定类型的设备
+            if (nodeId.length() > 4) {
+                String prefix = nodeId.substring(0, 4);
+                if ("af78".equalsIgnoreCase(prefix)) {
+                    return "桌面设备";
+                } else if ("9d33".equalsIgnoreCase(prefix)) {
+                    return "服务器";
+                } else if ("3e62".equalsIgnoreCase(prefix)) {
+                    return "移动设备";
+                }
+            }
+            
+            // 默认情况下，使用一般性名称
+            return "网络节点-" + nodeId.substring(0, Math.min(6, nodeId.length()));
+            
+        } catch (Exception e) {
+            LogUtil.d(TAG, "获取设备名称时出错: " + e.getMessage());
+            return null;
+        }
     }
 
     public class ZeroTierBinder extends Binder {
