@@ -149,30 +149,6 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
         // initProxyPreferencesSummary();
     }
     
-    /**
-     * 初始化代理设置的摘要信息，以便在界面上显示当前值
-     * 代理功能已移除
-     */
-    /*
-    private void initProxyPreferencesSummary() {
-        SharedPreferences sharedPreferences = getPreferenceScreen().getSharedPreferences();
-        
-        // 初始化代理类型
-        updateProxyTypePreferenceSummary(sharedPreferences);
-        
-        // 初始化代理主机
-        updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_HOST);
-        
-        // 初始化代理端口
-        updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_PORT);
-        
-        // 初始化代理用户名
-        updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_USERNAME);
-        
-        // 初始化代理密码（显示为星号）
-        updateProxyPasswordPreferenceSummary(sharedPreferences);
-    }
-    */
     
     /**
      * 更新偏好设置的摘要信息
@@ -189,41 +165,6 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
         }
     }
     
-    /**
-     * 更新代理类型偏好设置的摘要信息
-     * 代理功能已移除
-     */
-    /*
-    private void updateProxyTypePreferenceSummary(SharedPreferences sharedPreferences) {
-        ListPreference preference = findPreference(Constants.PREF_PROXY_TYPE);
-        if (preference != null) {
-            String value = sharedPreferences.getString(Constants.PREF_PROXY_TYPE, "0");
-            int index = preference.findIndexOfValue(value);
-            if (index >= 0) {
-                preference.setSummary(preference.getEntries()[index]);
-            } else {
-                preference.setSummary(null);
-            }
-        }
-    }
-    
-    /**
-     * 更新代理密码偏好设置的摘要信息（显示为星号）
-     * 代理功能已移除
-     */
-    /*
-    private void updateProxyPasswordPreferenceSummary(SharedPreferences sharedPreferences) {
-        Preference preference = findPreference(Constants.PREF_PROXY_PASSWORD);
-        if (preference instanceof EditTextPreference) {
-            String value = sharedPreferences.getString(Constants.PREF_PROXY_PASSWORD, "");
-            if (!value.isEmpty()) {
-                preference.setSummary("****"); // 密码用星号显示
-            } else {
-                preference.setSummary(null); // 清除摘要，只显示标题
-            }
-        }
-    }
-    */
     
     @Override
     public void onDestroy() {
@@ -354,91 +295,6 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
                 requireActivity().startService(new Intent(getActivity(), ZeroTierOneService.class));
             }
         } 
-        // 代理功能已移除
-        /* else if (key.equals(Constants.PREF_PROXY_ENABLED)) {
-            // 代理启用状态改变
-            boolean enabled = sharedPreferences.getBoolean(Constants.PREF_PROXY_ENABLED, false);
-            Preference proxyHostPref = findPreference(Constants.PREF_PROXY_HOST);
-            Preference proxyPortPref = findPreference(Constants.PREF_PROXY_PORT);
-            Preference proxyTypePref = findPreference(Constants.PREF_PROXY_TYPE);
-            Preference proxyUsernamePref = findPreference(Constants.PREF_PROXY_USERNAME);
-            Preference proxyPasswordPref = findPreference(Constants.PREF_PROXY_PASSWORD);
-            
-            if (proxyHostPref != null) {
-                proxyHostPref.setEnabled(enabled);
-            }
-            if (proxyPortPref != null) {
-                proxyPortPref.setEnabled(enabled);
-            }
-            if (proxyTypePref != null) {
-                proxyTypePref.setEnabled(enabled);
-            }
-            if (proxyUsernamePref != null) {
-                proxyUsernamePref.setEnabled(enabled);
-            }
-            if (proxyPasswordPref != null) {
-                proxyPasswordPref.setEnabled(enabled);
-            }
-            
-            // 记录代理启用状态变化
-            Log.i(TAG, "代理" + (enabled ? "已启用" : "已禁用"));
-            
-            // 如果启用了代理，提示用户检查设置
-            if (enabled) {
-                String proxyHost = sharedPreferences.getString(Constants.PREF_PROXY_HOST, "");
-                String proxyPort = sharedPreferences.getString(Constants.PREF_PROXY_PORT, "");
-                if (proxyHost.isEmpty() || proxyPort.isEmpty()) {
-                    Toast.makeText(getContext(), "请设置代理服务器地址和端口", Toast.LENGTH_SHORT).show();
-                }
-            }
-        } else if (key.equals(Constants.PREF_PROXY_TYPE)) {
-            // 代理类型变化
-            String proxyTypeStr = sharedPreferences.getString(Constants.PREF_PROXY_TYPE, "0");
-            try {
-                int proxyType = Integer.parseInt(proxyTypeStr);
-                String proxyTypeName = "未知";
-                switch (proxyType) {
-                    case Constants.PROXY_TYPE_NONE:
-                        proxyTypeName = "无";
-                        break;
-                    case Constants.PROXY_TYPE_SOCKS5:
-                        proxyTypeName = "SOCKS5";
-                        break;
-                    case Constants.PROXY_TYPE_HTTP:
-                        proxyTypeName = "HTTP";
-                        break;
-                }
-                Log.i(TAG, "代理类型已设置为: " + proxyTypeName);
-                
-                // 更新代理类型摘要
-                updateProxyTypePreferenceSummary(sharedPreferences);
-                
-                // 更新用户名密码字段状态
-                boolean needsAuth = proxyType != Constants.PROXY_TYPE_NONE;
-                Preference usernamePref = findPreference(Constants.PREF_PROXY_USERNAME);
-                Preference passwordPref = findPreference(Constants.PREF_PROXY_PASSWORD);
-                if (usernamePref != null) {
-                    usernamePref.setEnabled(needsAuth);
-                }
-                if (passwordPref != null) {
-                    passwordPref.setEnabled(needsAuth);
-                }
-            } catch (NumberFormatException e) {
-                Log.e(TAG, "解析代理类型出错", e);
-            }
-        } else if (key.equals(Constants.PREF_PROXY_HOST)) {
-            // 更新代理主机摘要
-            updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_HOST);
-        } else if (key.equals(Constants.PREF_PROXY_PORT)) {
-            // 更新代理端口摘要
-            updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_PORT);
-        } else if (key.equals(Constants.PREF_PROXY_USERNAME)) {
-            // 更新代理用户名摘要
-            updatePreferenceSummary(sharedPreferences, Constants.PREF_PROXY_USERNAME);
-        } else if (key.equals(Constants.PREF_PROXY_PASSWORD)) {
-            // 更新代理密码摘要（显示为星号）
-            updateProxyPasswordPreferenceSummary(sharedPreferences);
-        } */
     }
 
     /**
