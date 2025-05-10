@@ -22,7 +22,8 @@
             android:title="@string/preferences_network_disable_ipv6" />
     </PreferenceCategory>
     
-    <!-- 代理设置部分 -->
+    <!-- 代理功能已移除 -->
+    <!-- 
     <PreferenceCategory android:title="@string/proxy_settings">
         <SwitchPreference
             android:defaultValue="false"
@@ -55,4 +56,5 @@
             android:inputType="textPassword"
             android:title="@string/proxy_password" />
     </PreferenceCategory>
+    -->
 </PreferenceScreen>

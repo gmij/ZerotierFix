@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 代理类型选项 -->
+    <!-- 代理类型选项 (已移除功能) -->
+    <!-- 
     <string-array name="proxy_type_entries">
         <item>None</item>
         <item>SOCKS5</item>
@@ -12,4 +13,5 @@
         <item>1</item>
         <item>2</item>
     </string-array>
+    -->
 </resources>

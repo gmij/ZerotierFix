@@ -59,7 +59,7 @@ import net.kaaass.zerotierfix.util.DatabaseUtils;
 import net.kaaass.zerotierfix.util.InetAddressUtils;
 import net.kaaass.zerotierfix.util.LogUtil;
 import net.kaaass.zerotierfix.util.NetworkInfoUtils;
-import net.kaaass.zerotierfix.util.ProxyManager;
+// import net.kaaass.zerotierfix.util.ProxyManager; // 代理功能已移除
 import net.kaaass.zerotierfix.util.StringUtils;
 
 import org.greenrobot.eventbus.EventBus;
@@ -868,18 +868,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 如果启用了全局路由，添加默认路由(0.0.0.0/0 和 ::/0)
         if (isRouteViaZeroTier) {
             try {
-                // 检查是否使用代理
-                var proxyManager = ProxyManager.getInstance(this);
-                boolean useProxy = proxyManager.isProxyConfigValid();
-                
-                if (useProxy) {
-                    // 使用代理服务器，记录日志
-                    LogUtil.i(TAG, "全局路由模式：使用代理服务器 " + proxyManager.getProxyUrl());
-                    configureProxyRouting(builder, proxyManager);
-                } else {
-                    // 常规ZeroTier全局路由，不使用代理
-                    configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses);
-                }
+                // 使用ZeroTier全局路由模式
+                LogUtil.i(TAG, "使用ZeroTier全局路由模式");
+                configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses);
                 
                 // 大幅增强对本地连接的保护，避免VPN路由循环
                 // 1. 保护常用DNS查询连接
@@ -936,12 +927,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 
                 // 添加IPv6全局路由 (::/0)，如果IPv6未禁用
                 if (!this.disableIPv6) {
-                    if (useProxy) {
-                        // 当使用代理时，如果代理支持IPv6，添加IPv6路由
-                        configureProxyIPv6Routing(builder, proxyManager);
-                    } else {
-                        configureDirectIPv6Routing(builder, virtualNetworkConfig, assignedAddresses);
-                    }
+                    configureDirectIPv6Routing(builder, virtualNetworkConfig, assignedAddresses);
                 }
                 
             } catch (Exception e) {
@@ -1210,68 +1196,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * @param builder VPN构建器
      * @param proxyManager 代理管理器
      */
+    // 代理功能已移除
     private void configureProxyRouting(VpnService.Builder builder, ProxyManager proxyManager) throws Exception {
-        // 添加代理服务器地址
-        String proxyHost = proxyManager.getProxyHost();
-        
-        // 确保代理服务器的流量不通过VPN隧道
-        InetAddress proxyAddr = InetAddress.getByName(proxyHost);
-        // protectSocketConnection(proxyHost, proxyManager.getProxyPort());
-        
-        // 确保我们能访问代理服务器 - 排除代理服务器网络
-        String proxyIp = proxyAddr.getHostAddress();
-        if (proxyIp != null && proxyIp.contains(".")) {
-            // 保护代理服务器所在的C段网络，确保能直接访问代理
-            String proxySubnet = proxyIp.substring(0, proxyIp.lastIndexOf(".")) + ".0";
-            // protectSocketConnection(proxySubnet, 0);
-            LogUtil.i(TAG, "保护代理服务器所在网段: " + proxySubnet);
-        }
-                
-        // 添加全局路由(0.0.0.0/0)，所有IPv4流量将通过VPN接口
-        InetAddress v4DefaultRoute = InetAddress.getByName("0.0.0.0");
-        builder.addRoute(v4DefaultRoute, 0);
-        LogUtil.i(TAG, "添加IPv4全局路由 0.0.0.0/0 - 流量将通过代理: " + proxyManager.getProxyUrl());
-        
-        // 创建代理处理器并配置到TunTapAdapter
-        try {
-            // 检查代理配置有效性
-            if (!proxyManager.isProxyConfigValid()) {
-                LogUtil.e(TAG, "代理配置无效，无法启用代理");
-                return;
-            }
-            
-            // 创建代理处理器
-            var proxyHandler = new net.kaaass.zerotierfix.proxy.ProxyHandler(proxyManager);
-            
-            // 设置到TunTapAdapter
-            if (this.tunTapAdapter != null) {
-                this.tunTapAdapter.setProxyHandler(proxyHandler);
-                LogUtil.i(TAG, "代理处理器已设置，类型: " + proxyManager.getProxyTypeString());
-            } else {
-                LogUtil.e(TAG, "无法设置代理处理器：TunTapAdapter为空");
-            }
-        } catch (Exception e) {
-            LogUtil.e(TAG, "初始化代理处理器失败: " + e.getMessage(), e);
-        }
-        
-        // 在应用中记录代理设置
-        LogUtil.logNetworkEvent("启用代理", proxyManager.getProxyTypeString() + " " + proxyHost + ":" + proxyManager.getProxyPort());
+        // 此方法内容已移除，保留空方法签名以避免编译错误
+        LogUtil.i(TAG, "代理功能已移除");
     }
 
     /**
-     * 配置使用代理服务器的IPv6路由
+     * 配置使用代理服务器的IPv6路由 - 已移除，保留方法签名避免编译错误
      * @param builder VPN构建器
      * @param proxyManager 代理管理器
      */
     private void configureProxyIPv6Routing(VpnService.Builder builder, ProxyManager proxyManager) throws Exception {
-        // 大多数SOCKS5代理都支持IPv6，但HTTP代理可能不支持
-        if (proxyManager.getProxyType() == Constants.PROXY_TYPE_SOCKS5) {
-            InetAddress v6DefaultRoute = InetAddress.getByName("::");
-            builder.addRoute(v6DefaultRoute, 0);
-            LogUtil.i(TAG, "添加IPv6全局路由 ::/0 - 流量将通过SOCKS5代理");
-        } else {
-            LogUtil.i(TAG, "HTTP代理可能不支持IPv6，跳过IPv6全局路由配置");
-        }
+        // 此方法内容已移除，保留空方法签名以避免编译错误
+        LogUtil.i(TAG, "IPv6代理功能已移除");
     }
     
     /**
@@ -1403,13 +1341,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 检查 TUN TAP 适配器是否正在运行
         if (this.tunTapAdapter == null || !this.tunTapAdapter.isRunning()) {
             LogUtil.e(TAG, "全局流量VPN未工作: TUN TAP适配器未运行");
-            return false;
-        }
-
-        // 检查代理设置是否有效
-        var proxyManager = ProxyManager.getInstance(this);
-        if (proxyManager.isProxyEnabled() && !proxyManager.isProxyConfigValid()) {
-            LogUtil.e(TAG, "全局流量VPN未工作: 代理配置无效");
             return false;
         }
 

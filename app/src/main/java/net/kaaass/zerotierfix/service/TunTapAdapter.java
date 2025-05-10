@@ -9,7 +9,6 @@ import com.zerotier.sdk.VirtualNetworkConfig;
 import com.zerotier.sdk.VirtualNetworkFrameListener;
 import com.zerotier.sdk.util.StringUtils;
 
-import net.kaaass.zerotierfix.proxy.ProxyHandler;
 import net.kaaass.zerotierfix.util.DebugLog;
 import net.kaaass.zerotierfix.util.IPPacketUtils;
 import net.kaaass.zerotierfix.util.InetAddressUtils;
@@ -48,33 +47,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private Thread receiveThread;
     private ParcelFileDescriptor vpnSocket;
 
-    // 代理处理相关
-    private ProxyHandler proxyHandler;
-    private boolean useProxy = false;
-
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
         this.ztService = zeroTierOneService;
         this.networkId = j;
-    }
-
-    /**
-     * 设置代理处理器
-     *
-     * @param proxyHandler 代理处理器实例
-     */
-    public void setProxyHandler(ProxyHandler proxyHandler) {
-        this.proxyHandler = proxyHandler;
-        this.useProxy = (proxyHandler != null);
-        LogUtil.i(TAG, "代理模式 " + (useProxy ? "已启用" : "未启用"));
-    }
-
-    /**
-     * 检查代理配置是否有效
-     *
-     * @return 如果代理配置有效，则返回true
-     */
-    public boolean isProxyConfigValid() {
-        return this.proxyHandler != null && this.proxyHandler.isProxyConfigValid();
     }
 
     /**
@@ -97,34 +72,6 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         }
 
         return false;
-    }
-
-    /**
-     * 尝试通过代理发送数据包
-     *
-     * @return true如果数据包已通过代理发送，false表示未处理
-     */
-    private boolean trySendViaProxy(byte[] packetData, InetAddress sourceIP, InetAddress destIP) {
-        if (!useProxy || proxyHandler == null) {
-            LogUtil.d(TAG, "代理未启用或代理处理器为空，跳过代理转发");
-            return false;
-        }
-
-        try {
-            // 判断是TCP还是UDP
-            boolean isTCP = isTcpPacket(packetData);
-            LogUtil.d(TAG, "尝试通过代理转发数据包: 源IP=" + sourceIP + ", 目的IP=" + destIP +
-                    ", 协议=" + (isTCP ? "TCP" : "UDP/其他") +
-                    ", 数据包大小=" + packetData.length + "字节");
-
-            // 使用代理处理器发送数据包
-            boolean result = proxyHandler.sendPacketViaProxy(packetData, sourceIP, destIP, isTCP);
-            LogUtil.d(TAG, "代理转发" + (result ? "成功" : "失败或不需要代理") + ": 源IP=" + sourceIP + ", 目的IP=" + destIP);
-            return result;
-        } catch (Exception e) {
-            LogUtil.e(TAG, "代理转发数据包失败: " + e.getMessage() + ", 源IP=" + sourceIP + ", 目的IP=" + destIP, e);
-            return false;
-        }
     }
 
     public static long multicastAddressToMAC(InetAddress inetAddress) {
@@ -263,11 +210,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             return;
         }
 
-        // 尝试通过代理发送数据包
-        if (trySendViaProxy(packetData, sourceIP, destIP)) {
-            LogUtil.d(TAG, "数据包通过代理发送: 源IP=" + sourceIP + ", 目的IP=" + destIP);
-            return;
-        }
+        // 代理功能已移除
 
         if (isIPv4Multicast(destIP)) {
             var result = this.node.multicastSubscribe(this.networkId, multicastAddressToMAC(destIP));
@@ -375,11 +318,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             return;
         }
 
-        // 尝试通过代理发送数据包
-        if (trySendViaProxy(packetData, sourceIP, destIP)) {
-            LogUtil.d(TAG, "数据包通过代理发送: 源IP=" + sourceIP + ", 目的IP=" + destIP);
-            return;
-        }
+        // 代理功能已移除
 
         if (this.isIPv6Multicast(destIP)) {
             var result = this.node.multicastSubscribe(this.networkId, multicastAddressToMAC(destIP));
@@ -682,22 +621,8 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             return false;
         }
 
-        // 检查代理设置是否有效
-        if (this.useProxy) {
-            if (this.proxyHandler == null) {
-                LogUtil.e(TAG, "全局流量VPN未工作: 启用了代理但代理处理器为空");
-                return false;
-            }
-
-            if (!this.proxyHandler.isProxyConfigValid()) {
-                LogUtil.e(TAG, "全局流量VPN未工作: 代理配置无效");
-                return false;
-            }
-
-            LogUtil.d(TAG, "代理模式已启用且配置有效");
-        } else {
-            LogUtil.d(TAG, "代理模式未启用，使用直接转发");
-        }
+        // 代理功能已移除
+        LogUtil.d(TAG, "使用直接转发");
 
         // 检查是否有全局路由
         var virtualNetworkConfig = this.ztService.getVirtualNetworkConfig(this.networkId);
