@@ -3,6 +3,7 @@ package net.kaaass.zerotierfix.ui;
 import android.app.Activity;
 import android.content.Context;
 import android.os.Bundle;
+import android.preference.PreferenceManager;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -18,12 +19,15 @@ import com.google.android.material.snackbar.BaseTransientBottomBar;
 import com.google.android.material.snackbar.Snackbar;
 
 import net.kaaass.zerotierfix.R;
+import net.kaaass.zerotierfix.ZerotierFixApplication;
 import net.kaaass.zerotierfix.events.AuthorizedDevicesReplyEvent;
 import net.kaaass.zerotierfix.events.AuthorizedDevicesRequestEvent;
 import net.kaaass.zerotierfix.events.NetworkListReplyEvent;
+import net.kaaass.zerotierfix.events.NetworkListRequestEvent;
 import net.kaaass.zerotierfix.model.AuthorizedDevice;
+import net.kaaass.zerotierfix.model.DaoSession;
 import net.kaaass.zerotierfix.model.Network;
-import net.kaaass.zerotierfix.util.StringUtils;
+import net.kaaass.zerotierfix.model.NetworkDao;
 
 import org.greenrobot.eventbus.EventBus;
 import org.greenrobot.eventbus.Subscribe;
@@ -31,7 +35,6 @@ import org.greenrobot.eventbus.ThreadMode;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 import lombok.ToString;
 
@@ -119,7 +122,7 @@ public class AuthorizedDevicesFragment extends Fragment {
         this.swipeRefreshLayout.setOnRefreshListener(this::onRefresh);
 
         // 请求网络列表
-        this.eventBus.post(new NetworkListReplyEvent());
+        this.eventBus.post(new NetworkListRequestEvent());
 
         return view;
     }
@@ -129,9 +132,14 @@ public class AuthorizedDevicesFragment extends Fragment {
      */
     @Subscribe(threadMode = ThreadMode.MAIN)
     public void onNetworkListReplyEvent(NetworkListReplyEvent event) {
-        if (event.getNetworks() != null) {
+        // 获取网络列表
+        List<Network> networks = getNetworkList();
+        if (networks != null && !networks.isEmpty()) {
             this.networkList.clear();
-            for (Network network : event.getNetworks()) {
+            this.networkList.addAll(networks);
+            
+            // 查找活跃网络
+            for (Network network : networks) {
                 if (network.getLastActivated()) {
                     this.currentNetwork = network;
                     updateNetworkDisplay();
@@ -139,8 +147,20 @@ public class AuthorizedDevicesFragment extends Fragment {
                     requestAuthorizedDevices(network);
                     break;
                 }
-                this.networkList.add(network);
             }
+        }
+    }
+    
+    /**
+     * 获取网络列表
+     */
+    private List<Network> getNetworkList() {
+        try {
+            DaoSession daoSession = ((ZerotierFixApplication) requireActivity().getApplication()).getDaoSession();
+            daoSession.clear();
+            return daoSession.getNetworkDao().queryBuilder().orderAsc(NetworkDao.Properties.NetworkId).build().forCurrentThread().list();
+        } catch (Exception e) {
+            return new ArrayList<>();
         }
     }
 
@@ -165,7 +185,7 @@ public class AuthorizedDevicesFragment extends Fragment {
         if (this.currentNetwork != null) {
             requestAuthorizedDevices(this.currentNetwork);
         } else {
-            this.eventBus.post(new NetworkListReplyEvent());
+            this.eventBus.post(new NetworkListRequestEvent());
         }
         // 超时自动重置刷新状态
         new Thread(() -> {
