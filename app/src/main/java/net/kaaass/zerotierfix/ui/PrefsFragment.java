@@ -145,13 +145,15 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
         // 注册监听器，使偏好设置变化能够被捕获
         getPreferenceScreen().getSharedPreferences().registerOnSharedPreferenceChangeListener(this);
         
-        // 初始化代理设置的摘要信息
-        initProxyPreferencesSummary();
+        // 代理功能已移除
+        // initProxyPreferencesSummary();
     }
     
     /**
      * 初始化代理设置的摘要信息，以便在界面上显示当前值
+     * 代理功能已移除
      */
+    /*
     private void initProxyPreferencesSummary() {
         SharedPreferences sharedPreferences = getPreferenceScreen().getSharedPreferences();
         
@@ -170,6 +172,7 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
         // 初始化代理密码（显示为星号）
         updateProxyPasswordPreferenceSummary(sharedPreferences);
     }
+    */
     
     /**
      * 更新偏好设置的摘要信息
@@ -188,7 +191,9 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
     
     /**
      * 更新代理类型偏好设置的摘要信息
+     * 代理功能已移除
      */
+    /*
     private void updateProxyTypePreferenceSummary(SharedPreferences sharedPreferences) {
         ListPreference preference = findPreference(Constants.PREF_PROXY_TYPE);
         if (preference != null) {
@@ -204,7 +209,9 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
     
     /**
      * 更新代理密码偏好设置的摘要信息（显示为星号）
+     * 代理功能已移除
      */
+    /*
     private void updateProxyPasswordPreferenceSummary(SharedPreferences sharedPreferences) {
         Preference preference = findPreference(Constants.PREF_PROXY_PASSWORD);
         if (preference instanceof EditTextPreference) {
@@ -216,6 +223,7 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
             }
         }
     }
+    */
     
     @Override
     public void onDestroy() {
@@ -345,7 +353,10 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
             if (sharedPreferences.getBoolean(Constants.PREF_NETWORK_USE_CELLULAR_DATA, false)) {
                 requireActivity().startService(new Intent(getActivity(), ZeroTierOneService.class));
             }
-        } else if (key.equals(Constants.PREF_PROXY_ENABLED)) {
+        } 
+        // 代理功能已移除
+        /*
+        else if (key.equals(Constants.PREF_PROXY_ENABLED)) {
             // 代理启用状态改变
             boolean enabled = sharedPreferences.getBoolean(Constants.PREF_PROXY_ENABLED, false);
             Preference proxyHostPref = findPreference(Constants.PREF_PROXY_HOST);
@@ -428,6 +439,7 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
         } else if (key.equals(Constants.PREF_PROXY_PASSWORD)) {
             // 更新代理密码摘要（显示为星号）
             updateProxyPasswordPreferenceSummary(sharedPreferences);
+        */
         }
     }
 
