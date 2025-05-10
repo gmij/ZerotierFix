@@ -1194,10 +1194,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /**
      * 配置使用代理服务器的IPv4路由
      * @param builder VPN构建器
-     * @param proxyManager 代理管理器
      */
     // 代理功能已移除
-    private void configureProxyRouting(VpnService.Builder builder, ProxyManager proxyManager) throws Exception {
+    private void configureProxyRouting(VpnService.Builder builder) throws Exception {
         // 此方法内容已移除，保留空方法签名以避免编译错误
         LogUtil.i(TAG, "代理功能已移除");
     }
@@ -1205,9 +1204,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /**
      * 配置使用代理服务器的IPv6路由 - 已移除，保留方法签名避免编译错误
      * @param builder VPN构建器
-     * @param proxyManager 代理管理器
      */
-    private void configureProxyIPv6Routing(VpnService.Builder builder, ProxyManager proxyManager) throws Exception {
+    private void configureProxyIPv6Routing(VpnService.Builder builder) throws Exception {
         // 此方法内容已移除，保留空方法签名以避免编译错误
         LogUtil.i(TAG, "IPv6代理功能已移除");
     }
