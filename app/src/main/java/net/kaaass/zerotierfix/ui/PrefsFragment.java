@@ -355,8 +355,7 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
             }
         } 
         // 代理功能已移除
-        /*
-        else if (key.equals(Constants.PREF_PROXY_ENABLED)) {
+        /* else if (key.equals(Constants.PREF_PROXY_ENABLED)) {
             // 代理启用状态改变
             boolean enabled = sharedPreferences.getBoolean(Constants.PREF_PROXY_ENABLED, false);
             Preference proxyHostPref = findPreference(Constants.PREF_PROXY_HOST);
@@ -439,8 +438,7 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
         } else if (key.equals(Constants.PREF_PROXY_PASSWORD)) {
             // 更新代理密码摘要（显示为星号）
             updateProxyPasswordPreferenceSummary(sharedPreferences);
-        */
-        }
+        } */
     }
 
     /**
