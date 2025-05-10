@@ -37,8 +37,7 @@ public class Constants {
 
     public static final String SECONDARY_DNS = "8.8.4.4";
 
-    // 代理设置相关常量 (功能已移除)
-    /*
+    // 代理设置相关常量
     public static final String PREF_PROXY_ENABLED = "proxy_enabled";
     public static final String PREF_PROXY_TYPE = "proxy_type"; 
     public static final String PREF_PROXY_HOST = "proxy_host";
@@ -50,7 +49,6 @@ public class Constants {
     public static final int PROXY_TYPE_NONE = 0;
     public static final int PROXY_TYPE_SOCKS5 = 1;
     public static final int PROXY_TYPE_HTTP = 2;
-    */
 
     // 全局流量 VPN 功能相关常量
     public static final String PREF_GLOBAL_TRAFFIC_VPN_ENABLED = "global_traffic_vpn_enabled";
