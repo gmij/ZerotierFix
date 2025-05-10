@@ -41,11 +41,7 @@ jobs:
             echo "No keystore found, will build unsigned APK"
           fi
       
-      # 构建Debug APK
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug
-      
-      # 构建Release APK
+      # 直接构建Release APK，不再专门构建Debug APK
       - name: Build Release APK
         env:
           # 指定完整路径
@@ -55,14 +51,7 @@ jobs:
           ZEROTIERFIX_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleRelease
       
-      # 上传Debug构建产物
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
-      
-      # 上传Release构建产物
+      # 只上传Release构建产物
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         if: success()
