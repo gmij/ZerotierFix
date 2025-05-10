@@ -1524,7 +1524,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 devices.add(currentDevice);
             }
         }
-        } catch (Exception e) {
+        catch (Exception e) {
             LogUtil.e(TAG, "Error fetching authorized devices from API: " + e.getMessage());
         }
         
