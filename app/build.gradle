@@ -3,6 +3,23 @@ plugins {
     id 'org.greenrobot.greendao'
 }
 
+// 加载密钥库配置
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+// 优先从环境变量中读取签名配置
+def useEnvVariables = System.getenv('ZEROTIERFIX_KEYSTORE_PASSWORD') != null
+
+if (useEnvVariables) {
+    println "使用环境变量中的签名配置"
+    keystoreProperties.put('storeFile', System.getenv('ZEROTIERFIX_KEYSTORE_FILE') ?: 'zerotierfix.keystore')
+    keystoreProperties.put('storePassword', System.getenv('ZEROTIERFIX_KEYSTORE_PASSWORD'))
+    keystoreProperties.put('keyAlias', System.getenv('ZEROTIERFIX_KEY_ALIAS'))
+    keystoreProperties.put('keyPassword', System.getenv('ZEROTIERFIX_KEY_PASSWORD'))
+} else if (keystorePropertiesFile.exists()) {
+    println "使用本地keystore.properties中的签名配置"
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 greendao {
     schemaVersion 22
     daoPackage 'net.kaaass.zerotierfix.model'
@@ -22,10 +39,26 @@ android {
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
 
+    // 添加签名配置
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists() || useEnvVariables) {
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // 应用签名配置
+            if (keystorePropertiesFile.exists() || useEnvVariables) {
+                signingConfig signingConfigs.release
+            }
         }
     }
     compileOptions {
