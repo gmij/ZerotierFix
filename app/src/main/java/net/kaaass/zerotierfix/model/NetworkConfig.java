@@ -66,7 +66,6 @@ public class NetworkConfig {
     @Generated(hash = 1627972760)
     private transient NetworkConfigDao myDao;
 
-    @Generated(hash = 374075929)
     public NetworkConfig(Long id, NetworkType type, NetworkStatus status, String mac, String mtu,
             boolean broadcast, boolean bridging, boolean routeViaZeroTier, boolean perAppRouting, 
             boolean useCustomDNS, int dnsMode) {
