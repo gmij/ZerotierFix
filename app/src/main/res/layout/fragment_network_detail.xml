@@ -195,6 +195,46 @@
                 android:text="" />
         </TableRow>
 
+        <TableRow android:layout_width="match_parent">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="right|center_vertical|center_horizontal|center|end"
+                android:paddingLeft="40dp"
+                android:paddingRight="20dp"
+                android:text="@string/network_per_app_routing" />
+
+            <CheckBox
+                android:id="@+id/network_per_app_routing"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end"
+                android:text="" />
+        </TableRow>
+
+        <TableRow
+            android:id="@+id/per_app_config_row"
+            android:layout_width="match_parent"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="right|center_vertical"
+                android:paddingLeft="40dp"
+                android:paddingRight="20dp"
+                android:text="" />
+
+            <Button
+                android:id="@+id/configure_apps_button"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end"
+                android:text="@string/configure_apps" />
+        </TableRow>
+
         <TableRow
             android:layout_width="match_parent"
             android:background="?attr/tableRowGrey">

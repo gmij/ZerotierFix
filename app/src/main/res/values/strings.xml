@@ -194,6 +194,8 @@
     <string name="app_routing_settings">App Routing Settings</string>
     <string name="app_routing_mode_label">Routing Mode</string>
     <string name="per_app_routing">Per-App Routing</string>
+    <string name="network_per_app_routing">Per-App Routing</string>
+    <string name="configure_apps">Configure Apps</string>
     <string name="global_routing_description">Global routing mode: All traffic goes through ZeroTier</string>
     <string name="per_app_routing_description">Per-app routing mode: Only selected apps go through ZeroTier</string>
     <string name="show_system_apps">Show System Apps</string>
@@ -205,4 +207,5 @@
     <string name="loading_apps">Loading applications...</string>
     <string name="no_apps_found">No applications found</string>
     <string name="menu_app_routing">App Routing</string>
+    <string name="empty_network_name">(Unnamed Network)</string>
 </resources>

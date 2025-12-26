@@ -10,7 +10,6 @@ import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.appcompat.widget.SwitchCompat;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -21,9 +20,6 @@ import net.kaaass.zerotierfix.ZerotierFixApplication;
 import net.kaaass.zerotierfix.model.AppInfo;
 import net.kaaass.zerotierfix.model.AppRouting;
 import net.kaaass.zerotierfix.model.AppRoutingDao;
-import net.kaaass.zerotierfix.model.Network;
-import net.kaaass.zerotierfix.model.NetworkConfig;
-import net.kaaass.zerotierfix.model.NetworkDao;
 import net.kaaass.zerotierfix.ui.adapter.AppRoutingAdapter;
 import net.kaaass.zerotierfix.util.AppUtils;
 import net.kaaass.zerotierfix.util.DatabaseUtils;
@@ -41,7 +37,6 @@ public class AppRoutingFragment extends Fragment {
     public static final String NETWORK_ID_MESSAGE = "network_id";
 
     private long networkId;
-    private SwitchCompat routingModeSwitch;
     private TextView routingModeDescription;
     private LinearLayout appListContainer;
     private CheckBox showSystemAppsCheckbox;
@@ -70,7 +65,6 @@ public class AppRoutingFragment extends Fragment {
         View view = inflater.inflate(R.layout.fragment_app_routing, container, false);
 
         // 初始化视图
-        routingModeSwitch = view.findViewById(R.id.routing_mode_switch);
         routingModeDescription = view.findViewById(R.id.routing_mode_description);
         appListContainer = view.findViewById(R.id.app_list_container);
         showSystemAppsCheckbox = view.findViewById(R.id.show_system_apps_checkbox);
@@ -86,103 +80,16 @@ public class AppRoutingFragment extends Fragment {
         // 设置刷新监听器
         swipeRefreshLayout.setOnRefreshListener(this::loadApps);
 
-        // 设置路由模式切换监听器
-        routingModeSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            onRoutingModeChanged(isChecked);
-        });
-
         // 设置显示系统应用切换监听器
         showSystemAppsCheckbox.setOnCheckedChangeListener((buttonView, isChecked) -> {
             showSystemApps = isChecked;
             updateAppList();
         });
 
-        // 加载当前路由模式
-        loadRoutingMode();
+        // 直接加载应用列表（因为只有在per-app模式下才能访问此界面）
+        loadApps();
 
         return view;
-    }
-
-    /**
-     * 加载路由模式设置
-     */
-    private void loadRoutingMode() {
-        Executors.newSingleThreadExecutor().execute(() -> {
-            DatabaseUtils.readLock.lock();
-            try {
-                var daoSession = ((ZerotierFixApplication) requireActivity().getApplication()).getDaoSession();
-                var networkDao = daoSession.getNetworkDao();
-                var networks = networkDao.queryBuilder()
-                        .where(NetworkDao.Properties.NetworkId.eq(networkId))
-                        .list();
-
-                if (networks.size() == 1) {
-                    Network network = networks.get(0);
-                    NetworkConfig networkConfig = network.getNetworkConfig();
-                    boolean isPerAppRouting = networkConfig.getPerAppRouting();
-
-                    requireActivity().runOnUiThread(() -> {
-                        routingModeSwitch.setChecked(isPerAppRouting);
-                        updateUIForRoutingMode(isPerAppRouting);
-                    });
-
-                    if (isPerAppRouting) {
-                        loadApps();
-                    }
-                }
-            } finally {
-                DatabaseUtils.readLock.unlock();
-            }
-        });
-    }
-
-    /**
-     * 路由模式改变时的处理
-     */
-    private void onRoutingModeChanged(boolean isPerAppRouting) {
-        updateUIForRoutingMode(isPerAppRouting);
-        
-        // 保存到数据库
-        Executors.newSingleThreadExecutor().execute(() -> {
-            DatabaseUtils.writeLock.lock();
-            try {
-                var daoSession = ((ZerotierFixApplication) requireActivity().getApplication()).getDaoSession();
-                var networkDao = daoSession.getNetworkDao();
-                var networks = networkDao.queryBuilder()
-                        .where(NetworkDao.Properties.NetworkId.eq(networkId))
-                        .list();
-
-                if (networks.size() == 1) {
-                    Network network = networks.get(0);
-                    NetworkConfig networkConfig = network.getNetworkConfig();
-                    networkConfig.setPerAppRouting(isPerAppRouting);
-                    networkConfig.update();
-                    
-                    LogUtil.i(TAG, "Routing mode changed to: " + 
-                            (isPerAppRouting ? "Per-App" : "Global"));
-                }
-            } finally {
-                DatabaseUtils.writeLock.unlock();
-            }
-        });
-
-        // 如果切换到per-app模式，加载应用列表
-        if (isPerAppRouting) {
-            loadApps();
-        }
-    }
-
-    /**
-     * 更新UI以反映路由模式
-     */
-    private void updateUIForRoutingMode(boolean isPerAppRouting) {
-        if (isPerAppRouting) {
-            routingModeDescription.setText(R.string.per_app_routing_description);
-            appListContainer.setVisibility(View.VISIBLE);
-        } else {
-            routingModeDescription.setText(R.string.global_routing_description);
-            appListContainer.setVisibility(View.GONE);
-        }
     }
 
     /**
@@ -239,6 +146,16 @@ public class AppRoutingFragment extends Fragment {
                 selectedCount++;
             }
         }
+
+        // 排序：选中的应用优先显示在前面
+        filteredApps.sort((app1, app2) -> {
+            // 先按是否选中排序（选中的在前）
+            if (app1.isRouteViaVpn() != app2.isRouteViaVpn()) {
+                return app1.isRouteViaVpn() ? -1 : 1;
+            }
+            // 再按应用名称排序
+            return app1.getAppName().compareToIgnoreCase(app2.getAppName());
+        });
 
         adapter.setAppList(filteredApps);
         selectedAppsCount.setText(getString(R.string.selected_apps_count, selectedCount));

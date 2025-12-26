@@ -107,6 +107,27 @@ public class NetworkDetailModel extends AndroidViewModel {
     }
 
     /**
+     * 更新是否启用 Per-App 路由模式
+     */
+    public void doUpdatePerAppRouting(boolean perAppRouting) {
+        var networkConfig = this.networkConfig.getValue();
+        if (networkConfig == null) {
+            Log.e(TAG, "Network config not found!");
+            return;
+        }
+
+        // 更新数据库
+        networkConfig.setPerAppRouting(perAppRouting);
+        networkConfig.update();
+
+        // 触发网络配置变化事件，让 VPN 服务重新配置
+        var network = this.network.getValue();
+        if (network != null) {
+            this.eventBus.post(new NetworkConfigChangedByUserEvent(network));
+        }
+    }
+
+    /**
      * 处理网络配置回复事件
      */
     @Subscribe(threadMode = ThreadMode.MAIN)

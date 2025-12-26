@@ -1118,16 +1118,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         NetworkConfig networkConfig = network.getNetworkConfig();
         boolean isPerAppRouting = networkConfig.getPerAppRouting();
 
-        // 排除本应用自身，避免VPN循环
-        try {
-            builder.addDisallowedApplication(getPackageName());
-            LogUtil.d(TAG, "排除应用: " + getPackageName() + " (本应用)");
-        } catch (Exception e) {
-            LogUtil.e(TAG, "无法排除应用 " + getPackageName(), e);
-        }
-
         if (!isPerAppRouting) {
             // 全局路由模式，所有应用都通过VPN（除了本应用）
+            // 排除本应用自身，避免VPN循环
+            try {
+                builder.addDisallowedApplication(getPackageName());
+                LogUtil.d(TAG, "排除应用: " + getPackageName() + " (本应用)");
+            } catch (Exception e) {
+                LogUtil.e(TAG, "无法排除应用 " + getPackageName(), e);
+            }
             LogUtil.i(TAG, "使用全局路由模式");
             return;
         }
@@ -1153,6 +1152,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             for (var routing : appRoutings) {
                 String packageName = routing.getPackageName();
                 boolean routeViaVpn = routing.getRouteViaVpn();
+
+                // 跳过本应用自身
+                if (packageName.equals(getPackageName())) {
+                    LogUtil.d(TAG, "跳过本应用: " + packageName);
+                    continue;
+                }
 
                 try {
                     // 验证包名是否有效
