@@ -51,6 +51,10 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
                 // This is necessary because SQLite doesn't support DROP COLUMN before version 3.35.5
                 Log.i(TAG, "Recreating NETWORK_CONFIG table without perAppRouting column");
                 
+                // Define the columns to preserve (schema v22 columns, excluding perAppRouting from v23)
+                final String COLUMNS = "_id, TYPE, STATUS, MAC, MTU, BROADCAST, BRIDGING, " +
+                        "ROUTE_VIA_ZERO_TIER, USE_CUSTOM_DNS, DNS_MODE";
+                
                 // Use a transaction to ensure atomicity
                 db.beginTransaction();
                 try {
@@ -68,10 +72,8 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
                             "DNS_MODE INTEGER NOT NULL)");
                     
                     // Copy data from old table to new table (excluding perAppRouting column)
-                    db.execSQL("INSERT INTO NETWORK_CONFIG_TEMP " +
-                            "(_id, TYPE, STATUS, MAC, MTU, BROADCAST, BRIDGING, ROUTE_VIA_ZERO_TIER, USE_CUSTOM_DNS, DNS_MODE) " +
-                            "SELECT _id, TYPE, STATUS, MAC, MTU, BROADCAST, BRIDGING, ROUTE_VIA_ZERO_TIER, USE_CUSTOM_DNS, DNS_MODE " +
-                            "FROM NETWORK_CONFIG");
+                    db.execSQL("INSERT INTO NETWORK_CONFIG_TEMP (" + COLUMNS + ") " +
+                            "SELECT " + COLUMNS + " FROM NETWORK_CONFIG");
                     
                     // Drop old table
                     db.execSQL("DROP TABLE NETWORK_CONFIG");
