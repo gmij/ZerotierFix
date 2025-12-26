@@ -41,14 +41,11 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
                 // Drop the APP_ROUTING table if it exists
                 db.execSQL("DROP TABLE IF EXISTS APP_ROUTING");
                 Log.i(TAG, "Dropped APP_ROUTING table");
-            } catch (Exception e) {
+            } catch (android.database.SQLException e) {
                 Log.e(TAG, "Error dropping APP_ROUTING table", e);
             }
             
-            // Remove the perAppRouting column from NETWORK_CONFIG table if it exists
-            // SQLite doesn't support DROP COLUMN directly, so we need to recreate the table
-            // However, since we're just ignoring the extra column, we can leave it
-            // The generated DAO code won't use it, and it won't cause issues
+            // Leave perAppRouting column - SQLite doesn't support DROP COLUMN and unused columns are harmless
             Log.i(TAG, "Ignoring perAppRouting column in NETWORK_CONFIG (if exists)");
         } else {
             Log.w(TAG, "Unsupported downgrade path from " + oldVersion + " to " + newVersion);
