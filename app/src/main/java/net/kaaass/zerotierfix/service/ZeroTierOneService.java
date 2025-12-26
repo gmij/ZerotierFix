@@ -1171,7 +1171,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         for (String packageName : allowedPackages) {
             // 跳过本应用自身
             if (packageName.equals(getPackageName())) {
-                LogUtil.d(TAG, "跳过本应用: " + getPackageName() + "（本应用不应使用VPN）");
+                LogUtil.d(TAG, "跳过本应用: " + getPackageName() + " (本应用不应使用VPN)");
                 continue;
             }
             
