@@ -1201,7 +1201,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     }
                 } catch (Exception e) {
                     // 某些系统应用可能无法排除，忽略错误
-                    LogUtil.v(TAG, "无法排除应用: " + packageName + ", " + e.getMessage());
+                    LogUtil.d(TAG, "无法排除应用: " + packageName + ", " + e.getMessage());
                 }
             }
         }
