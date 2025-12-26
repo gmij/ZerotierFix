@@ -1,6 +1,7 @@
 package net.kaaass.zerotierfix.model;
 
 import android.content.Context;
+import android.database.SQLException;
 import android.database.sqlite.SQLiteDatabase;
 import android.util.Log;
 
@@ -28,6 +29,32 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
             if (oldVersion < migration.getVersion()) {
                 migration.runMigration(db);
             }
+        }
+    }
+
+    @Override
+    public void onDowngrade(Database db, int oldVersion, int newVersion) {
+        Log.i(TAG, "Downgrading schema from version " + oldVersion + " to " + newVersion);
+        // Handle downgrade from schema 23 (per-app VPN) to schema 22
+        if (oldVersion == 23 && newVersion == 22) {
+            Log.i(TAG, "Removing per-app VPN routing table");
+            try {
+                // Drop the APP_ROUTING table if it exists
+                db.execSQL("DROP TABLE IF EXISTS APP_ROUTING");
+                Log.i(TAG, "Dropped APP_ROUTING table");
+            } catch (SQLException e) {
+                Log.e(TAG, "Error dropping APP_ROUTING table", e);
+            }
+            
+            // Leave perAppRouting column (added in schema v23) - SQLite doesn't easily support DROP COLUMN
+            // without recreating the entire table, and unused columns are harmless. The column will be
+            // ignored by the generated DAO code and won't affect functionality.
+            Log.i(TAG, "Preserving perAppRouting column in NETWORK_CONFIG (will be ignored by DAO)");
+        } else {
+            // For unsupported downgrade paths, log warning and delegate to default behavior
+            // Note: super.onDowngrade() typically throws SQLiteException for downgrades
+            Log.w(TAG, "Unsupported downgrade path from " + oldVersion + " to " + newVersion + ", attempting default downgrade");
+            super.onDowngrade(db, oldVersion, newVersion);
         }
     }
 
