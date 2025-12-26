@@ -31,6 +31,34 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
         }
     }
 
+    @Override
+    public void onDowngrade(Database db, int oldVersion, int newVersion) {
+        Log.i(TAG, "Downgrading schema from version " + oldVersion + " to " + newVersion);
+        // Handle downgrade from schema 23 (per-app VPN) to schema 22
+        if (oldVersion == 23 && newVersion == 22) {
+            Log.i(TAG, "Removing per-app VPN routing tables and columns");
+            try {
+                // Drop the APP_ROUTING table if it exists
+                db.execSQL("DROP TABLE IF EXISTS APP_ROUTING");
+                Log.i(TAG, "Dropped APP_ROUTING table");
+            } catch (Exception e) {
+                Log.e(TAG, "Error dropping APP_ROUTING table", e);
+            }
+            
+            try {
+                // Remove the perAppRouting column from NETWORK_CONFIG table if it exists
+                // SQLite doesn't support DROP COLUMN directly, so we need to recreate the table
+                // However, since we're just ignoring the extra column, we can leave it
+                // The generated DAO code won't use it, and it won't cause issues
+                Log.i(TAG, "Ignoring perAppRouting column in NETWORK_CONFIG (if exists)");
+            } catch (Exception e) {
+                Log.e(TAG, "Error handling perAppRouting column", e);
+            }
+        } else {
+            Log.w(TAG, "Unsupported downgrade path from " + oldVersion + " to " + newVersion);
+        }
+    }
+
     private List<Migration> getMigrations() {
         ArrayList<Migration> migrations = new ArrayList<>();
         migrations.add(new MigrationV18());
