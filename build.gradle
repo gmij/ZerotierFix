@@ -1,16 +1,11 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 buildscript {
     repositories {
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
         google()
         mavenCentral()
-        // 添加阿里云镜像作为备用源
-        maven { url 'https://maven.aliyun.com/repository/public' }
-        maven { url 'https://maven.aliyun.com/repository/google' }
-        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
-        // 添加华为镜像作为备用源
-        maven { url 'https://repo.huaweicloud.com/repository/maven/' }
-        // 添加腾讯镜像作为备用源
-        maven { url 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/' }
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:7.4.2'
@@ -21,20 +16,12 @@ buildscript {
     }
 }
 
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-        // 添加阿里云镜像作为备用源
-        maven { url 'https://maven.aliyun.com/repository/public' }
-        maven { url 'https://maven.aliyun.com/repository/google' }
-        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
-        // 添加华为镜像作为备用源
-        maven { url 'https://repo.huaweicloud.com/repository/maven/' }
-        // 添加腾讯镜像作为备用源
-        maven { url 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/' }
-    }
-}
+// allprojects {
+//     repositories {
+//         google()
+//         mavenCentral()
+//     }
+// }
 
 ext {
     compileSdkVersion = 33
