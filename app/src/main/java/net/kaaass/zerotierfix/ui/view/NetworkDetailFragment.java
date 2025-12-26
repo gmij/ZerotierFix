@@ -103,24 +103,47 @@ public class NetworkDetailFragment extends Fragment {
         this.dnsView = view.findViewById(R.id.custom_dns_row);
         this.dnsServersView = view.findViewById(R.id.network_dns_textview);
 
-        // 设置回调 - 全局路由和per-app路由互斥
-        this.routeViaZtView.setOnCheckedChangeListener((buttonView, isChecked) -> {
+        // 定义per-app路由监听器（需要在全局路由监听器之后引用，所以先声明）
+        final CheckBox.OnCheckedChangeListener[] perAppListenerHolder = new CheckBox.OnCheckedChangeListener[1];
+        
+        // 定义全局路由监听器
+        CheckBox.OnCheckedChangeListener routeViaZtChangeListener = (buttonView, isChecked) -> {
             if (isChecked && perAppRoutingView.isChecked()) {
                 // 如果启用全局路由，禁用per-app路由
+                // 暂时移除监听器避免触发额外的更新
+                perAppRoutingView.setOnCheckedChangeListener(null);
                 perAppRoutingView.setChecked(false);
+                perAppConfigRow.setVisibility(View.GONE);
+                // 恢复监听器
+                perAppRoutingView.setOnCheckedChangeListener(perAppListenerHolder[0]);
+                // 更新数据库
+                viewModel.doUpdatePerAppRouting(false);
             }
             viewModel.doUpdateRouteViaZeroTier(isChecked);
-        });
+        };
 
-        this.perAppRoutingView.setOnCheckedChangeListener((buttonView, isChecked) -> {
+        // 定义per-app路由监听器
+        CheckBox.OnCheckedChangeListener perAppRoutingChangeListener = (buttonView, isChecked) -> {
             if (isChecked && routeViaZtView.isChecked()) {
                 // 如果启用per-app路由，禁用全局路由
+                // 暂时移除监听器避免触发额外的更新
+                routeViaZtView.setOnCheckedChangeListener(null);
                 routeViaZtView.setChecked(false);
+                // 恢复监听器
+                routeViaZtView.setOnCheckedChangeListener(routeViaZtChangeListener);
+                // 更新数据库
+                viewModel.doUpdateRouteViaZeroTier(false);
             }
             viewModel.doUpdatePerAppRouting(isChecked);
             // 显示或隐藏"配置应用"按钮
             perAppConfigRow.setVisibility(isChecked ? View.VISIBLE : View.GONE);
-        });
+        };
+        
+        perAppListenerHolder[0] = perAppRoutingChangeListener;
+
+        // 设置回调 - 全局路由和per-app路由互斥
+        this.routeViaZtView.setOnCheckedChangeListener(routeViaZtChangeListener);
+        this.perAppRoutingView.setOnCheckedChangeListener(perAppRoutingChangeListener);
 
         // 配置应用按钮点击事件
         this.configureAppsButton.setOnClickListener(v -> {

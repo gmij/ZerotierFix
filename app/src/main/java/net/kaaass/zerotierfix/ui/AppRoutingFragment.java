@@ -153,8 +153,10 @@ public class AppRoutingFragment extends Fragment {
             if (app1.isRouteViaVpn() != app2.isRouteViaVpn()) {
                 return app1.isRouteViaVpn() ? -1 : 1;
             }
-            // 再按应用名称排序
-            return app1.getAppName().compareToIgnoreCase(app2.getAppName());
+            // 再按应用名称排序（处理null情况）
+            String name1 = app1.getAppName() != null ? app1.getAppName() : "";
+            String name2 = app2.getAppName() != null ? app2.getAppName() : "";
+            return name1.compareToIgnoreCase(name2);
         });
 
         adapter.setAppList(filteredApps);

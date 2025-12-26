@@ -1147,7 +1147,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     .list();
 
             int allowedCount = 0;
-            int disallowedCount = 0;
 
             for (var routing : appRoutings) {
                 String packageName = routing.getPackageName();

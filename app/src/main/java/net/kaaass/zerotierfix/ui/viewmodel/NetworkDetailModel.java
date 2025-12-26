@@ -107,7 +107,7 @@ public class NetworkDetailModel extends AndroidViewModel {
     }
 
     /**
-     * 更新是否启用 Per-App 路由模式
+     * Update whether Per-App routing mode is enabled
      */
     public void doUpdatePerAppRouting(boolean perAppRouting) {
         var networkConfig = this.networkConfig.getValue();
