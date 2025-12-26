@@ -827,7 +827,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         var assignedAddresses = virtualNetworkConfig.getAssignedAddresses();
         LogUtil.i(TAG, "address length: " + assignedAddresses.length);
         boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
-        boolean isPerAppRouting = networkConfig.getPerAppRouting();
 
         // 遍历 ZT 网络中当前设备的 IP 地址，组播配置
         for (var vpnAddress : assignedAddresses) {
@@ -873,8 +872,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
 
         // 如果启用了全局路由，添加默认路由(0.0.0.0/0 和 ::/0)
-        // 注意：per-app路由模式下不添加全局路由，只有选中的应用会通过VPN接口的特定路由
-        if (isRouteViaZeroTier && !isPerAppRouting) {
+        if (isRouteViaZeroTier) {
             try {
                 // 使用ZeroTier全局路由模式
                 LogUtil.i(TAG, "使用ZeroTier全局路由模式");
@@ -941,9 +939,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             } catch (Exception e) {
                 LogUtil.e(TAG, "添加默认路由时出错: " + e.getMessage(), e);
             }
-        } else if (isPerAppRouting) {
-            // Per-app路由模式：不添加全局路由，只有选中的应用通过ZeroTier网络的特定路由
-            LogUtil.i(TAG, "使用Per-App路由模式：跳过全局路由，仅选中的应用将通过VPN");
         }
 
         // 遍历网络的路由规则，将网络负责路由的地址路由至 VPN
