@@ -37,7 +37,7 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
         Log.i(TAG, "Downgrading schema from version " + oldVersion + " to " + newVersion);
         // Handle downgrade from schema 23 (per-app VPN) to schema 22
         if (oldVersion == 23 && newVersion == 22) {
-            Log.i(TAG, "Removing per-app VPN routing tables and columns");
+            Log.i(TAG, "Removing per-app VPN routing table");
             try {
                 // Drop the APP_ROUTING table if it exists
                 db.execSQL("DROP TABLE IF EXISTS APP_ROUTING");
@@ -46,8 +46,9 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
                 Log.e(TAG, "Error dropping APP_ROUTING table", e);
             }
             
-            // Leave perAppRouting column - SQLite doesn't support DROP COLUMN and unused columns are harmless
-            // The column will be ignored by the generated DAO code and won't affect functionality
+            // Leave perAppRouting column (added in schema v23) - SQLite doesn't support DROP COLUMN
+            // and unused columns are harmless. The column will be ignored by the generated DAO code
+            // and won't affect functionality.
             Log.i(TAG, "Preserving perAppRouting column in NETWORK_CONFIG (will be ignored by DAO)");
         } else {
             // For unsupported downgrade paths, log warning and attempt default behavior
