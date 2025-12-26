@@ -1119,15 +1119,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         boolean isPerAppRouting = networkConfig.getPerAppRouting();
 
         if (!isPerAppRouting) {
-            // 全局路由模式，所有应用都通过VPN（除了本应用）
-            // 排除本应用自身，避免VPN循环
-            try {
-                builder.addDisallowedApplication(getPackageName());
-                LogUtil.d(TAG, "排除应用: " + getPackageName() + " (本应用)");
-            } catch (Exception e) {
-                LogUtil.e(TAG, "无法排除应用 " + getPackageName(), e);
+            // 只有在启用全局路由时才配置
+            if (isRouteViaZeroTier) {
+                // 全局路由模式，所有应用都通过VPN（除了本应用）
+                // 排除本应用自身，避免VPN循环
+                try {
+                    builder.addDisallowedApplication(getPackageName());
+                    LogUtil.d(TAG, "排除应用: " + getPackageName() + " (本应用)");
+                } catch (Exception e) {
+                    LogUtil.e(TAG, "无法排除应用 " + getPackageName(), e);
+                }
+                LogUtil.i(TAG, "使用全局路由模式");
+            } else {
+                LogUtil.i(TAG, "未启用全局路由或per-app路由");
             }
-            LogUtil.i(TAG, "使用全局路由模式");
             return;
         }
 
