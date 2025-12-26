@@ -36,8 +36,15 @@ public class AppUtils {
             // 获取应用名称
             String appName = (String) packageManager.getApplicationLabel(appInfo);
 
-            // 获取应用图标
-            var appIcon = packageManager.getApplicationIcon(appInfo);
+            // 获取应用图标，使用默认图标作为后备
+            Drawable appIcon;
+            try {
+                appIcon = packageManager.getApplicationIcon(appInfo);
+            } catch (Exception e) {
+                // 如果获取图标失败，使用默认图标
+                appIcon = packageManager.getDefaultActivityIcon();
+                LogUtil.d(TAG, "Failed to get icon for " + packageInfo.packageName + ": " + e.getMessage());
+            }
 
             // 判断是否为系统应用
             boolean isSystemApp = (appInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0;

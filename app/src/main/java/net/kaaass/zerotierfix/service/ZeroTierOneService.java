@@ -5,6 +5,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.VpnService;
 import android.os.Binder;
 import android.os.Build;
@@ -1134,6 +1135,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // Per-app路由模式
         LogUtil.i(TAG, "使用per-app路由模式");
 
+        // 获取 PackageManager 用于验证包名
+        PackageManager packageManager = getPackageManager();
+
         // 从数据库获取应用路由设置
         DatabaseUtils.readLock.lock();
         try {
@@ -1151,6 +1155,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 boolean routeViaVpn = routing.getRouteViaVpn();
 
                 try {
+                    // 验证包名是否有效
+                    packageManager.getPackageInfo(packageName, 0);
+                    
                     if (routeViaVpn) {
                         // 允许该应用通过VPN
                         builder.addAllowedApplication(packageName);
@@ -1160,7 +1167,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     // 注意：在per-app模式下，只需要添加允许的应用
                     // 未添加的应用会自动直连
                 } catch (Exception e) {
-                    LogUtil.e(TAG, "无法配置应用 " + packageName + " 的路由", e);
+                    LogUtil.e(TAG, "无法配置应用 " + packageName + " 的路由，可能应用已卸载", e);
                 }
             }
 
