@@ -873,9 +873,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
 
         // 如果启用了全局路由，添加默认路由(0.0.0.0/0 和 ::/0)
-        // 注意：per-app路由模式下不添加全局路由，避免VPN建立失败
-        // 原因：Android不允许addAllowedApplication()与0.0.0.0/0同时使用
-        if (isRouteViaZeroTier && !isPerAppRouting) {
+        // Per-app模式使用反向模式：添加全局路由+排除不需要的应用
+        if (isRouteViaZeroTier) {
             try {
                 // 使用ZeroTier全局路由模式
                 LogUtil.i(TAG, "使用ZeroTier全局路由模式");
@@ -942,11 +941,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             } catch (Exception e) {
                 LogUtil.e(TAG, "添加默认路由时出错: " + e.getMessage(), e);
             }
-        } else if (isPerAppRouting) {
-            // Per-app路由模式：不添加全局路由，只添加ZeroTier网络路由
-            // 原因：Android VPN API限制，addAllowedApplication()与0.0.0.0/0不兼容
-            LogUtil.i(TAG, "使用Per-App路由模式：跳过全局路由，仅添加ZeroTier网络路由");
-            LogUtil.i(TAG, "Per-app模式下，选中的应用只能访问ZeroTier网络，互联网流量走直连");
         }
 
         // 遍历网络的路由规则，将网络负责路由的地址路由至 VPN
@@ -1144,8 +1138,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return;
         }
 
-        // Per-app路由模式
-        LogUtil.i(TAG, "使用per-app路由模式");
+        // Per-app路由模式（反向模式：默认全部走VPN，排除不需要的应用）
+        LogUtil.i(TAG, "使用per-app路由模式（反向模式）");
 
         // 获取 PackageManager 用于验证包名
         PackageManager packageManager = getPackageManager();
@@ -1159,15 +1153,23 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     .where(AppRoutingDao.Properties.NetworkId.eq(this.networkId))
                     .list();
 
-            int allowedCount = 0;
+            int disallowedCount = 0;
+            
+            // 总是排除本应用自身
+            try {
+                builder.addDisallowedApplication(getPackageName());
+                LogUtil.d(TAG, "排除应用: " + getPackageName() + " (本应用)");
+                disallowedCount++;
+            } catch (Exception e) {
+                LogUtil.e(TAG, "无法排除本应用 " + getPackageName(), e);
+            }
 
             for (var routing : appRoutings) {
                 String packageName = routing.getPackageName();
                 boolean routeViaVpn = routing.getRouteViaVpn();
 
-                // 跳过本应用自身
+                // 跳过本应用自身（已经在上面处理）
                 if (packageName.equals(getPackageName())) {
-                    LogUtil.d(TAG, "跳过本应用: " + packageName);
                     continue;
                 }
 
@@ -1175,20 +1177,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     // 验证包名是否有效
                     packageManager.getPackageInfo(packageName, 0);
                     
-                    if (routeViaVpn) {
-                        // 允许该应用通过VPN
-                        builder.addAllowedApplication(packageName);
-                        allowedCount++;
-                        LogUtil.d(TAG, "允许应用通过VPN: " + packageName);
+                    // 反向模式：routeViaVpn=false 的应用需要被排除
+                    if (!routeViaVpn) {
+                        builder.addDisallowedApplication(packageName);
+                        disallowedCount++;
+                        LogUtil.d(TAG, "排除应用（不走VPN）: " + packageName);
+                    } else {
+                        LogUtil.d(TAG, "允许应用走VPN: " + packageName);
                     }
-                    // 注意：在per-app模式下，只需要添加允许的应用
-                    // 未添加的应用会自动直连
                 } catch (Exception e) {
                     LogUtil.e(TAG, "无法配置应用 " + packageName + " 的路由，可能应用已卸载", e);
                 }
             }
 
-            LogUtil.i(TAG, "Per-app路由配置完成: 允许=" + allowedCount + " 个应用通过VPN");
+            LogUtil.i(TAG, "Per-app路由配置完成（反向模式）: 排除=" + disallowedCount + " 个应用，其余应用走VPN");
         } finally {
             DatabaseUtils.readLock.unlock();
         }
