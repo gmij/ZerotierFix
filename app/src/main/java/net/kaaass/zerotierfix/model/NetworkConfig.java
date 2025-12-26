@@ -8,6 +8,7 @@ import org.greenrobot.greendao.annotation.Convert;
 import org.greenrobot.greendao.annotation.Entity;
 import org.greenrobot.greendao.annotation.Generated;
 import org.greenrobot.greendao.annotation.Id;
+import org.greenrobot.greendao.annotation.Keep;
 import org.greenrobot.greendao.annotation.ToMany;
 import org.greenrobot.greendao.converter.PropertyConverter;
 
@@ -66,6 +67,7 @@ public class NetworkConfig {
     @Generated(hash = 1627972760)
     private transient NetworkConfigDao myDao;
 
+    @Keep
     public NetworkConfig(Long id, NetworkType type, NetworkStatus status, String mac, String mtu,
             boolean broadcast, boolean bridging, boolean routeViaZeroTier, boolean perAppRouting, 
             boolean useCustomDNS, int dnsMode) {
@@ -82,6 +84,7 @@ public class NetworkConfig {
         this.dnsMode = dnsMode;
     }
 
+    @Keep
     public NetworkConfig(Long id, boolean routeViaZeroTier, int dnsMode) {
         this.id = id;
         this.routeViaZeroTier = routeViaZeroTier;
