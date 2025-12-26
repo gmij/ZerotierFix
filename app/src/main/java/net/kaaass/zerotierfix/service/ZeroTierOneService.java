@@ -16,7 +16,7 @@ import android.preference.PreferenceManager;
 import android.widget.Toast;
 
 import androidx.core.app.NotificationCompat;
-import androidx.core.app.ContextCompat;
+import androidx.core.content.ContextCompat;
 
 import com.zerotier.sdk.Event;
 import com.zerotier.sdk.EventListener;
