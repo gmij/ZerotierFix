@@ -46,12 +46,13 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
                 Log.e(TAG, "Error dropping APP_ROUTING table", e);
             }
             
-            // Leave perAppRouting column (added in schema v23) - SQLite doesn't support DROP COLUMN
-            // and unused columns are harmless. The column will be ignored by the generated DAO code
-            // and won't affect functionality.
+            // Leave perAppRouting column (added in schema v23) - SQLite doesn't easily support DROP COLUMN
+            // without recreating the entire table, and unused columns are harmless. The column will be
+            // ignored by the generated DAO code and won't affect functionality.
             Log.i(TAG, "Preserving perAppRouting column in NETWORK_CONFIG (will be ignored by DAO)");
         } else {
-            // For unsupported downgrade paths, log warning and attempt default behavior
+            // For unsupported downgrade paths, log warning and delegate to default behavior
+            // Note: super.onDowngrade() typically throws SQLiteException for downgrades
             Log.w(TAG, "Unsupported downgrade path from " + oldVersion + " to " + newVersion + ", attempting default downgrade");
             super.onDowngrade(db, oldVersion, newVersion);
         }
