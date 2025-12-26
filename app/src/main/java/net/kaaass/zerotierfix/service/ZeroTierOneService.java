@@ -875,12 +875,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
 
-        // 如果启用了全局路由，添加默认路由(0.0.0.0/0 和 ::/0)
-        // 注意：Per-app模式与全局路由互斥，不会同时启用
-        if (isRouteViaZeroTier) {
+        // 如果启用了全局路由或per-app路由，添加默认路由(0.0.0.0/0 和 ::/0)
+        // Per-app模式需要全局路由，这样选中的应用才能访问互联网
+        // 只有选中的应用能使用这些路由（通过addAllowedApplication限制）
+        if (isRouteViaZeroTier || isPerAppRouting) {
             try {
-                // 使用ZeroTier全局路由模式
-                LogUtil.i(TAG, "使用ZeroTier全局路由模式");
+                if (isRouteViaZeroTier) {
+                    // 使用ZeroTier全局路由模式
+                    LogUtil.i(TAG, "使用ZeroTier全局路由模式");
+                } else {
+                    // Per-app模式也需要全局路由
+                    LogUtil.i(TAG, "Per-app模式：添加全局路由以支持互联网访问");
+                }
                 configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses);
                 
                 // 大幅增强对本地连接的保护，避免VPN路由循环
