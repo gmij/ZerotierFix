@@ -1086,33 +1086,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 配置允许/不允许的应用
      */
     private void configureAllowedDisallowedApps(VpnService.Builder builder, boolean isRouteViaZeroTier) {
-        if (!isRouteViaZeroTier && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            // 设置部分 APP 不经过 VPN
-            // for (var app : DISALLOWED_APPS) {
-            //     try {
-            //         builder.addDisallowedApplication(app);
-            //         LogUtil.d(TAG, "添加排除应用: " + app);
-            //     } catch (Exception e3) {
-            //         LogUtil.e(TAG, "无法排除应用 " + app, e3);
-            //     }
-            // }
-            
-            // 排除更多常见需要直连的应用
-            // String[] commonDisallowedApps = {
-            //     "com.android.vending", // Google Play商店
-            //     "com.google.android.gms", // Google Play服务
-            //     "com.google.android.gsf", // Google服务框架
-            //     "com.android.providers.downloads", // 下载管理器
-            // };
-            
-            // for (String app : commonDisallowedApps) {
-            //     try {
-            //         builder.addDisallowedApplication(app);
-            //         LogUtil.d(TAG, "添加排除应用: " + app);
-            //     } catch (Exception e) {
-            //         // 可能应用不存在，忽略错误
-            //     }
-            // }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            // Android 5.0 以下版本不支持per-app VPN
+            return;
+        }
+
+        // 排除本应用自身，避免VPN循环
+        try {
+            builder.addDisallowedApplication(getPackageName());
+            LogUtil.d(TAG, "排除应用: " + getPackageName() + " (本应用)");
+        } catch (Exception e) {
+            LogUtil.e(TAG, "无法排除应用 " + getPackageName(), e);
         }
     }
 
