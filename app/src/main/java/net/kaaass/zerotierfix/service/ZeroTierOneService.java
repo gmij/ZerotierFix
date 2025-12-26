@@ -5,6 +5,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.net.VpnService;
 import android.os.Binder;
@@ -15,7 +16,7 @@ import android.preference.PreferenceManager;
 import android.widget.Toast;
 
 import androidx.core.app.NotificationCompat;
-import androidx.core.content.ContextCompat;
+import androidx.core.app.ContextCompat;
 
 import com.zerotier.sdk.Event;
 import com.zerotier.sdk.EventListener;
@@ -86,8 +87,10 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 // TODO: clear up
@@ -1146,6 +1149,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 从数据库获取应用路由设置
         DatabaseUtils.readLock.lock();
+        Set<String> allowedPackages = new HashSet<>();
         try {
             var daoSession = ((ZerotierFixApplication) getApplication()).getDaoSession();
             var appRoutingDao = daoSession.getAppRoutingDao();
@@ -1153,47 +1157,56 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     .where(AppRoutingDao.Properties.NetworkId.eq(this.networkId))
                     .list();
 
-            int disallowedCount = 0;
-            
-            // 总是排除本应用自身
-            try {
-                builder.addDisallowedApplication(getPackageName());
-                LogUtil.d(TAG, "排除应用: " + getPackageName() + " (本应用)");
-                disallowedCount++;
-            } catch (Exception e) {
-                LogUtil.e(TAG, "无法排除本应用 " + getPackageName(), e);
-            }
-
+            // 收集所有应该走VPN的应用（routeViaVpn=true）
             for (var routing : appRoutings) {
-                String packageName = routing.getPackageName();
-                boolean routeViaVpn = routing.getRouteViaVpn();
-
-                // 跳过本应用自身（已经在上面处理）
-                if (packageName.equals(getPackageName())) {
-                    continue;
-                }
-
-                try {
-                    // 验证包名是否有效
-                    packageManager.getPackageInfo(packageName, 0);
-                    
-                    // 反向模式：routeViaVpn=false 的应用需要被排除
-                    if (!routeViaVpn) {
-                        builder.addDisallowedApplication(packageName);
-                        disallowedCount++;
-                        LogUtil.d(TAG, "排除应用（不走VPN）: " + packageName);
-                    } else {
-                        LogUtil.d(TAG, "允许应用走VPN: " + packageName);
-                    }
-                } catch (Exception e) {
-                    LogUtil.e(TAG, "无法配置应用 " + packageName + " 的路由，可能应用已卸载", e);
+                if (routing.getRouteViaVpn()) {
+                    allowedPackages.add(routing.getPackageName());
+                    LogUtil.d(TAG, "选中应用（将走VPN）: " + routing.getPackageName());
                 }
             }
-
-            LogUtil.i(TAG, "Per-app路由配置完成（反向模式）: 排除=" + disallowedCount + " 个应用，其余应用走VPN");
         } finally {
             DatabaseUtils.readLock.unlock();
         }
+
+        // 获取所有已安装的应用，排除未选中的
+        int disallowedCount = 0;
+        
+        // 总是排除本应用自身
+        try {
+            builder.addDisallowedApplication(getPackageName());
+            LogUtil.d(TAG, "排除应用: " + getPackageName() + " (本应用)");
+            disallowedCount++;
+        } catch (Exception e) {
+            LogUtil.e(TAG, "无法排除本应用 " + getPackageName(), e);
+        }
+
+        // 遍历所有已安装的应用
+        List<ApplicationInfo> installedApps = packageManager.getInstalledApplications(PackageManager.GET_META_DATA);
+        for (ApplicationInfo appInfo : installedApps) {
+            String packageName = appInfo.packageName;
+            
+            // 跳过本应用自身（已经处理）
+            if (packageName.equals(getPackageName())) {
+                continue;
+            }
+            
+            // 如果不在允许列表中，则排除
+            if (!allowedPackages.contains(packageName)) {
+                try {
+                    builder.addDisallowedApplication(packageName);
+                    disallowedCount++;
+                    if (disallowedCount <= 10) {
+                        // 只记录前10个，避免日志过多
+                        LogUtil.d(TAG, "排除应用（不走VPN）: " + packageName);
+                    }
+                } catch (Exception e) {
+                    // 某些系统应用可能无法排除，忽略错误
+                    LogUtil.v(TAG, "无法排除应用: " + packageName + ", " + e.getMessage());
+                }
+            }
+        }
+
+        LogUtil.i(TAG, "Per-app路由配置完成（反向模式）: 允许=" + allowedPackages.size() + " 个应用走VPN，排除=" + disallowedCount + " 个应用");
     }
 
     private void addDNSServers(VpnService.Builder builder, Network network) {
