@@ -8,6 +8,7 @@ import org.greenrobot.greendao.annotation.Convert;
 import org.greenrobot.greendao.annotation.Entity;
 import org.greenrobot.greendao.annotation.Generated;
 import org.greenrobot.greendao.annotation.Id;
+import org.greenrobot.greendao.annotation.Keep;
 import org.greenrobot.greendao.annotation.ToMany;
 import org.greenrobot.greendao.converter.PropertyConverter;
 
@@ -40,6 +41,8 @@ public class NetworkConfig {
 
     private boolean routeViaZeroTier;
 
+    private boolean perAppRouting;
+
     @Deprecated
     private boolean useCustomDNS;
 
@@ -64,9 +67,10 @@ public class NetworkConfig {
     @Generated(hash = 1627972760)
     private transient NetworkConfigDao myDao;
 
-    @Generated(hash = 1535887363)
+    @Keep
     public NetworkConfig(Long id, NetworkType type, NetworkStatus status, String mac, String mtu,
-            boolean broadcast, boolean bridging, boolean routeViaZeroTier, boolean useCustomDNS, int dnsMode) {
+            boolean broadcast, boolean bridging, boolean routeViaZeroTier, boolean perAppRouting, 
+            boolean useCustomDNS, int dnsMode) {
         this.id = id;
         this.type = type;
         this.status = status;
@@ -75,13 +79,16 @@ public class NetworkConfig {
         this.broadcast = broadcast;
         this.bridging = bridging;
         this.routeViaZeroTier = routeViaZeroTier;
+        this.perAppRouting = perAppRouting;
         this.useCustomDNS = useCustomDNS;
         this.dnsMode = dnsMode;
     }
 
+    @Keep
     public NetworkConfig(Long id, boolean routeViaZeroTier, int dnsMode) {
         this.id = id;
         this.routeViaZeroTier = routeViaZeroTier;
+        this.perAppRouting = false;
         this.dnsMode = dnsMode;
     }
 
@@ -163,6 +170,14 @@ public class NetworkConfig {
 
     public void setRouteViaZeroTier(boolean routeViaZeroTier) {
         this.routeViaZeroTier = routeViaZeroTier;
+    }
+
+    public boolean getPerAppRouting() {
+        return this.perAppRouting;
+    }
+
+    public void setPerAppRouting(boolean perAppRouting) {
+        this.perAppRouting = perAppRouting;
     }
 
     @Deprecated
