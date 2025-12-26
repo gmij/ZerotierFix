@@ -1,10 +1,32 @@
-# Per-App VPN Routing Bug Fix and UI Improvements
+# Per-App VPN Routing Bug Fixes and UI Improvements
 
 ## Summary of Changes
 
-This update addresses a critical bug in the per-app VPN routing feature and implements requested UI improvements.
+This update addresses critical bugs in the per-app VPN routing feature and implements requested UI improvements.
 
-## 1. Bug Fix: Per-App Selected Apps Now Route Through VPN
+## 1. Bug Fix #2: Per-App VPN Not Working When Global Routing Disabled (Latest Fix)
+
+### Problem
+The per-app VPN routing feature was not working correctly because the VPN configuration was being applied incorrectly when both routing modes were disabled.
+
+### Root Cause
+The `configureAllowedDisallowedApps()` method in `ZeroTierOneService.java` was only checking the `isPerAppRouting` flag but ignoring the `isRouteViaZeroTier` parameter. This meant:
+- When `isPerAppRouting == false`, the code ALWAYS called `addDisallowedApplication()` for global routing
+- This happened even when `isRouteViaZeroTier == false`, causing incorrect VPN behavior
+
+### Solution
+Added a conditional check for `isRouteViaZeroTier` before applying global routing configuration. Now the method properly handles three scenarios:
+1. **Global routing mode** (`isRouteViaZeroTier == true` AND `isPerAppRouting == false`): Use `addDisallowedApplication()` to exclude only this app
+2. **Per-app routing mode** (`isPerAppRouting == true`): Use only `addAllowedApplication()` for selected apps
+3. **No routing** (both false): No app routing configuration applied
+
+### Changes Made
+- `ZeroTierOneService.java` lines 1121-1136:
+  - Added `if (isRouteViaZeroTier)` check before calling `addDisallowedApplication()`
+  - Added logging for when neither routing mode is enabled
+  - Ensures proper VPN API usage in all scenarios
+
+## 2. Bug Fix #1: Per-App Selected Apps Now Route Through VPN
 
 ### Problem
 Apps selected in per-app routing mode were not actually going through the VPN connection due to incorrect Android VPN API usage.
@@ -27,7 +49,7 @@ The previous implementation called `addDisallowedApplication()` first (to exclud
   - Added check to skip the app itself when adding allowed applications in per-app mode
   - This ensures proper separation between whitelist and blacklist modes
 
-## 2. UI Improvement: Selected Apps Prioritized in List
+## 3. UI Improvement: Selected Apps Prioritized in List
 
 ### Feature
 Apps that are selected to route via VPN now appear at the top of the app list, making it easier to see which apps are configured.
@@ -42,7 +64,7 @@ This provides a better user experience by:
 - Reducing scrolling to find selected apps
 - Maintaining alphabetical order for easy navigation
 
-## 3. UI Improvement: Per-App Settings Integrated into Network Detail
+## 4. UI Improvement: Per-App Settings Integrated into Network Detail
 
 ### Previous Behavior
 - Routing mode toggle was in a separate "App Routing" screen
