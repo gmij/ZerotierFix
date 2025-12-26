@@ -1,6 +1,7 @@
 package net.kaaass.zerotierfix.model;
 
 import android.content.Context;
+import android.database.SQLException;
 import android.database.sqlite.SQLiteDatabase;
 import android.util.Log;
 
@@ -41,7 +42,7 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
                 // Drop the APP_ROUTING table if it exists
                 db.execSQL("DROP TABLE IF EXISTS APP_ROUTING");
                 Log.i(TAG, "Dropped APP_ROUTING table");
-            } catch (android.database.SQLException e) {
+            } catch (SQLException e) {
                 Log.e(TAG, "Error dropping APP_ROUTING table", e);
             }
             
