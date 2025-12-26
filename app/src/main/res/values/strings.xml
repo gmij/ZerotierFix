@@ -207,5 +207,4 @@
     <string name="loading_apps">Loading applications...</string>
     <string name="no_apps_found">No applications found</string>
     <string name="menu_app_routing">App Routing</string>
-    <string name="empty_network_name">(Unnamed Network)</string>
 </resources>
