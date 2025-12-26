@@ -45,15 +45,11 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
                 Log.e(TAG, "Error dropping APP_ROUTING table", e);
             }
             
-            try {
-                // Remove the perAppRouting column from NETWORK_CONFIG table if it exists
-                // SQLite doesn't support DROP COLUMN directly, so we need to recreate the table
-                // However, since we're just ignoring the extra column, we can leave it
-                // The generated DAO code won't use it, and it won't cause issues
-                Log.i(TAG, "Ignoring perAppRouting column in NETWORK_CONFIG (if exists)");
-            } catch (Exception e) {
-                Log.e(TAG, "Error handling perAppRouting column", e);
-            }
+            // Remove the perAppRouting column from NETWORK_CONFIG table if it exists
+            // SQLite doesn't support DROP COLUMN directly, so we need to recreate the table
+            // However, since we're just ignoring the extra column, we can leave it
+            // The generated DAO code won't use it, and it won't cause issues
+            Log.i(TAG, "Ignoring perAppRouting column in NETWORK_CONFIG (if exists)");
         } else {
             Log.w(TAG, "Unsupported downgrade path from " + oldVersion + " to " + newVersion);
         }
