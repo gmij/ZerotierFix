@@ -3,6 +3,14 @@ buildscript {
     repositories {
         google()
         mavenCentral()
+        // 添加阿里云镜像作为备用源
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        // 添加华为镜像作为备用源
+        maven { url 'https://repo.huaweicloud.com/repository/maven/' }
+        // 添加腾讯镜像作为备用源
+        maven { url 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/' }
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:7.4.2'
@@ -17,6 +25,14 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // 添加阿里云镜像作为备用源
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        // 添加华为镜像作为备用源
+        maven { url 'https://repo.huaweicloud.com/repository/maven/' }
+        // 添加腾讯镜像作为备用源
+        maven { url 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/' }
     }
 }
 
