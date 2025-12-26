@@ -51,35 +51,49 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
                 // This is necessary because SQLite doesn't support DROP COLUMN before version 3.35.5
                 Log.i(TAG, "Recreating NETWORK_CONFIG table without perAppRouting column");
                 
-                // Create temporary table with the correct schema (without perAppRouting)
-                db.execSQL("CREATE TABLE NETWORK_CONFIG_TEMP (" +
-                        "_id INTEGER PRIMARY KEY, " +
-                        "TYPE INTEGER, " +
-                        "STATUS INTEGER, " +
-                        "MAC TEXT, " +
-                        "MTU TEXT, " +
-                        "BROADCAST INTEGER, " +
-                        "BRIDGING INTEGER, " +
-                        "ROUTE_VIA_ZERO_TIER INTEGER NOT NULL, " +
-                        "USE_CUSTOM_DNS INTEGER, " +
-                        "DNS_MODE INTEGER NOT NULL)");
-                
-                // Copy data from old table to new table (excluding perAppRouting column)
-                db.execSQL("INSERT INTO NETWORK_CONFIG_TEMP " +
-                        "(_id, TYPE, STATUS, MAC, MTU, BROADCAST, BRIDGING, ROUTE_VIA_ZERO_TIER, USE_CUSTOM_DNS, DNS_MODE) " +
-                        "SELECT _id, TYPE, STATUS, MAC, MTU, BROADCAST, BRIDGING, ROUTE_VIA_ZERO_TIER, USE_CUSTOM_DNS, DNS_MODE " +
-                        "FROM NETWORK_CONFIG");
-                
-                // Drop old table
-                db.execSQL("DROP TABLE NETWORK_CONFIG");
-                
-                // Rename temporary table to original name
-                db.execSQL("ALTER TABLE NETWORK_CONFIG_TEMP RENAME TO NETWORK_CONFIG");
-                
-                Log.i(TAG, "Successfully recreated NETWORK_CONFIG table");
+                // Use a transaction to ensure atomicity
+                db.beginTransaction();
+                try {
+                    // Create temporary table with the correct schema (without perAppRouting)
+                    db.execSQL("CREATE TABLE NETWORK_CONFIG_TEMP (" +
+                            "_id INTEGER PRIMARY KEY, " +
+                            "TYPE INTEGER, " +
+                            "STATUS INTEGER, " +
+                            "MAC TEXT, " +
+                            "MTU TEXT, " +
+                            "BROADCAST INTEGER, " +
+                            "BRIDGING INTEGER, " +
+                            "ROUTE_VIA_ZERO_TIER INTEGER NOT NULL, " +
+                            "USE_CUSTOM_DNS INTEGER, " +
+                            "DNS_MODE INTEGER NOT NULL)");
+                    
+                    // Copy data from old table to new table (excluding perAppRouting column)
+                    db.execSQL("INSERT INTO NETWORK_CONFIG_TEMP " +
+                            "(_id, TYPE, STATUS, MAC, MTU, BROADCAST, BRIDGING, ROUTE_VIA_ZERO_TIER, USE_CUSTOM_DNS, DNS_MODE) " +
+                            "SELECT _id, TYPE, STATUS, MAC, MTU, BROADCAST, BRIDGING, ROUTE_VIA_ZERO_TIER, USE_CUSTOM_DNS, DNS_MODE " +
+                            "FROM NETWORK_CONFIG");
+                    
+                    // Drop old table
+                    db.execSQL("DROP TABLE NETWORK_CONFIG");
+                    
+                    // Rename temporary table to original name
+                    db.execSQL("ALTER TABLE NETWORK_CONFIG_TEMP RENAME TO NETWORK_CONFIG");
+                    
+                    db.setTransactionSuccessful();
+                    Log.i(TAG, "Successfully recreated NETWORK_CONFIG table");
+                } finally {
+                    db.endTransaction();
+                }
             } catch (SQLException e) {
-                Log.e(TAG, "Error recreating NETWORK_CONFIG table", e);
-                // If recreation fails, try to continue - the app might still work with the extra column
+                Log.e(TAG, "Error recreating NETWORK_CONFIG table, downgrade may be incomplete", e);
+                // Clean up any partial state
+                try {
+                    db.execSQL("DROP TABLE IF EXISTS NETWORK_CONFIG_TEMP");
+                } catch (SQLException cleanupError) {
+                    Log.e(TAG, "Error cleaning up temporary table", cleanupError);
+                }
+                // Note: If table recreation fails completely, the perAppRouting column will remain
+                // This is not ideal but allows the app to continue functioning
             }
         } else {
             // For unsupported downgrade paths, log warning and delegate to default behavior
