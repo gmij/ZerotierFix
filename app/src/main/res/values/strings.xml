@@ -188,4 +188,21 @@
     <string name="proxy_username">Username</string>
     <string name="proxy_password">Password</string>
     -->
+
+    <!-- 应用路由相关字符串 -->
+    <string name="app_routing">App Routing</string>
+    <string name="app_routing_settings">App Routing Settings</string>
+    <string name="app_routing_mode_label">Routing Mode</string>
+    <string name="per_app_routing">Per-App Routing</string>
+    <string name="global_routing_description">Global routing mode: All traffic goes through ZeroTier</string>
+    <string name="per_app_routing_description">Per-app routing mode: Only selected apps go through ZeroTier</string>
+    <string name="show_system_apps">Show System Apps</string>
+    <string name="selected_apps_count">Selected: %d apps</string>
+    <string name="app_icon">App Icon</string>
+    <string name="route_via_vpn">Route via VPN</string>
+    <string name="system_app">System App</string>
+    <string name="user_app">User App</string>
+    <string name="loading_apps">Loading applications...</string>
+    <string name="no_apps_found">No applications found</string>
+    <string name="menu_app_routing">App Routing</string>
 </resources>

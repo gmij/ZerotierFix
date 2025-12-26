@@ -40,6 +40,8 @@ public class NetworkConfig {
 
     private boolean routeViaZeroTier;
 
+    private boolean perAppRouting;
+
     @Deprecated
     private boolean useCustomDNS;
 
@@ -66,7 +68,8 @@ public class NetworkConfig {
 
     @Generated(hash = 1535887363)
     public NetworkConfig(Long id, NetworkType type, NetworkStatus status, String mac, String mtu,
-            boolean broadcast, boolean bridging, boolean routeViaZeroTier, boolean useCustomDNS, int dnsMode) {
+            boolean broadcast, boolean bridging, boolean routeViaZeroTier, boolean perAppRouting, 
+            boolean useCustomDNS, int dnsMode) {
         this.id = id;
         this.type = type;
         this.status = status;
@@ -75,6 +78,7 @@ public class NetworkConfig {
         this.broadcast = broadcast;
         this.bridging = bridging;
         this.routeViaZeroTier = routeViaZeroTier;
+        this.perAppRouting = perAppRouting;
         this.useCustomDNS = useCustomDNS;
         this.dnsMode = dnsMode;
     }
@@ -82,6 +86,7 @@ public class NetworkConfig {
     public NetworkConfig(Long id, boolean routeViaZeroTier, int dnsMode) {
         this.id = id;
         this.routeViaZeroTier = routeViaZeroTier;
+        this.perAppRouting = false;
         this.dnsMode = dnsMode;
     }
 
@@ -163,6 +168,14 @@ public class NetworkConfig {
 
     public void setRouteViaZeroTier(boolean routeViaZeroTier) {
         this.routeViaZeroTier = routeViaZeroTier;
+    }
+
+    public boolean getPerAppRouting() {
+        return this.perAppRouting;
+    }
+
+    public void setPerAppRouting(boolean perAppRouting) {
+        this.perAppRouting = perAppRouting;
     }
 
     @Deprecated
