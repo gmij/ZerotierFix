@@ -827,6 +827,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         var assignedAddresses = virtualNetworkConfig.getAssignedAddresses();
         LogUtil.i(TAG, "address length: " + assignedAddresses.length);
         boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
+        boolean isPerAppRouting = networkConfig.getPerAppRouting();
 
         // 遍历 ZT 网络中当前设备的 IP 地址，组播配置
         for (var vpnAddress : assignedAddresses) {
@@ -872,7 +873,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
 
         // 如果启用了全局路由，添加默认路由(0.0.0.0/0 和 ::/0)
-        if (isRouteViaZeroTier) {
+        // 注意：per-app路由模式下不添加全局路由，避免VPN建立失败
+        // 原因：Android不允许addAllowedApplication()与0.0.0.0/0同时使用
+        if (isRouteViaZeroTier && !isPerAppRouting) {
             try {
                 // 使用ZeroTier全局路由模式
                 LogUtil.i(TAG, "使用ZeroTier全局路由模式");
@@ -939,6 +942,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             } catch (Exception e) {
                 LogUtil.e(TAG, "添加默认路由时出错: " + e.getMessage(), e);
             }
+        } else if (isPerAppRouting) {
+            // Per-app路由模式：不添加全局路由，只添加ZeroTier网络路由
+            // 原因：Android VPN API限制，addAllowedApplication()与0.0.0.0/0不兼容
+            LogUtil.i(TAG, "使用Per-App路由模式：跳过全局路由，仅添加ZeroTier网络路由");
+            LogUtil.i(TAG, "Per-app模式下，选中的应用只能访问ZeroTier网络，互联网流量走直连");
         }
 
         // 遍历网络的路由规则，将网络负责路由的地址路由至 VPN
