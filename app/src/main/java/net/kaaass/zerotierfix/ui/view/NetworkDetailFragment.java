@@ -1,11 +1,13 @@
 package net.kaaass.zerotierfix.ui.view;
 
+import android.content.Intent;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.TableRow;
 import android.widget.TextView;
@@ -24,6 +26,8 @@ import net.kaaass.zerotierfix.model.NetworkConfig;
 import net.kaaass.zerotierfix.model.type.DNSMode;
 import net.kaaass.zerotierfix.model.type.NetworkStatus;
 import net.kaaass.zerotierfix.model.type.NetworkType;
+import net.kaaass.zerotierfix.ui.AppRoutingActivity;
+import net.kaaass.zerotierfix.ui.AppRoutingFragment;
 import net.kaaass.zerotierfix.ui.NetworkListFragment;
 import net.kaaass.zerotierfix.ui.viewmodel.NetworkDetailModel;
 import net.kaaass.zerotierfix.util.Constants;
@@ -51,9 +55,14 @@ public class NetworkDetailFragment extends Fragment {
     private TextView bridgingView;
     private TextView dnsModeView;
     private CheckBox routeViaZtView;
+    private CheckBox perAppRoutingView;
+    private TableRow perAppConfigRow;
+    private Button configureAppsButton;
     private TextView ipAddressesView;
     private TableRow dnsView;
     private TextView dnsServersView;
+
+    private long networkId;
 
 
     @Override
@@ -65,7 +74,7 @@ public class NetworkDetailFragment extends Fragment {
 
         // 如果参数中有网络 ID，就加载对应网络的信息
         if (getArguments() != null) {
-            long networkId = getArguments().getLong(NetworkListFragment.NETWORK_ID_MESSAGE);
+            networkId = getArguments().getLong(NetworkListFragment.NETWORK_ID_MESSAGE);
             viewModel.doRetrieveDetail(networkId);
         } else {
             Log.e(TAG, "Network ID is not set!");
@@ -87,13 +96,61 @@ public class NetworkDetailFragment extends Fragment {
         this.bridgingView = view.findViewById(R.id.network_bridging_textview);
         this.dnsModeView = view.findViewById(R.id.network_dns_mode_textview);
         this.routeViaZtView = view.findViewById(R.id.network_default_route);
+        this.perAppRoutingView = view.findViewById(R.id.network_per_app_routing);
+        this.perAppConfigRow = view.findViewById(R.id.per_app_config_row);
+        this.configureAppsButton = view.findViewById(R.id.configure_apps_button);
         this.ipAddressesView = view.findViewById(R.id.network_ipaddresses_textview);
         this.dnsView = view.findViewById(R.id.custom_dns_row);
         this.dnsServersView = view.findViewById(R.id.network_dns_textview);
 
-        // 设置回调
-        this.routeViaZtView.setOnCheckedChangeListener((buttonView, isChecked) ->
-                viewModel.doUpdateRouteViaZeroTier(isChecked));
+        // 定义per-app路由监听器（需要在全局路由监听器之后引用，所以先声明）
+        final CheckBox.OnCheckedChangeListener[] perAppListenerHolder = new CheckBox.OnCheckedChangeListener[1];
+        
+        // 定义全局路由监听器
+        CheckBox.OnCheckedChangeListener routeViaZtChangeListener = (buttonView, isChecked) -> {
+            if (isChecked && perAppRoutingView.isChecked()) {
+                // 如果启用全局路由，禁用per-app路由
+                // 暂时移除监听器避免触发额外的更新
+                perAppRoutingView.setOnCheckedChangeListener(null);
+                perAppRoutingView.setChecked(false);
+                perAppConfigRow.setVisibility(View.GONE);
+                // 恢复监听器
+                perAppRoutingView.setOnCheckedChangeListener(perAppListenerHolder[0]);
+                // 更新数据库
+                viewModel.doUpdatePerAppRouting(false);
+            }
+            viewModel.doUpdateRouteViaZeroTier(isChecked);
+        };
+
+        // 定义per-app路由监听器
+        CheckBox.OnCheckedChangeListener perAppRoutingChangeListener = (buttonView, isChecked) -> {
+            if (isChecked && routeViaZtView.isChecked()) {
+                // 如果启用per-app路由，禁用全局路由
+                // 暂时移除监听器避免触发额外的更新
+                routeViaZtView.setOnCheckedChangeListener(null);
+                routeViaZtView.setChecked(false);
+                // 恢复监听器
+                routeViaZtView.setOnCheckedChangeListener(routeViaZtChangeListener);
+                // 更新数据库
+                viewModel.doUpdateRouteViaZeroTier(false);
+            }
+            viewModel.doUpdatePerAppRouting(isChecked);
+            // 显示或隐藏"配置应用"按钮
+            perAppConfigRow.setVisibility(isChecked ? View.VISIBLE : View.GONE);
+        };
+        
+        perAppListenerHolder[0] = perAppRoutingChangeListener;
+
+        // 设置回调 - 全局路由和per-app路由互斥
+        this.routeViaZtView.setOnCheckedChangeListener(routeViaZtChangeListener);
+        this.perAppRoutingView.setOnCheckedChangeListener(perAppRoutingChangeListener);
+
+        // 配置应用按钮点击事件
+        this.configureAppsButton.setOnClickListener(v -> {
+            Intent intent = new Intent(getActivity(), AppRoutingActivity.class);
+            intent.putExtra(AppRoutingFragment.NETWORK_ID_MESSAGE, networkId);
+            startActivity(intent);
+        });
 
         // 设置对应的 UI 更新操作
         viewModel.getNetwork().observe(getViewLifecycleOwner(), this::updateNetwork);
@@ -137,6 +194,12 @@ public class NetworkDetailFragment extends Fragment {
 
         // 通过 ZT 路由
         this.routeViaZtView.setChecked(networkConfig.getRouteViaZeroTier());
+        
+        // Per-App 路由
+        this.perAppRoutingView.setChecked(networkConfig.getPerAppRouting());
+        
+        // 显示或隐藏"配置应用"按钮
+        this.perAppConfigRow.setVisibility(networkConfig.getPerAppRouting() ? View.VISIBLE : View.GONE);
     }
 
     /**
