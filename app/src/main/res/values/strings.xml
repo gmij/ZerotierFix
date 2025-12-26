@@ -164,6 +164,7 @@
     <string name="logs_title">Application Logs</string>
     <string name="menu_refresh">Refresh</string>
     <string name="menu_clear">Clear</string>
+    <string name="menu_copy">Copy All</string>
     <string name="no_logs_found">No logs found</string>
 
     <!-- 授权设备列表相关字符串 -->

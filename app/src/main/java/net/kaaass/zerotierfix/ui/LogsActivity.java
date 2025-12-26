@@ -1,5 +1,8 @@
 package net.kaaass.zerotierfix.ui;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.Menu;
@@ -25,6 +28,7 @@ public class LogsActivity extends AppCompatActivity {
     private TextView mLogsTextView;
     private ProgressBar mProgressBar;
     private NestedScrollView mScrollView;
+    private String mCurrentLogs = "";
     
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -78,13 +82,32 @@ public class LogsActivity extends AppCompatActivity {
     private void displayLogs(String logs) {
         if (logs == null || logs.isEmpty()) {
             mLogsTextView.setText(R.string.no_logs_found);
+            mCurrentLogs = "";
             return;
         }
         
+        mCurrentLogs = logs;
         mLogsTextView.setText(logs);
         
         // 滚动到底部
         mScrollView.post(() -> mScrollView.fullScroll(View.FOCUS_DOWN));
+    }
+    
+    /**
+     * 复制日志到剪贴板
+     */
+    private void copyLogsToClipboard() {
+        if (mCurrentLogs == null || mCurrentLogs.isEmpty()) {
+            Toast.makeText(this, R.string.no_logs_found, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        ClipData clip = ClipData.newPlainText("ZeroTier Logs", mCurrentLogs);
+        clipboard.setPrimaryClip(clip);
+        
+        Toast.makeText(this, R.string.logs_copied, Toast.LENGTH_SHORT).show();
+        Log.d(TAG, "日志已复制到剪贴板");
     }
     
     @Override
@@ -100,6 +123,11 @@ public class LogsActivity extends AppCompatActivity {
         if (id == android.R.id.home) {
             // 处理返回按钮点击
             finish();
+            return true;
+        } else if (id == R.id.menu_item_copy) {
+            // 复制日志
+            Log.d(TAG, "复制日志到剪贴板");
+            copyLogsToClipboard();
             return true;
         } else if (id == R.id.menu_item_refresh) {
             // 刷新日志
