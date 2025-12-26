@@ -28,7 +28,7 @@ if (useEnvVariables) {
 }
 
 greendao {
-    schemaVersion 23
+    schemaVersion 22
     daoPackage 'net.kaaass.zerotierfix.model'
 }
 

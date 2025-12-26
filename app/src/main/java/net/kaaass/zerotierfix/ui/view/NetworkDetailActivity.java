@@ -1,17 +1,11 @@
 package net.kaaass.zerotierfix.ui.view;
 
-import android.content.Intent;
 import android.os.Bundle;
-import android.view.Menu;
 import android.view.MenuItem;
 
 import androidx.appcompat.app.ActionBar;
 import androidx.fragment.app.Fragment;
 
-import net.kaaass.zerotierfix.R;
-import net.kaaass.zerotierfix.ui.AppRoutingActivity;
-import net.kaaass.zerotierfix.ui.AppRoutingFragment;
-import net.kaaass.zerotierfix.ui.NetworkListFragment;
 import net.kaaass.zerotierfix.ui.SingleFragmentActivity;
 
 /**
@@ -35,26 +29,11 @@ public class NetworkDetailActivity extends SingleFragmentActivity {
     }
 
     @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
-        getMenuInflater().inflate(R.menu.menu_network_detail, menu);
-        return true;
-    }
-
-    @Override
     public boolean onOptionsItemSelected(MenuItem item) {
         super.onOptionsItemSelected(item);
         // 返回上一界面
         if (item.getItemId() == android.R.id.home) {
             this.finish();
-            return true;
-        }
-        // 应用路由设置
-        if (item.getItemId() == R.id.menu_item_app_routing) {
-            Intent intent = new Intent(this, AppRoutingActivity.class);
-            // 传递网络ID
-            long networkId = getIntent().getLongExtra(NetworkListFragment.NETWORK_ID_MESSAGE, 0);
-            intent.putExtra(AppRoutingFragment.NETWORK_ID_MESSAGE, networkId);
-            startActivity(intent);
             return true;
         }
         return super.onOptionsItemSelected(item);

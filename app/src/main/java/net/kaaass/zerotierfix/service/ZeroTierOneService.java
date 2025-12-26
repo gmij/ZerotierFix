@@ -5,7 +5,6 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.net.VpnService;
 import android.os.Binder;
 import android.os.Build;
@@ -52,11 +51,9 @@ import net.kaaass.zerotierfix.events.VirtualNetworkConfigChangedEvent;
 import net.kaaass.zerotierfix.events.VirtualNetworkConfigReplyEvent;
 import net.kaaass.zerotierfix.events.VirtualNetworkConfigRequestEvent;
 import net.kaaass.zerotierfix.model.AppNode;
-import net.kaaass.zerotierfix.model.AppRoutingDao;
 import net.kaaass.zerotierfix.model.AssignedAddress;
 import net.kaaass.zerotierfix.model.MoonOrbit;
 import net.kaaass.zerotierfix.model.Network;
-import net.kaaass.zerotierfix.model.NetworkConfig;
 import net.kaaass.zerotierfix.model.NetworkDao;
 import net.kaaass.zerotierfix.model.type.DNSMode;
 import net.kaaass.zerotierfix.ui.NetworkListActivity;
@@ -1089,91 +1086,33 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 配置允许/不允许的应用
      */
     private void configureAllowedDisallowedApps(VpnService.Builder builder, boolean isRouteViaZeroTier) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-            // Android 5.0 以下版本不支持per-app VPN
-            return;
-        }
-
-        // 获取网络配置
-        DatabaseUtils.readLock.lock();
-        Network network = null;
-        try {
-            var daoSession = ((ZerotierFixApplication) getApplication()).getDaoSession();
-            var networkDao = daoSession.getNetworkDao();
-            var networks = networkDao.queryBuilder()
-                    .where(NetworkDao.Properties.NetworkId.eq(this.networkId))
-                    .list();
-            if (networks.size() == 1) {
-                network = networks.get(0);
-            }
-        } finally {
-            DatabaseUtils.readLock.unlock();
-        }
-
-        if (network == null) {
-            LogUtil.e(TAG, "无法获取网络配置，跳过per-app路由设置");
-            return;
-        }
-
-        NetworkConfig networkConfig = network.getNetworkConfig();
-        boolean isPerAppRouting = networkConfig.getPerAppRouting();
-
-        // 排除本应用自身，避免VPN循环
-        try {
-            builder.addDisallowedApplication(getPackageName());
-            LogUtil.d(TAG, "排除应用: " + getPackageName() + " (本应用)");
-        } catch (Exception e) {
-            LogUtil.e(TAG, "无法排除应用 " + getPackageName(), e);
-        }
-
-        if (!isPerAppRouting) {
-            // 全局路由模式，所有应用都通过VPN（除了本应用）
-            LogUtil.i(TAG, "使用全局路由模式");
-            return;
-        }
-
-        // Per-app路由模式
-        LogUtil.i(TAG, "使用per-app路由模式");
-
-        // 获取 PackageManager 用于验证包名
-        PackageManager packageManager = getPackageManager();
-
-        // 从数据库获取应用路由设置
-        DatabaseUtils.readLock.lock();
-        try {
-            var daoSession = ((ZerotierFixApplication) getApplication()).getDaoSession();
-            var appRoutingDao = daoSession.getAppRoutingDao();
-            var appRoutings = appRoutingDao.queryBuilder()
-                    .where(AppRoutingDao.Properties.NetworkId.eq(this.networkId))
-                    .list();
-
-            int allowedCount = 0;
-            int disallowedCount = 0;
-
-            for (var routing : appRoutings) {
-                String packageName = routing.getPackageName();
-                boolean routeViaVpn = routing.getRouteViaVpn();
-
-                try {
-                    // 验证包名是否有效
-                    packageManager.getPackageInfo(packageName, 0);
-                    
-                    if (routeViaVpn) {
-                        // 允许该应用通过VPN
-                        builder.addAllowedApplication(packageName);
-                        allowedCount++;
-                        LogUtil.d(TAG, "允许应用通过VPN: " + packageName);
-                    }
-                    // 注意：在per-app模式下，只需要添加允许的应用
-                    // 未添加的应用会自动直连
-                } catch (Exception e) {
-                    LogUtil.e(TAG, "无法配置应用 " + packageName + " 的路由，可能应用已卸载", e);
-                }
-            }
-
-            LogUtil.i(TAG, "Per-app路由配置完成: 允许=" + allowedCount + " 个应用通过VPN");
-        } finally {
-            DatabaseUtils.readLock.unlock();
+        if (!isRouteViaZeroTier && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            // 设置部分 APP 不经过 VPN
+            // for (var app : DISALLOWED_APPS) {
+            //     try {
+            //         builder.addDisallowedApplication(app);
+            //         LogUtil.d(TAG, "添加排除应用: " + app);
+            //     } catch (Exception e3) {
+            //         LogUtil.e(TAG, "无法排除应用 " + app, e3);
+            //     }
+            // }
+            
+            // 排除更多常见需要直连的应用
+            // String[] commonDisallowedApps = {
+            //     "com.android.vending", // Google Play商店
+            //     "com.google.android.gms", // Google Play服务
+            //     "com.google.android.gsf", // Google服务框架
+            //     "com.android.providers.downloads", // 下载管理器
+            // };
+            
+            // for (String app : commonDisallowedApps) {
+            //     try {
+            //         builder.addDisallowedApplication(app);
+            //         LogUtil.d(TAG, "添加排除应用: " + app);
+            //     } catch (Exception e) {
+            //         // 可能应用不存在，忽略错误
+            //     }
+            // }
         }
     }
 
