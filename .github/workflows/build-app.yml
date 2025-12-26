@@ -44,8 +44,8 @@ jobs:
       # 直接构建Release APK，不再专门构建Debug APK
       - name: Build Release APK
         env:
-          # 指定完整路径
-          ZEROTIERFIX_KEYSTORE_FILE: ${{ github.workspace }}/zerotierfix.keystore
+          # 使用相对路径，让 build.gradle 处理
+          ZEROTIERFIX_KEYSTORE_FILE: zerotierfix.keystore
           ZEROTIERFIX_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           ZEROTIERFIX_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           ZEROTIERFIX_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
