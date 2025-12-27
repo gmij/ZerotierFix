@@ -47,7 +47,6 @@ public class NetworkDetailFragment extends Fragment {
     private NetworkDetailModel viewModel;
     private TextView idView;
     private TextView nameView;
-    private TextView statusView;
     private TextView typeView;
     private TextView macView;
     private TextView mtuView;
@@ -87,7 +86,6 @@ public class NetworkDetailFragment extends Fragment {
         // 获取各个控件
         this.idView = view.findViewById(R.id.network_detail_network_id);
         this.nameView = view.findViewById(R.id.network_detail_network_name);
-        this.statusView = view.findViewById(R.id.network_status_textview);
         this.typeView = view.findViewById(R.id.network_type_textview);
         this.macView = view.findViewById(R.id.network_mac_textview);
         this.mtuView = view.findViewById(R.id.network_mtu_textview);
@@ -199,25 +197,23 @@ public class NetworkDetailFragment extends Fragment {
         var type = NetworkType.fromVirtualNetworkType(ztType);
         this.typeView.setText(type.toStringId());
 
-        // 网络状态
-        var ztStatus = virtualNetworkConfig.getStatus();
-        var status = NetworkStatus.fromVirtualNetworkStatus(ztStatus);
-        this.statusView.setText(status.toStringId());
-
         // MAC、MTU、广播、桥接
         this.macView.setText(StringUtils.macAddressToString(virtualNetworkConfig.getMac()));
         this.mtuView.setText(String.valueOf(virtualNetworkConfig.getMtu()));
         this.broadcastView.setText(booleanToLocalString(virtualNetworkConfig.isBroadcastEnabled()));
         this.bridgingView.setText(booleanToLocalString(virtualNetworkConfig.isBridge()));
 
-        // 分配的 IP 地址
+        // 分配的 IP 地址 - 简化显示，逗号分隔
         var addresses = virtualNetworkConfig.getAssignedAddresses();
         var strAssignedAddresses = new StringBuilder();
 
         for (int i = 0; i < addresses.length; i++) {
-            strAssignedAddresses.append(inetSocketAddressToString(addresses[i]));
-            if (i < addresses.length - 1) {
-                strAssignedAddresses.append('\n');
+            String addr = inetSocketAddressToString(addresses[i]);
+            if (addr != null) {
+                strAssignedAddresses.append(addr);
+                if (i < addresses.length - 1) {
+                    strAssignedAddresses.append(", ");
+                }
             }
         }
         this.ipAddressesView.setText(strAssignedAddresses.toString());

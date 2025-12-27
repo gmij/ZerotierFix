@@ -51,7 +51,7 @@
         android:orientation="horizontal"
         android:stretchColumns="1">
 
-        <!-- Network Status Section -->
+        <!-- IP Addresses moved here from bottom -->
         <TableRow android:layout_width="match_parent">
 
             <TextView
@@ -60,14 +60,14 @@
                 android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
-                android:text="@string/network_status" />
+                android:text="@string/network_ips" />
 
             <TextView
-                android:id="@+id/network_status_textview"
+                android:id="@+id/network_ipaddresses_textview"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="end"
-                android:text="@string/network_status_not_connected" />
+                android:text="" />
         </TableRow>
 
         <TableRow android:layout_width="match_parent">
@@ -234,40 +234,6 @@
                 android:layout_height="wrap_content"
                 android:layout_gravity="end"
                 android:text="@string/configure_apps" />
-        </TableRow>
-
-        <!-- IP Addresses Section -->
-        <TableRow
-            android:layout_width="match_parent"
-            android:layout_marginTop="16dp"
-            android:background="?attr/tableRowGrey">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end"
-                android:layout_marginTop="5dp"
-                android:layout_marginBottom="5dp"
-                android:layout_span="2"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center_horizontal"
-                    android:layout_margin="5dp"
-                    android:gravity="end"
-                    android:text="@string/network_ips"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/network_ipaddresses_textview"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_margin="5dp"
-                    android:gravity="end"
-                    android:text="" />
-            </LinearLayout>
         </TableRow>
 
         <TableRow
