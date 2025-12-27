@@ -44,6 +44,8 @@
     <string name="network_status_requesting_configuration">Requesting Configuration</string>
     <string name="network_status_unknown">Unknown</string>
     <string name="network_status_authentication_required">Authentication Required</string>
+    <string name="network_list_status_connected">Connected</string>
+    <string name="network_list_status_disconnected">Disconnected</string>
     <string name="network_type">Type</string>
     <string name="network_type_label">Type:</string>
     <string name="network_type_private">Private</string>
