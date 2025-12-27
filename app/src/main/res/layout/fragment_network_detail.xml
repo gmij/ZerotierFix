@@ -51,6 +51,7 @@
         android:orientation="horizontal"
         android:stretchColumns="1">
 
+        <!-- Network Status Section -->
         <TableRow android:layout_width="match_parent">
 
             <TextView
@@ -87,7 +88,9 @@
                 android:text="" />
         </TableRow>
 
-        <TableRow android:layout_width="match_parent">
+        <!-- Network Properties Section -->
+        <TableRow android:layout_width="match_parent"
+            android:layout_marginTop="8dp">
 
             <TextView
                 android:layout_width="match_parent"
@@ -159,22 +162,21 @@
                 android:text="" />
         </TableRow>
 
-        <TableRow android:layout_width="match_parent">
+        <!-- Routing Configuration Section -->
+        <TableRow android:layout_width="match_parent"
+            android:layout_marginTop="16dp"
+            android:background="?attr/tableRowGrey">
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_span="2"
                 android:paddingLeft="40dp"
+                android:paddingTop="8dp"
                 android:paddingRight="20dp"
-                android:text="@string/network_dns_mode" />
-
-            <TextView
-                android:id="@+id/network_dns_mode_textview"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end"
-                android:text="" />
+                android:paddingBottom="8dp"
+                android:text="@string/routing_configuration_section"
+                android:textStyle="bold" />
         </TableRow>
 
         <TableRow android:layout_width="match_parent">
@@ -182,7 +184,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right|center_vertical|center_horizontal|center|end"
+                android:layout_gravity="right|center_vertical"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_default_route" />
@@ -200,7 +202,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right|center_vertical|center_horizontal|center|end"
+                android:layout_gravity="right|center_vertical"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_per_app_routing" />
@@ -235,8 +237,45 @@
                 android:text="@string/configure_apps" />
         </TableRow>
 
+        <!-- DNS Configuration Section -->
+        <TableRow android:layout_width="match_parent"
+            android:layout_marginTop="16dp"
+            android:background="?attr/tableRowGrey">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_span="2"
+                android:paddingLeft="40dp"
+                android:paddingTop="8dp"
+                android:paddingRight="20dp"
+                android:paddingBottom="8dp"
+                android:text="@string/dns_configuration_section"
+                android:textStyle="bold" />
+        </TableRow>
+
+        <TableRow android:layout_width="match_parent">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="right"
+                android:paddingLeft="40dp"
+                android:paddingRight="20dp"
+                android:text="@string/network_dns_mode" />
+
+            <TextView
+                android:id="@+id/network_dns_mode_textview"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end"
+                android:text="" />
+        </TableRow>
+
+        <!-- IP Addresses Section -->
         <TableRow
             android:layout_width="match_parent"
+            android:layout_marginTop="16dp"
             android:background="?attr/tableRowGrey">
 
             <LinearLayout

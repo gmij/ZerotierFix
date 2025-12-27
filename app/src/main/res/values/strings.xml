@@ -208,4 +208,6 @@
     <string name="loading_apps">Loading applications...</string>
     <string name="no_apps_found">No applications found</string>
     <string name="menu_app_routing">App Routing</string>
+    <string name="routing_configuration_section">Routing Configuration</string>
+    <string name="dns_configuration_section">DNS Configuration</string>
 </resources>

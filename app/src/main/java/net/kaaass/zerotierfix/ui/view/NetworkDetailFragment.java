@@ -103,43 +103,45 @@ public class NetworkDetailFragment extends Fragment {
         this.dnsView = view.findViewById(R.id.custom_dns_row);
         this.dnsServersView = view.findViewById(R.id.network_dns_textview);
 
-        // 定义per-app路由监听器（需要在全局路由监听器之后引用，所以先声明）
-        final CheckBox.OnCheckedChangeListener[] perAppListenerHolder = new CheckBox.OnCheckedChangeListener[1];
+        // 用于防止递归调用的标志
+        final boolean[] isUpdating = {false};
         
         // 定义全局路由监听器
         CheckBox.OnCheckedChangeListener routeViaZtChangeListener = (buttonView, isChecked) -> {
-            if (isChecked && perAppRoutingView.isChecked()) {
-                // 如果启用全局路由，禁用per-app路由
-                // 暂时移除监听器避免触发额外的更新
-                perAppRoutingView.setOnCheckedChangeListener(null);
-                perAppRoutingView.setChecked(false);
-                perAppConfigRow.setVisibility(View.GONE);
-                // 恢复监听器
-                perAppRoutingView.setOnCheckedChangeListener(perAppListenerHolder[0]);
-                // 更新数据库
-                viewModel.doUpdatePerAppRouting(false);
+            if (isUpdating[0]) return;
+            
+            isUpdating[0] = true;
+            try {
+                if (isChecked && perAppRoutingView.isChecked()) {
+                    // 如果启用全局路由，禁用per-app路由
+                    perAppRoutingView.setChecked(false);
+                    perAppConfigRow.setVisibility(View.GONE);
+                    viewModel.doUpdatePerAppRouting(false);
+                }
+                viewModel.doUpdateRouteViaZeroTier(isChecked);
+            } finally {
+                isUpdating[0] = false;
             }
-            viewModel.doUpdateRouteViaZeroTier(isChecked);
         };
 
         // 定义per-app路由监听器
         CheckBox.OnCheckedChangeListener perAppRoutingChangeListener = (buttonView, isChecked) -> {
-            if (isChecked && routeViaZtView.isChecked()) {
-                // 如果启用per-app路由，禁用全局路由
-                // 暂时移除监听器避免触发额外的更新
-                routeViaZtView.setOnCheckedChangeListener(null);
-                routeViaZtView.setChecked(false);
-                // 恢复监听器
-                routeViaZtView.setOnCheckedChangeListener(routeViaZtChangeListener);
-                // 更新数据库
-                viewModel.doUpdateRouteViaZeroTier(false);
+            if (isUpdating[0]) return;
+            
+            isUpdating[0] = true;
+            try {
+                if (isChecked && routeViaZtView.isChecked()) {
+                    // 如果启用per-app路由，禁用全局路由
+                    routeViaZtView.setChecked(false);
+                    viewModel.doUpdateRouteViaZeroTier(false);
+                }
+                viewModel.doUpdatePerAppRouting(isChecked);
+                // 显示或隐藏"配置应用"按钮
+                perAppConfigRow.setVisibility(isChecked ? View.VISIBLE : View.GONE);
+            } finally {
+                isUpdating[0] = false;
             }
-            viewModel.doUpdatePerAppRouting(isChecked);
-            // 显示或隐藏"配置应用"按钮
-            perAppConfigRow.setVisibility(isChecked ? View.VISIBLE : View.GONE);
         };
-        
-        perAppListenerHolder[0] = perAppRoutingChangeListener;
 
         // 设置回调 - 全局路由和per-app路由互斥
         this.routeViaZtView.setOnCheckedChangeListener(routeViaZtChangeListener);
