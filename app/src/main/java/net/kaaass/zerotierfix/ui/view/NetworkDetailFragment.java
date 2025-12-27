@@ -172,9 +172,14 @@ public class NetworkDetailFragment extends Fragment {
         boolean routeViaZt = networkConfig.getRouteViaZeroTier();
         boolean perAppRouting = networkConfig.getPerAppRouting();
         
-        // If global routing is enabled, check "Route All Traffic"
-        // Otherwise (per-app routing), uncheck it
-        this.routingAllView.setChecked(routeViaZt && !perAppRouting);
+        // Checkbox state logic:
+        // - If per-app routing is enabled: unchecked (per-app mode)
+        // - If global routing is enabled without per-app: checked (global mode)
+        // - If neither is enabled: unchecked (no routing)
+        // Note: routeViaZt and perAppRouting should be mutually exclusive, 
+        // but we handle the case where both might be set by prioritizing per-app
+        boolean isGlobalMode = routeViaZt && !perAppRouting;
+        this.routingAllView.setChecked(isGlobalMode);
         
         // Enable/disable configure apps button based on routing mode
         this.configureAppsButton.setEnabled(perAppRouting);
