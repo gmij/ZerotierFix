@@ -24,7 +24,6 @@ import net.kaaass.zerotierfix.R;
 import net.kaaass.zerotierfix.model.Network;
 import net.kaaass.zerotierfix.model.NetworkConfig;
 import net.kaaass.zerotierfix.model.type.DNSMode;
-import net.kaaass.zerotierfix.model.type.NetworkStatus;
 import net.kaaass.zerotierfix.model.type.NetworkType;
 import net.kaaass.zerotierfix.ui.AppRoutingFragment;
 import net.kaaass.zerotierfix.ui.NetworkListFragment;
@@ -154,10 +153,6 @@ public class NetworkDetailFragment extends Fragment {
             transaction.remove(appRoutingFragment);
             transaction.commit();
         }
-    }
-        viewModel.getVirtualNetworkConfig().observe(getViewLifecycleOwner(), this::updateVirtualNetworkConfig);
-
-        return view;
     }
 
     /**
