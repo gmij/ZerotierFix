@@ -205,28 +205,10 @@
                 android:layout_gravity="end|center_vertical"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
-                android:text="@string/network_default_route" />
+                android:text="@string/routing_all_traffic" />
 
             <CheckBox
-                android:id="@+id/network_default_route"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end"
-                android:text="" />
-        </TableRow>
-
-        <TableRow android:layout_width="match_parent">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end|center_vertical"
-                android:paddingLeft="40dp"
-                android:paddingRight="20dp"
-                android:text="@string/network_per_app_routing" />
-
-            <CheckBox
-                android:id="@+id/network_per_app_routing"
+                android:id="@+id/network_routing_all"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="end"
@@ -235,13 +217,12 @@
 
         <TableRow
             android:id="@+id/per_app_config_row"
-            android:layout_width="match_parent"
-            android:visibility="gone">
+            android:layout_width="match_parent">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right|center_vertical"
+                android:layout_gravity="end|center_vertical"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="" />

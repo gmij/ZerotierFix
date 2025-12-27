@@ -212,4 +212,5 @@
     <string name="menu_app_routing">App Routing</string>
     <string name="routing_configuration_section">Routing Configuration</string>
     <string name="dns_configuration_section">DNS Configuration</string>
+    <string name="routing_all_traffic">Route All Traffic</string>
 </resources>

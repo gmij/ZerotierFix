@@ -54,8 +54,7 @@ public class NetworkDetailFragment extends Fragment {
     private TextView broadcastView;
     private TextView bridgingView;
     private TextView dnsModeView;
-    private CheckBox routeViaZtView;
-    private CheckBox perAppRoutingView;
+    private CheckBox routingAllView;
     private TableRow perAppConfigRow;
     private Button configureAppsButton;
     private TextView ipAddressesView;
@@ -95,57 +94,32 @@ public class NetworkDetailFragment extends Fragment {
         this.broadcastView = view.findViewById(R.id.network_broadcast_textview);
         this.bridgingView = view.findViewById(R.id.network_bridging_textview);
         this.dnsModeView = view.findViewById(R.id.network_dns_mode_textview);
-        this.routeViaZtView = view.findViewById(R.id.network_default_route);
-        this.perAppRoutingView = view.findViewById(R.id.network_per_app_routing);
+        this.routingAllView = view.findViewById(R.id.network_routing_all);
         this.perAppConfigRow = view.findViewById(R.id.per_app_config_row);
         this.configureAppsButton = view.findViewById(R.id.configure_apps_button);
         this.ipAddressesView = view.findViewById(R.id.network_ipaddresses_textview);
         this.dnsView = view.findViewById(R.id.custom_dns_row);
         this.dnsServersView = view.findViewById(R.id.network_dns_textview);
 
-        // 用于防止递归调用的标志
-        final boolean[] isUpdating = {false};
-        
-        // 定义全局路由监听器
-        CheckBox.OnCheckedChangeListener routeViaZtChangeListener = (buttonView, isChecked) -> {
-            if (isUpdating[0]) return;
-            
-            isUpdating[0] = true;
-            try {
-                if (isChecked && perAppRoutingView.isChecked()) {
-                    // 如果启用全局路由，禁用per-app路由
-                    perAppRoutingView.setChecked(false);
-                    perAppConfigRow.setVisibility(View.GONE);
-                    viewModel.doUpdatePerAppRouting(false);
-                }
-                viewModel.doUpdateRouteViaZeroTier(isChecked);
-            } finally {
-                isUpdating[0] = false;
+        // "Route All Traffic" checkbox listener
+        // When checked: global routing (per-app routing disabled, button disabled)
+        // When unchecked: per-app routing (button enabled for app selection)
+        CheckBox.OnCheckedChangeListener routingAllChangeListener = (buttonView, isChecked) -> {
+            if (isChecked) {
+                // Global routing mode: all traffic through ZeroTier
+                viewModel.doUpdateRouteViaZeroTier(true);
+                viewModel.doUpdatePerAppRouting(false);
+                configureAppsButton.setEnabled(false);
+            } else {
+                // Per-app routing mode: button enabled for app selection
+                viewModel.doUpdateRouteViaZeroTier(false);
+                viewModel.doUpdatePerAppRouting(true);
+                configureAppsButton.setEnabled(true);
             }
         };
 
-        // 定义per-app路由监听器
-        CheckBox.OnCheckedChangeListener perAppRoutingChangeListener = (buttonView, isChecked) -> {
-            if (isUpdating[0]) return;
-            
-            isUpdating[0] = true;
-            try {
-                if (isChecked && routeViaZtView.isChecked()) {
-                    // 如果启用per-app路由，禁用全局路由
-                    routeViaZtView.setChecked(false);
-                    viewModel.doUpdateRouteViaZeroTier(false);
-                }
-                viewModel.doUpdatePerAppRouting(isChecked);
-                // 显示或隐藏"配置应用"按钮
-                perAppConfigRow.setVisibility(isChecked ? View.VISIBLE : View.GONE);
-            } finally {
-                isUpdating[0] = false;
-            }
-        };
-
-        // 设置回调 - 全局路由和per-app路由互斥
-        this.routeViaZtView.setOnCheckedChangeListener(routeViaZtChangeListener);
-        this.perAppRoutingView.setOnCheckedChangeListener(perAppRoutingChangeListener);
+        // 设置回调
+        this.routingAllView.setOnCheckedChangeListener(routingAllChangeListener);
 
         // 配置应用按钮点击事件
         this.configureAppsButton.setOnClickListener(v -> {
@@ -194,14 +168,16 @@ public class NetworkDetailFragment extends Fragment {
         // 仅当 DNS 模式为网络时显示服务器地址
         this.dnsView.setVisibility(dnsMode == DNSMode.NETWORK_DNS ? View.VISIBLE : View.INVISIBLE);
 
-        // 通过 ZT 路由
-        this.routeViaZtView.setChecked(networkConfig.getRouteViaZeroTier());
+        // 路由配置
+        boolean routeViaZt = networkConfig.getRouteViaZeroTier();
+        boolean perAppRouting = networkConfig.getPerAppRouting();
         
-        // Per-App 路由
-        this.perAppRoutingView.setChecked(networkConfig.getPerAppRouting());
+        // If global routing is enabled, check "Route All Traffic"
+        // Otherwise (per-app routing), uncheck it
+        this.routingAllView.setChecked(routeViaZt && !perAppRouting);
         
-        // 显示或隐藏"配置应用"按钮
-        this.perAppConfigRow.setVisibility(networkConfig.getPerAppRouting() ? View.VISIBLE : View.GONE);
+        // Enable/disable configure apps button based on routing mode
+        this.configureAppsButton.setEnabled(perAppRouting);
     }
 
     /**
