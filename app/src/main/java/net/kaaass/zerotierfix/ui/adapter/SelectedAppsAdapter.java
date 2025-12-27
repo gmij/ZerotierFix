@@ -51,7 +51,7 @@ public class SelectedAppsAdapter extends RecyclerView.Adapter<SelectedAppsAdapte
         AppInfo app = selectedApps.get(position);
         
         holder.appName.setText(app.getAppName());
-        holder.appIcon.setImageDrawable(app.getIcon());
+        holder.appIcon.setImageDrawable(app.getAppIcon());
         
         holder.removeButton.setOnClickListener(v -> {
             if (onAppRemovedListener != null) {
