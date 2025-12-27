@@ -1,36 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
+    android:layout_height="wrap_content"
     android:orientation="vertical">
-
-    <TextView
-        android:id="@+id/routing_mode_description"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:padding="12dp"
-        android:text="@string/per_app_routing_description"
-        android:textSize="14sp"
-        android:textColor="?attr/greyText"
-        android:background="?attr/tableRowGrey" />
-
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:background="@android:color/darker_gray" />
 
     <LinearLayout
         android:id="@+id/app_list_container"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
+        android:layout_height="wrap_content"
         android:orientation="vertical">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:padding="12dp">
+            android:paddingLeft="12dp"
+            android:paddingRight="12dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="4dp"
+            android:background="?attr/tableRowGrey">
 
             <CheckBox
                 android:id="@+id/show_system_apps_checkbox"
@@ -48,20 +36,16 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="center_vertical"
-                android:textSize="14sp"
+                android:textSize="12sp"
                 android:textColor="?attr/greyText"
                 android:text="@string/selected_apps_count" />
         </LinearLayout>
 
-        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-            android:id="@+id/swipe_refresh_layout"
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/apps_recycler_view"
             android:layout_width="match_parent"
-            android:layout_height="match_parent">
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/apps_recycler_view"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent" />
-        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+            android:layout_height="wrap_content"
+            android:maxHeight="300dp"
+            android:scrollbars="vertical" />
     </LinearLayout>
 </LinearLayout>

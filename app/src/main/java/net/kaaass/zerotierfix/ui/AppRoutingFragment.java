@@ -13,7 +13,6 @@ import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import net.kaaass.zerotierfix.R;
 import net.kaaass.zerotierfix.ZerotierFixApplication;
@@ -37,11 +36,9 @@ public class AppRoutingFragment extends Fragment {
     public static final String NETWORK_ID_MESSAGE = "network_id";
 
     private long networkId;
-    private TextView routingModeDescription;
     private LinearLayout appListContainer;
     private CheckBox showSystemAppsCheckbox;
     private TextView selectedAppsCount;
-    private SwipeRefreshLayout swipeRefreshLayout;
     private RecyclerView appsRecyclerView;
     private AppRoutingAdapter adapter;
 
@@ -65,20 +62,16 @@ public class AppRoutingFragment extends Fragment {
         View view = inflater.inflate(R.layout.fragment_app_routing, container, false);
 
         // 初始化视图
-        routingModeDescription = view.findViewById(R.id.routing_mode_description);
         appListContainer = view.findViewById(R.id.app_list_container);
         showSystemAppsCheckbox = view.findViewById(R.id.show_system_apps_checkbox);
         selectedAppsCount = view.findViewById(R.id.selected_apps_count);
-        swipeRefreshLayout = view.findViewById(R.id.swipe_refresh_layout);
         appsRecyclerView = view.findViewById(R.id.apps_recycler_view);
 
         // 设置RecyclerView
         appsRecyclerView.setLayoutManager(new LinearLayoutManager(getContext()));
+        appsRecyclerView.setNestedScrollingEnabled(false);
         adapter = new AppRoutingAdapter(this::onAppRoutingChanged);
         appsRecyclerView.setAdapter(adapter);
-
-        // 设置刷新监听器
-        swipeRefreshLayout.setOnRefreshListener(this::loadApps);
 
         // 设置显示系统应用切换监听器
         showSystemAppsCheckbox.setOnCheckedChangeListener((buttonView, isChecked) -> {
@@ -96,8 +89,6 @@ public class AppRoutingFragment extends Fragment {
      * 加载应用列表
      */
     private void loadApps() {
-        swipeRefreshLayout.setRefreshing(true);
-
         Executors.newSingleThreadExecutor().execute(() -> {
             // 获取所有已安装的应用
             allApps = AppUtils.getAllInstalledApps(requireContext());
@@ -126,7 +117,6 @@ public class AppRoutingFragment extends Fragment {
 
             requireActivity().runOnUiThread(() -> {
                 updateAppList();
-                swipeRefreshLayout.setRefreshing(false);
             });
         });
     }
