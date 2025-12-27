@@ -182,6 +182,9 @@
     <string name="per_app_routing">指定应用路由</string>
     <string name="network_per_app_routing">指定应用路由</string>
     <string name="configure_apps">配置应用</string>
+    <string name="add_apps">添加应用</string>
+    <string name="remove_app">移除应用</string>
+    <string name="no_apps_selected">未选择应用。点击"添加应用"来选择应用程序。</string>
     <string name="global_routing_description">全局路由模式: 所有流量通过 ZeroTier</string>
     <string name="per_app_routing_description">指定应用路由模式: 仅选定的应用通过 ZeroTier</string>
     <string name="show_system_apps">显示系统应用</string>

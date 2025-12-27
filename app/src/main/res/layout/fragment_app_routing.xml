@@ -2,50 +2,55 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="vertical">
+    android:orientation="vertical"
+    android:paddingTop="8dp">
 
+    <!-- Header with selected count and add button -->
     <LinearLayout
-        android:id="@+id/app_list_container"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical">
+        android:orientation="horizontal"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:paddingBottom="4dp"
+        android:gravity="center_vertical">
 
-        <LinearLayout
-            android:layout_width="match_parent"
+        <TextView
+            android:id="@+id/selected_apps_count"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:paddingLeft="12dp"
-            android:paddingRight="12dp"
-            android:paddingTop="8dp"
-            android:paddingBottom="4dp"
-            android:background="?attr/tableRowGrey">
+            android:layout_weight="1"
+            android:textSize="13sp"
+            android:textColor="?attr/greyText"
+            android:text="@string/selected_apps_count" />
 
-            <CheckBox
-                android:id="@+id/show_system_apps_checkbox"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/show_system_apps" />
-
-            <View
-                android:layout_width="0dp"
-                android:layout_height="0dp"
-                android:layout_weight="1" />
-
-            <TextView
-                android:id="@+id/selected_apps_count"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center_vertical"
-                android:textSize="12sp"
-                android:textColor="?attr/greyText"
-                android:text="@string/selected_apps_count" />
-        </LinearLayout>
-
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/apps_recycler_view"
-            android:layout_width="match_parent"
+        <Button
+            android:id="@+id/add_apps_button"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:maxHeight="300dp"
-            android:scrollbars="vertical" />
+            android:text="@string/add_apps" />
     </LinearLayout>
+
+    <!-- RecyclerView for selected apps only -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/selected_apps_recycler_view"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:nestedScrollingEnabled="false" />
+
+    <!-- Empty state message -->
+    <TextView
+        android:id="@+id/empty_state_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="16dp"
+        android:text="@string/no_apps_selected"
+        android:textSize="14sp"
+        android:textColor="?attr/greyText"
+        android:gravity="center"
+        android:visibility="gone" />
+
 </LinearLayout>
