@@ -51,22 +51,23 @@
         android:orientation="horizontal"
         android:stretchColumns="1">
 
+        <!-- IP Addresses moved here from bottom -->
         <TableRow android:layout_width="match_parent">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
-                android:text="@string/network_status" />
+                android:text="@string/network_ips" />
 
             <TextView
-                android:id="@+id/network_status_textview"
+                android:id="@+id/network_ipaddresses_textview"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="end"
-                android:text="@string/network_status_not_connected" />
+                android:text="" />
         </TableRow>
 
         <TableRow android:layout_width="match_parent">
@@ -74,7 +75,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_type" />
@@ -87,12 +88,14 @@
                 android:text="" />
         </TableRow>
 
-        <TableRow android:layout_width="match_parent">
+        <!-- Network Properties Section -->
+        <TableRow android:layout_width="match_parent"
+            android:layout_marginTop="8dp">
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_mac" />
@@ -110,7 +113,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_mtu" />
@@ -128,7 +131,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_broadcast" />
@@ -146,7 +149,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_bridging" />
@@ -164,7 +167,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_dns_mode" />
@@ -177,95 +180,58 @@
                 android:text="" />
         </TableRow>
 
-        <TableRow android:layout_width="match_parent">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="right|center_vertical|center_horizontal|center|end"
-                android:paddingLeft="40dp"
-                android:paddingRight="20dp"
-                android:text="@string/network_default_route" />
-
-            <CheckBox
-                android:id="@+id/network_default_route"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end"
-                android:text="" />
-        </TableRow>
-
-        <TableRow android:layout_width="match_parent">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="right|center_vertical|center_horizontal|center|end"
-                android:paddingLeft="40dp"
-                android:paddingRight="20dp"
-                android:text="@string/network_per_app_routing" />
-
-            <CheckBox
-                android:id="@+id/network_per_app_routing"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end"
-                android:text="" />
-        </TableRow>
-
-        <TableRow
-            android:id="@+id/per_app_config_row"
-            android:layout_width="match_parent"
-            android:visibility="gone">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="right|center_vertical"
-                android:paddingLeft="40dp"
-                android:paddingRight="20dp"
-                android:text="" />
-
-            <Button
-                android:id="@+id/configure_apps_button"
-                style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end"
-                android:text="@string/configure_apps" />
-        </TableRow>
-
-        <TableRow
-            android:layout_width="match_parent"
+        <!-- Routing Configuration Section -->
+        <TableRow android:layout_width="match_parent"
+            android:layout_marginTop="16dp"
             android:background="?attr/tableRowGrey">
 
-            <LinearLayout
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="end"
-                android:layout_marginTop="5dp"
-                android:layout_marginBottom="5dp"
                 android:layout_span="2"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center_horizontal"
-                    android:layout_margin="5dp"
-                    android:gravity="end"
-                    android:text="@string/network_ips"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/network_ipaddresses_textview"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_margin="5dp"
-                    android:gravity="end"
-                    android:text="" />
-            </LinearLayout>
+                android:paddingLeft="40dp"
+                android:paddingTop="8dp"
+                android:paddingRight="20dp"
+                android:paddingBottom="8dp"
+                android:text="@string/routing_configuration_section"
+                android:textStyle="bold" />
         </TableRow>
+
+        <TableRow android:layout_width="match_parent">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end|center_vertical"
+                android:paddingLeft="40dp"
+                android:paddingRight="20dp"
+                android:text="@string/routing_all_traffic" />
+
+            <CheckBox
+                android:id="@+id/network_routing_all"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end"
+                android:text="" />
+        </TableRow>
+
+    </TableLayout>
+
+    <!-- App Routing Fragment Container -->
+    <FrameLayout
+        android:id="@+id/app_routing_fragment_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
+    <TableLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="8dp"
+        android:columnCount="2"
+        android:gravity="end"
+        android:orientation="horizontal"
+        android:stretchColumns="1">
 
         <TableRow
             android:id="@+id/custom_dns_row"

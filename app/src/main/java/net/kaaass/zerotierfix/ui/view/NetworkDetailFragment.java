@@ -1,20 +1,20 @@
 package net.kaaass.zerotierfix.ui.view;
 
-import android.content.Intent;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.FrameLayout;
 import android.widget.TableRow;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.UiThread;
 import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentTransaction;
 import androidx.lifecycle.ViewModelProvider;
 
 import com.zerotier.sdk.VirtualNetworkConfig;
@@ -24,9 +24,7 @@ import net.kaaass.zerotierfix.R;
 import net.kaaass.zerotierfix.model.Network;
 import net.kaaass.zerotierfix.model.NetworkConfig;
 import net.kaaass.zerotierfix.model.type.DNSMode;
-import net.kaaass.zerotierfix.model.type.NetworkStatus;
 import net.kaaass.zerotierfix.model.type.NetworkType;
-import net.kaaass.zerotierfix.ui.AppRoutingActivity;
 import net.kaaass.zerotierfix.ui.AppRoutingFragment;
 import net.kaaass.zerotierfix.ui.NetworkListFragment;
 import net.kaaass.zerotierfix.ui.viewmodel.NetworkDetailModel;
@@ -47,22 +45,20 @@ public class NetworkDetailFragment extends Fragment {
     private NetworkDetailModel viewModel;
     private TextView idView;
     private TextView nameView;
-    private TextView statusView;
     private TextView typeView;
     private TextView macView;
     private TextView mtuView;
     private TextView broadcastView;
     private TextView bridgingView;
     private TextView dnsModeView;
-    private CheckBox routeViaZtView;
-    private CheckBox perAppRoutingView;
-    private TableRow perAppConfigRow;
-    private Button configureAppsButton;
+    private CheckBox routingAllView;
+    private FrameLayout appRoutingFragmentContainer;
     private TextView ipAddressesView;
     private TableRow dnsView;
     private TextView dnsServersView;
 
     private long networkId;
+    private AppRoutingFragment appRoutingFragment;
 
 
     @Override
@@ -88,69 +84,37 @@ public class NetworkDetailFragment extends Fragment {
         // 获取各个控件
         this.idView = view.findViewById(R.id.network_detail_network_id);
         this.nameView = view.findViewById(R.id.network_detail_network_name);
-        this.statusView = view.findViewById(R.id.network_status_textview);
         this.typeView = view.findViewById(R.id.network_type_textview);
         this.macView = view.findViewById(R.id.network_mac_textview);
         this.mtuView = view.findViewById(R.id.network_mtu_textview);
         this.broadcastView = view.findViewById(R.id.network_broadcast_textview);
         this.bridgingView = view.findViewById(R.id.network_bridging_textview);
         this.dnsModeView = view.findViewById(R.id.network_dns_mode_textview);
-        this.routeViaZtView = view.findViewById(R.id.network_default_route);
-        this.perAppRoutingView = view.findViewById(R.id.network_per_app_routing);
-        this.perAppConfigRow = view.findViewById(R.id.per_app_config_row);
-        this.configureAppsButton = view.findViewById(R.id.configure_apps_button);
+        this.routingAllView = view.findViewById(R.id.network_routing_all);
+        this.appRoutingFragmentContainer = view.findViewById(R.id.app_routing_fragment_container);
         this.ipAddressesView = view.findViewById(R.id.network_ipaddresses_textview);
         this.dnsView = view.findViewById(R.id.custom_dns_row);
         this.dnsServersView = view.findViewById(R.id.network_dns_textview);
 
-        // 定义per-app路由监听器（需要在全局路由监听器之后引用，所以先声明）
-        final CheckBox.OnCheckedChangeListener[] perAppListenerHolder = new CheckBox.OnCheckedChangeListener[1];
-        
-        // 定义全局路由监听器
-        CheckBox.OnCheckedChangeListener routeViaZtChangeListener = (buttonView, isChecked) -> {
-            if (isChecked && perAppRoutingView.isChecked()) {
-                // 如果启用全局路由，禁用per-app路由
-                // 暂时移除监听器避免触发额外的更新
-                perAppRoutingView.setOnCheckedChangeListener(null);
-                perAppRoutingView.setChecked(false);
-                perAppConfigRow.setVisibility(View.GONE);
-                // 恢复监听器
-                perAppRoutingView.setOnCheckedChangeListener(perAppListenerHolder[0]);
-                // 更新数据库
+        // "Route All Traffic" checkbox listener
+        // When checked: global routing (per-app routing disabled, app list hidden)
+        // When unchecked: per-app routing (app list shown for selection)
+        CheckBox.OnCheckedChangeListener routingAllChangeListener = (buttonView, isChecked) -> {
+            if (isChecked) {
+                // Global routing mode: all traffic through ZeroTier
+                viewModel.doUpdateRouteViaZeroTier(true);
                 viewModel.doUpdatePerAppRouting(false);
-            }
-            viewModel.doUpdateRouteViaZeroTier(isChecked);
-        };
-
-        // 定义per-app路由监听器
-        CheckBox.OnCheckedChangeListener perAppRoutingChangeListener = (buttonView, isChecked) -> {
-            if (isChecked && routeViaZtView.isChecked()) {
-                // 如果启用per-app路由，禁用全局路由
-                // 暂时移除监听器避免触发额外的更新
-                routeViaZtView.setOnCheckedChangeListener(null);
-                routeViaZtView.setChecked(false);
-                // 恢复监听器
-                routeViaZtView.setOnCheckedChangeListener(routeViaZtChangeListener);
-                // 更新数据库
+                hideAppRoutingFragment();
+            } else {
+                // Per-app routing mode: show app list for selection
                 viewModel.doUpdateRouteViaZeroTier(false);
+                viewModel.doUpdatePerAppRouting(true);
+                showAppRoutingFragment();
             }
-            viewModel.doUpdatePerAppRouting(isChecked);
-            // 显示或隐藏"配置应用"按钮
-            perAppConfigRow.setVisibility(isChecked ? View.VISIBLE : View.GONE);
         };
-        
-        perAppListenerHolder[0] = perAppRoutingChangeListener;
 
-        // 设置回调 - 全局路由和per-app路由互斥
-        this.routeViaZtView.setOnCheckedChangeListener(routeViaZtChangeListener);
-        this.perAppRoutingView.setOnCheckedChangeListener(perAppRoutingChangeListener);
-
-        // 配置应用按钮点击事件
-        this.configureAppsButton.setOnClickListener(v -> {
-            Intent intent = new Intent(getActivity(), AppRoutingActivity.class);
-            intent.putExtra(AppRoutingFragment.NETWORK_ID_MESSAGE, networkId);
-            startActivity(intent);
-        });
+        // 设置回调
+        this.routingAllView.setOnCheckedChangeListener(routingAllChangeListener);
 
         // 设置对应的 UI 更新操作
         viewModel.getNetwork().observe(getViewLifecycleOwner(), this::updateNetwork);
@@ -158,6 +122,37 @@ public class NetworkDetailFragment extends Fragment {
         viewModel.getVirtualNetworkConfig().observe(getViewLifecycleOwner(), this::updateVirtualNetworkConfig);
 
         return view;
+    }
+
+    /**
+     * 显示应用路由选择Fragment
+     */
+    private void showAppRoutingFragment() {
+        if (appRoutingFragment == null) {
+            // 创建AppRoutingFragment实例
+            appRoutingFragment = new AppRoutingFragment();
+            Bundle args = new Bundle();
+            args.putLong(AppRoutingFragment.NETWORK_ID_MESSAGE, networkId);
+            appRoutingFragment.setArguments(args);
+        }
+
+        // 显示Fragment
+        appRoutingFragmentContainer.setVisibility(View.VISIBLE);
+        FragmentTransaction transaction = getChildFragmentManager().beginTransaction();
+        transaction.replace(R.id.app_routing_fragment_container, appRoutingFragment);
+        transaction.commit();
+    }
+
+    /**
+     * 隐藏应用路由选择Fragment
+     */
+    private void hideAppRoutingFragment() {
+        appRoutingFragmentContainer.setVisibility(View.GONE);
+        if (appRoutingFragment != null) {
+            FragmentTransaction transaction = getChildFragmentManager().beginTransaction();
+            transaction.remove(appRoutingFragment);
+            transaction.commit();
+        }
     }
 
     /**
@@ -192,14 +187,25 @@ public class NetworkDetailFragment extends Fragment {
         // 仅当 DNS 模式为网络时显示服务器地址
         this.dnsView.setVisibility(dnsMode == DNSMode.NETWORK_DNS ? View.VISIBLE : View.INVISIBLE);
 
-        // 通过 ZT 路由
-        this.routeViaZtView.setChecked(networkConfig.getRouteViaZeroTier());
+        // 路由配置
+        boolean routeViaZt = networkConfig.getRouteViaZeroTier();
+        boolean perAppRouting = networkConfig.getPerAppRouting();
         
-        // Per-App 路由
-        this.perAppRoutingView.setChecked(networkConfig.getPerAppRouting());
+        // Checkbox state logic:
+        // - If per-app routing is enabled: unchecked (per-app mode)
+        // - If global routing is enabled without per-app: checked (global mode)
+        // - If neither is enabled: unchecked (no routing)
+        // Note: routeViaZt and perAppRouting should be mutually exclusive, 
+        // but we handle the case where both might be set by prioritizing per-app
+        boolean isGlobalMode = routeViaZt && !perAppRouting;
+        this.routingAllView.setChecked(isGlobalMode);
         
-        // 显示或隐藏"配置应用"按钮
-        this.perAppConfigRow.setVisibility(networkConfig.getPerAppRouting() ? View.VISIBLE : View.GONE);
+        // Show/hide app routing fragment based on routing mode
+        if (perAppRouting) {
+            showAppRoutingFragment();
+        } else {
+            hideAppRoutingFragment();
+        }
     }
 
     /**
@@ -216,25 +222,23 @@ public class NetworkDetailFragment extends Fragment {
         var type = NetworkType.fromVirtualNetworkType(ztType);
         this.typeView.setText(type.toStringId());
 
-        // 网络状态
-        var ztStatus = virtualNetworkConfig.getStatus();
-        var status = NetworkStatus.fromVirtualNetworkStatus(ztStatus);
-        this.statusView.setText(status.toStringId());
-
         // MAC、MTU、广播、桥接
         this.macView.setText(StringUtils.macAddressToString(virtualNetworkConfig.getMac()));
         this.mtuView.setText(String.valueOf(virtualNetworkConfig.getMtu()));
         this.broadcastView.setText(booleanToLocalString(virtualNetworkConfig.isBroadcastEnabled()));
         this.bridgingView.setText(booleanToLocalString(virtualNetworkConfig.isBridge()));
 
-        // 分配的 IP 地址
+        // 分配的 IP 地址 - 简化显示，逗号分隔
         var addresses = virtualNetworkConfig.getAssignedAddresses();
         var strAssignedAddresses = new StringBuilder();
 
         for (int i = 0; i < addresses.length; i++) {
-            strAssignedAddresses.append(inetSocketAddressToString(addresses[i]));
-            if (i < addresses.length - 1) {
-                strAssignedAddresses.append('\n');
+            String addr = inetSocketAddressToString(addresses[i]);
+            if (addr != null) {
+                strAssignedAddresses.append(addr);
+                if (i < addresses.length - 1) {
+                    strAssignedAddresses.append(", ");
+                }
             }
         }
         this.ipAddressesView.setText(strAssignedAddresses.toString());
