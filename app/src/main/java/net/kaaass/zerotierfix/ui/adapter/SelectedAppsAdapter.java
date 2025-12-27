@@ -17,7 +17,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Adapter for displaying selected apps with remove buttons
+ * Adapter for displaying selected apps with remove buttons.
+ * Each selected app is shown with its icon, name, and a remove button.
  */
 public class SelectedAppsAdapter extends RecyclerView.Adapter<SelectedAppsAdapter.ViewHolder> {
     
