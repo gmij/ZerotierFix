@@ -57,7 +57,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_status" />
@@ -75,7 +75,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_type" />
@@ -95,7 +95,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_mac" />
@@ -113,7 +113,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_mtu" />
@@ -131,7 +131,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_broadcast" />
@@ -149,7 +149,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_bridging" />
@@ -184,7 +184,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right|center_vertical"
+                android:layout_gravity="end|center_vertical"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_default_route" />
@@ -202,7 +202,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right|center_vertical"
+                android:layout_gravity="end|center_vertical"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_per_app_routing" />
@@ -259,7 +259,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="right"
+                android:layout_gravity="end"
                 android:paddingLeft="40dp"
                 android:paddingRight="20dp"
                 android:text="@string/network_dns_mode" />
