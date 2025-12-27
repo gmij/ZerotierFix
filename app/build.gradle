@@ -43,8 +43,17 @@ android {
         applicationId "net.kaaass.zerotierfix"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 14
-        versionName "1.0.10"
+        
+        // 自动递增版本号：使用GitHub Actions的构建号
+        // 本地构建时使用默认值
+        def buildNumber = System.getenv('GITHUB_RUN_NUMBER') ?: '14'
+        versionCode buildNumber.toInteger()
+        
+        // 版本名称格式：主版本.次版本.构建号
+        def majorVersion = 1
+        def minorVersion = 0
+        versionName "${majorVersion}.${minorVersion}.${buildNumber}"
+        
         multiDexEnabled true
 
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
