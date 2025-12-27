@@ -215,26 +215,23 @@
                 android:text="" />
         </TableRow>
 
-        <TableRow
-            android:id="@+id/per_app_config_row"
-            android:layout_width="match_parent">
+    </TableLayout>
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end|center_vertical"
-                android:paddingLeft="40dp"
-                android:paddingRight="20dp"
-                android:text="" />
+    <!-- App Routing Fragment Container -->
+    <FrameLayout
+        android:id="@+id/app_routing_fragment_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
 
-            <Button
-                android:id="@+id/configure_apps_button"
-                style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end"
-                android:text="@string/configure_apps" />
-        </TableRow>
+    <TableLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="8dp"
+        android:columnCount="2"
+        android:gravity="end"
+        android:orientation="horizontal"
+        android:stretchColumns="1">
 
         <TableRow
             android:id="@+id/custom_dns_row"

@@ -1,20 +1,20 @@
 package net.kaaass.zerotierfix.ui.view;
 
-import android.content.Intent;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.FrameLayout;
 import android.widget.TableRow;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.UiThread;
 import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentTransaction;
 import androidx.lifecycle.ViewModelProvider;
 
 import com.zerotier.sdk.VirtualNetworkConfig;
@@ -26,7 +26,6 @@ import net.kaaass.zerotierfix.model.NetworkConfig;
 import net.kaaass.zerotierfix.model.type.DNSMode;
 import net.kaaass.zerotierfix.model.type.NetworkStatus;
 import net.kaaass.zerotierfix.model.type.NetworkType;
-import net.kaaass.zerotierfix.ui.AppRoutingActivity;
 import net.kaaass.zerotierfix.ui.AppRoutingFragment;
 import net.kaaass.zerotierfix.ui.NetworkListFragment;
 import net.kaaass.zerotierfix.ui.viewmodel.NetworkDetailModel;
@@ -54,13 +53,13 @@ public class NetworkDetailFragment extends Fragment {
     private TextView bridgingView;
     private TextView dnsModeView;
     private CheckBox routingAllView;
-    private TableRow perAppConfigRow;
-    private Button configureAppsButton;
+    private FrameLayout appRoutingFragmentContainer;
     private TextView ipAddressesView;
     private TableRow dnsView;
     private TextView dnsServersView;
 
     private long networkId;
+    private AppRoutingFragment appRoutingFragment;
 
 
     @Override
@@ -93,42 +92,69 @@ public class NetworkDetailFragment extends Fragment {
         this.bridgingView = view.findViewById(R.id.network_bridging_textview);
         this.dnsModeView = view.findViewById(R.id.network_dns_mode_textview);
         this.routingAllView = view.findViewById(R.id.network_routing_all);
-        this.perAppConfigRow = view.findViewById(R.id.per_app_config_row);
-        this.configureAppsButton = view.findViewById(R.id.configure_apps_button);
+        this.appRoutingFragmentContainer = view.findViewById(R.id.app_routing_fragment_container);
         this.ipAddressesView = view.findViewById(R.id.network_ipaddresses_textview);
         this.dnsView = view.findViewById(R.id.custom_dns_row);
         this.dnsServersView = view.findViewById(R.id.network_dns_textview);
 
         // "Route All Traffic" checkbox listener
-        // When checked: global routing (per-app routing disabled, button disabled)
-        // When unchecked: per-app routing (button enabled for app selection)
+        // When checked: global routing (per-app routing disabled, app list hidden)
+        // When unchecked: per-app routing (app list shown for selection)
         CheckBox.OnCheckedChangeListener routingAllChangeListener = (buttonView, isChecked) -> {
             if (isChecked) {
                 // Global routing mode: all traffic through ZeroTier
                 viewModel.doUpdateRouteViaZeroTier(true);
                 viewModel.doUpdatePerAppRouting(false);
-                configureAppsButton.setEnabled(false);
+                hideAppRoutingFragment();
             } else {
-                // Per-app routing mode: button enabled for app selection
+                // Per-app routing mode: show app list for selection
                 viewModel.doUpdateRouteViaZeroTier(false);
                 viewModel.doUpdatePerAppRouting(true);
-                configureAppsButton.setEnabled(true);
+                showAppRoutingFragment();
             }
         };
 
         // 设置回调
         this.routingAllView.setOnCheckedChangeListener(routingAllChangeListener);
 
-        // 配置应用按钮点击事件
-        this.configureAppsButton.setOnClickListener(v -> {
-            Intent intent = new Intent(getActivity(), AppRoutingActivity.class);
-            intent.putExtra(AppRoutingFragment.NETWORK_ID_MESSAGE, networkId);
-            startActivity(intent);
-        });
-
         // 设置对应的 UI 更新操作
         viewModel.getNetwork().observe(getViewLifecycleOwner(), this::updateNetwork);
         viewModel.getNetworkConfig().observe(getViewLifecycleOwner(), this::updateNetworkConfig);
+        viewModel.getVirtualNetworkConfig().observe(getViewLifecycleOwner(), this::updateVirtualNetworkConfig);
+
+        return view;
+    }
+
+    /**
+     * 显示应用路由选择Fragment
+     */
+    private void showAppRoutingFragment() {
+        if (appRoutingFragment == null) {
+            // 创建AppRoutingFragment实例
+            appRoutingFragment = new AppRoutingFragment();
+            Bundle args = new Bundle();
+            args.putLong(AppRoutingFragment.NETWORK_ID_MESSAGE, networkId);
+            appRoutingFragment.setArguments(args);
+        }
+
+        // 显示Fragment
+        appRoutingFragmentContainer.setVisibility(View.VISIBLE);
+        FragmentTransaction transaction = getChildFragmentManager().beginTransaction();
+        transaction.replace(R.id.app_routing_fragment_container, appRoutingFragment);
+        transaction.commit();
+    }
+
+    /**
+     * 隐藏应用路由选择Fragment
+     */
+    private void hideAppRoutingFragment() {
+        appRoutingFragmentContainer.setVisibility(View.GONE);
+        if (appRoutingFragment != null) {
+            FragmentTransaction transaction = getChildFragmentManager().beginTransaction();
+            transaction.remove(appRoutingFragment);
+            transaction.commit();
+        }
+    }
         viewModel.getVirtualNetworkConfig().observe(getViewLifecycleOwner(), this::updateVirtualNetworkConfig);
 
         return view;
@@ -179,8 +205,12 @@ public class NetworkDetailFragment extends Fragment {
         boolean isGlobalMode = routeViaZt && !perAppRouting;
         this.routingAllView.setChecked(isGlobalMode);
         
-        // Enable/disable configure apps button based on routing mode
-        this.configureAppsButton.setEnabled(perAppRouting);
+        // Show/hide app routing fragment based on routing mode
+        if (perAppRouting) {
+            showAppRoutingFragment();
+        } else {
+            hideAppRoutingFragment();
+        }
     }
 
     /**
