@@ -4,7 +4,7 @@
 </h1>
 
 
-本版本完善了全局路由功能~~~~~~~~
+本版本完善了全局路由和指定应用路由功能
 
 <h4 align="center">An unofficial Zerotier Android client patched from official client.</h4>
 
@@ -26,6 +26,10 @@
 - Add custom planet config via file and URL
 - View peers list
 - Chinese translation
+- **Global routing mode**: Route all device traffic through ZeroTier network
+- **Per-app routing mode**: Selectively route only specified apps through ZeroTier network
+  - Global and per-app routing modes are mutually exclusive
+  - Easy configuration directly from network details page
 
 ## Download
 
@@ -33,6 +37,24 @@ Check [Releases page](https://github.com/kaaass/ZerotierFix/releases) for latest
 
 If you want to try the nightly build, you can download it from [GitHub Actions](https://github.com/kaaass/ZerotierFix/actions/workflows/build-app.yml?query=branch%3Amaster).
 But please note that the nightly build may be **BUGGY** and **UNSTABLE**.
+
+## Usage
+
+### Basic Network Connection
+
+1. Open the app and tap "Add Network"
+2. Enter your ZeroTier network ID
+3. Tap "Connect" to join the network
+4. Authorize the device in your ZeroTier Central panel
+
+### Routing Configuration
+
+You can configure how traffic is routed through ZeroTier:
+
+- **Global Routing**: Routes all device traffic through the ZeroTier network. Enable the "Route Via ZeroTier" option in network details.
+- **Per-App Routing**: Routes only specific apps through ZeroTier. Enable the "Per-App Routing" option and tap "Configure Apps" to select which apps should use the ZeroTier network.
+
+**Note**: Global routing and per-app routing are mutually exclusive. Enabling one will automatically disable the other.
 
 ## Copyright
 
@@ -51,4 +73,6 @@ original author is Grant Limberg (glimberg@gmail.com). See [AUTHORS.md](https://
 - [x] Support planet config
 - [x] Replace pre-built JNI library
 - [x] Rewrite & update UI to fit Material Design
+- [x] Global routing mode
+- [x] Per-app routing mode
 - [ ] *WIP* Rewrite whole APP in v2

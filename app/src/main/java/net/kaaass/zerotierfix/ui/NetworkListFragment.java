@@ -680,6 +680,12 @@ public class NetworkListFragment extends Fragment {
                     .getConnectNetworkId().getValue();
             boolean connected = connectedNetworkId != null &&
                     connectedNetworkId.equals(network.getNetworkId());
+            // 设置状态文本
+            if (connected) {
+                holder.mNetworkStatus.setText(R.string.network_list_status_connected);
+            } else {
+                holder.mNetworkStatus.setText(R.string.network_list_status_disconnected);
+            }
             // 设置开关
             holder.mSwitch.setOnCheckedChangeListener(null);
             holder.mSwitch.setChecked(connected);
@@ -696,6 +702,7 @@ public class NetworkListFragment extends Fragment {
             public final View mView;
             public final TextView mNetworkId;
             public final TextView mNetworkName;
+            public final TextView mNetworkStatus;
             public final SwitchCompat mSwitch;
             public Network mItem;
 
@@ -704,6 +711,7 @@ public class NetworkListFragment extends Fragment {
                 mView = view;
                 mNetworkId = view.findViewById(R.id.network_list_network_id);
                 mNetworkName = view.findViewById(R.id.network_list_network_name);
+                mNetworkStatus = view.findViewById(R.id.network_list_network_status);
                 mSwitch = view.findViewById(R.id.network_start_network_switch);
             }
 

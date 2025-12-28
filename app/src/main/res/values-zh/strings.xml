@@ -43,6 +43,8 @@
     <string name="network_status_requesting_configuration">正在请求配置</string>
     <string name="network_status_unknown">未知</string>
     <string name="network_status_authentication_required">需要授权</string>
+    <string name="network_list_status_connected">已连接</string>
+    <string name="network_list_status_disconnected">未连接</string>
     <string name="network_type">网络类型</string>
     <string name="network_type_label">网络类型:</string>
     <string name="network_type_private">私有</string>
@@ -174,4 +176,27 @@
     <string name="fail_retrieve_device_list">获取已授权设备列表失败</string>
     <string name="current_network">当前网络: %s</string>
     <string name="current_network_none">未选择网络</string>
+    <!-- Per-app routing strings -->
+    <string name="app_routing_settings">应用路由设置</string>
+    <string name="app_routing_mode_label">路由模式</string>
+    <string name="per_app_routing">指定应用路由</string>
+    <string name="network_per_app_routing">指定应用路由</string>
+    <string name="configure_apps">配置应用</string>
+    <string name="add_apps">添加应用</string>
+    <string name="remove_app">移除应用</string>
+    <string name="no_apps_selected">未选择应用。点击"添加应用"来选择应用程序。</string>
+    <string name="global_routing_description">全局路由模式: 所有流量通过 ZeroTier</string>
+    <string name="per_app_routing_description">指定应用路由模式: 仅选定的应用通过 ZeroTier</string>
+    <string name="show_system_apps">显示系统应用</string>
+    <string name="selected_apps_count">已选择: %d 个应用</string>
+    <string name="app_icon">应用图标</string>
+    <string name="route_via_vpn">通过 VPN 路由</string>
+    <string name="system_app">系统应用</string>
+    <string name="user_app">用户应用</string>
+    <string name="loading_apps">正在加载应用...</string>
+    <string name="no_apps_found">未找到应用</string>
+    <string name="menu_app_routing">应用路由</string>
+    <string name="routing_configuration_section">路由配置</string>
+    <string name="dns_configuration_section">DNS 配置</string>
+    <string name="routing_all_traffic">全部流量路由</string>
 </resources>
