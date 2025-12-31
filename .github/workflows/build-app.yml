@@ -85,15 +85,17 @@ jobs:
           echo "" >> RELEASE_NOTES.md
           
           # 获取上一个tag，如果没有则从第一个commit开始
-          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           
           # 生成commit历史
-          if [ "$PREV_TAG" != "" ]; then
+          if [ -n "$PREV_TAG" ]; then
             echo "Changes since $PREV_TAG:" >> RELEASE_NOTES.md
             echo "" >> RELEASE_NOTES.md
             git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges >> RELEASE_NOTES.md
           else
-            echo "Initial release" >> RELEASE_NOTES.md
+            echo "Initial release with all commits:" >> RELEASE_NOTES.md
+            echo "" >> RELEASE_NOTES.md
+            git log --pretty=format:"- %s (%h)" --no-merges >> RELEASE_NOTES.md
           fi
           
           echo "" >> RELEASE_NOTES.md

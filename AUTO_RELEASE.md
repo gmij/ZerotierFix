@@ -207,9 +207,10 @@ VERSION="1.1.${{ github.run_number }}"  # 或 "2.0.${{ github.run_number }}"
 
 ## 相关文档 / Related Documentation
 
-- [VERSION_AUTO_INCREMENT.md](VERSION_AUTO_INCREMENT.md) - 版本号自动递增配置
+- [VERSION_AUTO_INCREMENT.md](VERSION_AUTO_INCREMENT.md) - 版本号配置详细说明 (包含 GITHUB_RUN_NUMBER 的使用)
 - [GitHub Actions 文档](https://docs.github.com/en/actions)
 - [softprops/action-gh-release](https://github.com/softprops/action-gh-release)
+- [GitHub Releases 文档](https://docs.github.com/en/repositories/releasing-projects-on-github)
 
 ---
 
