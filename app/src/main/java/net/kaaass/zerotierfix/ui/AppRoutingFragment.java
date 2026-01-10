@@ -1,11 +1,11 @@
 package net.kaaass.zerotierfix.ui;
 
+import android.content.Intent;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.CheckBox;
-import android.widget.LinearLayout;
+import android.widget.Button;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
@@ -13,14 +13,13 @@ import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import net.kaaass.zerotierfix.R;
 import net.kaaass.zerotierfix.ZerotierFixApplication;
 import net.kaaass.zerotierfix.model.AppInfo;
 import net.kaaass.zerotierfix.model.AppRouting;
 import net.kaaass.zerotierfix.model.AppRoutingDao;
-import net.kaaass.zerotierfix.ui.adapter.AppRoutingAdapter;
+import net.kaaass.zerotierfix.ui.adapter.SelectedAppsAdapter;
 import net.kaaass.zerotierfix.util.AppUtils;
 import net.kaaass.zerotierfix.util.DatabaseUtils;
 import net.kaaass.zerotierfix.util.LogUtil;
@@ -30,22 +29,20 @@ import java.util.List;
 import java.util.concurrent.Executors;
 
 /**
- * 应用路由设置界面
+ * Fragment for showing selected apps with ability to add/remove
+ * Used in network detail page for per-app routing configuration
  */
 public class AppRoutingFragment extends Fragment {
     private static final String TAG = "AppRoutingFragment";
     public static final String NETWORK_ID_MESSAGE = "network_id";
 
     private long networkId;
-    private TextView routingModeDescription;
-    private LinearLayout appListContainer;
-    private CheckBox showSystemAppsCheckbox;
     private TextView selectedAppsCount;
-    private SwipeRefreshLayout swipeRefreshLayout;
-    private RecyclerView appsRecyclerView;
-    private AppRoutingAdapter adapter;
+    private TextView emptyStateText;
+    private Button addAppsButton;
+    private RecyclerView selectedAppsRecyclerView;
+    private SelectedAppsAdapter adapter;
 
-    private boolean showSystemApps = false;
     private List<AppInfo> allApps = new ArrayList<>();
 
     @Override
@@ -65,39 +62,34 @@ public class AppRoutingFragment extends Fragment {
         View view = inflater.inflate(R.layout.fragment_app_routing, container, false);
 
         // 初始化视图
-        routingModeDescription = view.findViewById(R.id.routing_mode_description);
-        appListContainer = view.findViewById(R.id.app_list_container);
-        showSystemAppsCheckbox = view.findViewById(R.id.show_system_apps_checkbox);
         selectedAppsCount = view.findViewById(R.id.selected_apps_count);
-        swipeRefreshLayout = view.findViewById(R.id.swipe_refresh_layout);
-        appsRecyclerView = view.findViewById(R.id.apps_recycler_view);
+        emptyStateText = view.findViewById(R.id.empty_state_text);
+        addAppsButton = view.findViewById(R.id.add_apps_button);
+        selectedAppsRecyclerView = view.findViewById(R.id.selected_apps_recycler_view);
 
         // 设置RecyclerView
-        appsRecyclerView.setLayoutManager(new LinearLayoutManager(getContext()));
-        adapter = new AppRoutingAdapter(this::onAppRoutingChanged);
-        appsRecyclerView.setAdapter(adapter);
+        selectedAppsRecyclerView.setLayoutManager(new LinearLayoutManager(getContext()));
+        selectedAppsRecyclerView.setNestedScrollingEnabled(false);
+        adapter = new SelectedAppsAdapter(this::onAppRemoved);
+        selectedAppsRecyclerView.setAdapter(adapter);
 
-        // 设置刷新监听器
-        swipeRefreshLayout.setOnRefreshListener(this::loadApps);
-
-        // 设置显示系统应用切换监听器
-        showSystemAppsCheckbox.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            showSystemApps = isChecked;
-            updateAppList();
+        // 设置添加应用按钮
+        addAppsButton.setOnClickListener(v -> {
+            Intent intent = new Intent(getActivity(), AppRoutingActivity.class);
+            intent.putExtra(NETWORK_ID_MESSAGE, networkId);
+            startActivity(intent);
         });
 
-        // 直接加载应用列表（因为只有在per-app模式下才能访问此界面）
-        loadApps();
+        // 加载选中的应用
+        loadSelectedApps();
 
         return view;
     }
 
     /**
-     * 加载应用列表
+     * 加载选中的应用列表
      */
-    private void loadApps() {
-        swipeRefreshLayout.setRefreshing(true);
-
+    private void loadSelectedApps() {
         Executors.newSingleThreadExecutor().execute(() -> {
             // 获取所有已安装的应用
             allApps = AppUtils.getAllInstalledApps(requireContext());
@@ -125,83 +117,81 @@ public class AppRoutingFragment extends Fragment {
             }
 
             requireActivity().runOnUiThread(() -> {
-                updateAppList();
-                swipeRefreshLayout.setRefreshing(false);
+                updateSelectedAppsList();
             });
         });
     }
 
     /**
-     * 更新显示的应用列表（根据是否显示系统应用）
+     * 更新显示的选中应用列表
      */
-    private void updateAppList() {
-        List<AppInfo> filteredApps = new ArrayList<>();
-        int selectedCount = 0;
-
+    private void updateSelectedAppsList() {
+        List<AppInfo> selectedApps = new ArrayList<>();
+        
         for (AppInfo app : allApps) {
-            if (showSystemApps || !app.isSystemApp()) {
-                filteredApps.add(app);
-            }
             if (app.isRouteViaVpn()) {
-                selectedCount++;
+                selectedApps.add(app);
             }
         }
 
-        // 排序：选中的应用优先显示在前面
-        filteredApps.sort((app1, app2) -> {
-            // 先按是否选中排序（选中的在前）
-            if (app1.isRouteViaVpn() != app2.isRouteViaVpn()) {
-                return app1.isRouteViaVpn() ? -1 : 1;
-            }
-            // 再按应用名称排序（处理null情况）
+        // 按应用名称排序
+        selectedApps.sort((app1, app2) -> {
             String name1 = app1.getAppName() != null ? app1.getAppName() : "";
             String name2 = app2.getAppName() != null ? app2.getAppName() : "";
             return name1.compareToIgnoreCase(name2);
         });
 
-        adapter.setAppList(filteredApps);
-        selectedAppsCount.setText(getString(R.string.selected_apps_count, selectedCount));
+        adapter.setSelectedApps(selectedApps);
+        selectedAppsCount.setText(getString(R.string.selected_apps_count, selectedApps.size()));
+        
+        // Show/hide empty state
+        if (selectedApps.isEmpty()) {
+            emptyStateText.setVisibility(View.VISIBLE);
+            selectedAppsRecyclerView.setVisibility(View.GONE);
+        } else {
+            emptyStateText.setVisibility(View.GONE);
+            selectedAppsRecyclerView.setVisibility(View.VISIBLE);
+        }
     }
 
     /**
-     * 应用路由设置改变时的处理
+     * 移除应用时的处理
      */
-    private void onAppRoutingChanged(AppInfo app, boolean routeViaVpn) {
-        // 更新计数
-        updateAppList();
-
+    private void onAppRemoved(AppInfo app) {
+        // 更新应用的路由设置
+        app.setRouteViaVpn(false);
+        
+        // 更新显示
+        updateSelectedAppsList();
+        
         // 保存到数据库
         Executors.newSingleThreadExecutor().execute(() -> {
             DatabaseUtils.writeLock.lock();
             try {
                 var daoSession = ((ZerotierFixApplication) requireActivity().getApplication()).getDaoSession();
                 var appRoutingDao = daoSession.getAppRoutingDao();
-
-                // 查找是否已存在
+                
+                // 删除对应的路由设置
                 var existing = appRoutingDao.queryBuilder()
                         .where(AppRoutingDao.Properties.NetworkId.eq(networkId),
                                AppRoutingDao.Properties.PackageName.eq(app.getPackageName()))
                         .list();
-
-                if (existing.isEmpty()) {
-                    // 创建新记录
-                    AppRouting routing = new AppRouting();
-                    routing.setNetworkId(networkId);
-                    routing.setPackageName(app.getPackageName());
-                    routing.setRouteViaVpn(routeViaVpn);
-                    appRoutingDao.insert(routing);
-                } else {
-                    // 更新现有记录
-                    AppRouting routing = existing.get(0);
-                    routing.setRouteViaVpn(routeViaVpn);
-                    appRoutingDao.update(routing);
+                
+                if (!existing.isEmpty()) {
+                    appRoutingDao.delete(existing.get(0));
                 }
-
-                LogUtil.d(TAG, "App routing updated: " + app.getPackageName() + 
-                        " -> " + routeViaVpn);
             } finally {
                 DatabaseUtils.writeLock.unlock();
             }
+            
+            LogUtil.d(TAG, "Removed app routing: " + app.getPackageName());
         });
+    }
+    
+    @Override
+    public void onResume() {
+        super.onResume();
+        // Reload when returning from AppRoutingActivity
+        loadSelectedApps();
     }
 }

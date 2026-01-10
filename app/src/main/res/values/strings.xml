@@ -44,6 +44,8 @@
     <string name="network_status_requesting_configuration">Requesting Configuration</string>
     <string name="network_status_unknown">Unknown</string>
     <string name="network_status_authentication_required">Authentication Required</string>
+    <string name="network_list_status_connected">Connected</string>
+    <string name="network_list_status_disconnected">Disconnected</string>
     <string name="network_type">Type</string>
     <string name="network_type_label">Type:</string>
     <string name="network_type_private">Private</string>
@@ -197,6 +199,9 @@
     <string name="per_app_routing">Per-App Routing</string>
     <string name="network_per_app_routing">Per-App Routing</string>
     <string name="configure_apps">Configure Apps</string>
+    <string name="add_apps">Add Apps</string>
+    <string name="remove_app">Remove App</string>
+    <string name="no_apps_selected">No apps selected. Tap "Add Apps" to select applications.</string>
     <string name="global_routing_description">Global routing mode: All traffic goes through ZeroTier</string>
     <string name="per_app_routing_description">Per-app routing mode: Only selected apps go through ZeroTier</string>
     <string name="show_system_apps">Show System Apps</string>
@@ -208,4 +213,7 @@
     <string name="loading_apps">Loading applications...</string>
     <string name="no_apps_found">No applications found</string>
     <string name="menu_app_routing">App Routing</string>
+    <string name="routing_configuration_section">Routing Configuration</string>
+    <string name="dns_configuration_section">DNS Configuration</string>
+    <string name="routing_all_traffic">Route All Traffic</string>
 </resources>
