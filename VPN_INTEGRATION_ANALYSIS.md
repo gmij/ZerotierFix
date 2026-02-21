@@ -220,26 +220,11 @@ The following are **Android platform limitations** that cannot be programmatical
 
 **No action needed:** The feature is complete and working as designed.
 
-### 3. 🔄 Boot Startup (Fixed)
-
-**Status:** Fixed in commit 315ce22, then simplified by removing ROM detection
-
-**What was fixed:**
-- `StartupReceiver` now actually starts the VPN service on boot
-- Previously only logged, didn't start service
-- Now reads networks from database and starts service for first network
-
-**Current implementation (simplified):**
-- Removed Chinese ROM detection logic (RomUtils, RomPermissionGuide)
-- Simplified implementation without ROM-specific delays
-- Standard Android boot startup for all devices
-
-### 4. ⚠️ Important User Guidance
+### 3. ⚠️ Important User Guidance
 
 **Required User Actions:**
 1. **Initial VPN Permission**: User must accept Android's VPN permission dialog on first connection (cannot be bypassed)
 2. **Battery Optimization**: User may need to disable battery optimization for the app to prevent service termination
-3. **Boot Startup Permission**: User must enable "Start on boot" in app settings if they want VPN to start automatically after reboot
 
 ## Technical Implementation Details
 
@@ -259,24 +244,6 @@ If not found: Use first available network and mark as lastActivated
 If no networks: Show error toast
     ↓
 Service calls joinNetwork(selectedNetworkId)
-    ↓
-VPN connection established
-```
-
-### Boot Startup Flow
-
-```
-Device boots
-    ↓
-Android broadcasts ACTION_BOOT_COMPLETED
-    ↓
-StartupReceiver.onReceive() called
-    ↓
-Check user preference: PREF_GENERAL_START_ZEROTIER_ON_BOOT
-    ↓
-If enabled: Load first network from database
-    ↓
-Start ZeroTierOneService with network ID
     ↓
 VPN connection established
 ```
@@ -304,7 +271,6 @@ Only selected apps route through VPN
 
 ✅ **System VPN toggle integration**: Fully implemented
 ✅ **Per-app VPN routing**: Already implemented and functional
-✅ **Boot startup**: Fixed and simplified
 ✅ **Automatic VPN start**: Works correctly
 
 ### What the User Requested vs. Reality
@@ -329,14 +295,12 @@ Only selected apps route through VPN
 1. **First-time setup**: Accept VPN permission dialog when prompted
 2. **System VPN toggle**: Can now use Settings → VPN → ZerotierFix toggle
 3. **Per-app routing**: Use app's UI to select which apps use VPN
-4. **Boot startup**: Enable in app settings, ensure auto-start permission granted
 
 ### For Developers
 
 1. ✅ System VPN toggle integration - **Complete**
-2. ✅ Boot startup fix - **Complete**
-3. ❌ Per-app VPN state sync - **Deferred** (Android API limitation, not fixable)
-4. ✅ Documentation - **Complete**
+2. ❌ Per-app VPN state sync - **Deferred** (Android API limitation, not fixable)
+3. ✅ Documentation - **Complete**
 
 ### Testing Recommendations
 
