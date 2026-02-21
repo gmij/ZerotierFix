@@ -4,8 +4,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
 import android.preference.PreferenceManager;
 
 import net.kaaass.zerotierfix.ZerotierFixApplication;
@@ -13,7 +11,6 @@ import net.kaaass.zerotierfix.model.Network;
 import net.kaaass.zerotierfix.util.Constants;
 import net.kaaass.zerotierfix.util.DatabaseUtils;
 import net.kaaass.zerotierfix.util.LogUtil;
-import net.kaaass.zerotierfix.util.RomUtils;
 
 /**
  * 开机自启动接收器
@@ -25,7 +22,7 @@ public class StartupReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         String action = intent.getAction();
-        LogUtil.i(TAG, "Received: " + action + " on " + RomUtils.getRomName());
+        LogUtil.i(TAG, "Received: " + action);
 
         // 只处理开机完成广播
         if (!Intent.ACTION_BOOT_COMPLETED.equals(action) &&
@@ -40,18 +37,8 @@ public class StartupReceiver extends BroadcastReceiver {
             return;
         }
 
-        LogUtil.i(TAG, "Starting ZeroTier service on boot (ROM: " + RomUtils.getRomName() + ")");
-
-        // 对于某些国产ROM（MIUI、ColorOS），延迟启动可能更可靠
-        if (RomUtils.needsDelayedStart()) {
-            long delay = RomUtils.getStartupDelay();
-            LogUtil.i(TAG, "Delaying startup by " + delay + "ms for " + RomUtils.getRomName());
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                startZeroTierService(context);
-            }, delay);
-        } else {
-            startZeroTierService(context);
-        }
+        LogUtil.i(TAG, "Starting ZeroTier service on boot");
+        startZeroTierService(context);
     }
 
     /**
