@@ -216,4 +216,19 @@
     <string name="routing_configuration_section">Routing Configuration</string>
     <string name="dns_configuration_section">DNS Configuration</string>
     <string name="routing_all_traffic">Route All Traffic</string>
+
+    <!-- ROM-specific permission guidance strings -->
+    <string name="rom_permission_guide_title">System Permission Settings Guide</string>
+    <string name="rom_permission_guide_button">Go to Settings</string>
+    <string name="rom_permission_guide_later">Later</string>
+
+    <string name="rom_guide_miui">MIUI users need to:\n1. Allow auto-start: Settings → Apps → Manage apps → Zerotier Fix → Auto-start\n2. Disable battery optimization: Settings → Battery → App battery saver → No restrictions\n3. Lock in recents: Long press app icon in recent tasks → Lock</string>
+    <string name="rom_guide_emui">Huawei/Honor users need to:\n1. Add to protected apps: Settings → Apps → App launch → Zerotier Fix\n2. Disable battery optimization: Settings → Battery → App launch\n3. Allow background activity</string>
+    <string name="rom_guide_coloros">OPPO users need to:\n1. Allow auto-start: Settings → Apps → App management → Auto-start\n2. Disable battery optimization: Settings → Battery → App battery management</string>
+    <string name="rom_guide_originos">vivo users need to:\n1. Allow auto-start: i Manager → App management → Auto-start\n2. Add to high power consumption whitelist</string>
+    <string name="rom_guide_flyme">Meizu users need to:\n1. Allow auto-start: Security → Permissions → Auto-start management\n2. Allow background running in standby power management</string>
+    <string name="rom_guide_generic">To ensure VPN works properly:\n1. Disable battery optimization\n2. Allow background running\n3. Allow auto-start</string>
+
+    <string name="boot_startup_guide_title">Enable Boot Auto-start</string>
+    <string name="boot_startup_guide_message">For VPN to start automatically after device reboot, please enable auto-start permission in system settings. This is especially important on %s devices.</string>
 </resources>
