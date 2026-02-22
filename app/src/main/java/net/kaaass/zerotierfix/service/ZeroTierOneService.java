@@ -302,6 +302,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         } else {
             // 系统VPN开关触发或Always-on VPN启动，需要自动选择网络
             LogUtil.i(TAG, "No network ID in intent - detecting from system VPN toggle or Always-on VPN");
+            long firstNetworkId = 0; // 记录需要标记为lastActivated的网络ID
+
             DatabaseUtils.readLock.lock();
             try {
                 var daoSession = ((ZerotierFixApplication) getApplication()).getDaoSession();
@@ -331,22 +333,31 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         Toast.makeText(this, R.string.toast_no_network_configured, Toast.LENGTH_LONG).show();
                         return START_NOT_STICKY;
                     }
-                    // 使用第一个网络并标记为lastActivated
-                    Network firstNetwork = allNetworks.get(0);
-                    networkId = firstNetwork.getNetworkId();
-
-                    // 更新数据库，标记该网络为lastActivated
-                    DatabaseUtils.writeLock.lock();
-                    try {
-                        firstNetwork.setLastActivated(true);
-                        firstNetwork.update();
-                        LogUtil.i(TAG, "Auto-selected and marked first network as active: " + Long.toHexString(networkId));
-                    } finally {
-                        DatabaseUtils.writeLock.unlock();
-                    }
+                    // 记录第一个网络的ID，稍后在writeLock中更新
+                    networkId = allNetworks.get(0).getNetworkId();
+                    firstNetworkId = networkId;
                 }
             } finally {
                 DatabaseUtils.readLock.unlock();
+            }
+
+            // 读锁释放后，如果需要标记网络为lastActivated，使用写锁更新
+            if (firstNetworkId != 0) {
+                DatabaseUtils.writeLock.lock();
+                try {
+                    var writeDaoSession = ((ZerotierFixApplication) getApplication()).getDaoSession();
+                    writeDaoSession.clear();
+                    var writeNetworkDao = writeDaoSession.getNetworkDao();
+                    // 重新加载网络实体以避免竞态条件
+                    Network network = writeNetworkDao.load(firstNetworkId);
+                    if (network != null) {
+                        network.setLastActivated(true);
+                        network.update();
+                        LogUtil.i(TAG, "Auto-selected and marked first network as active: " + Long.toHexString(firstNetworkId));
+                    }
+                } finally {
+                    DatabaseUtils.writeLock.unlock();
+                }
             }
         }
         if (networkId == 0) {
