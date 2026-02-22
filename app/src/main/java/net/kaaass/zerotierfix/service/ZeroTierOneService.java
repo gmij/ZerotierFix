@@ -284,8 +284,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.i(TAG, "Authorizing VPN");
             return START_NOT_STICKY;
         } else if (intent == null) {
-            LogUtil.e(TAG, "NULL intent.  Cannot start");
-            return START_NOT_STICKY;
+            LogUtil.i(TAG, "NULL intent - service restarted by system (Always-on VPN or START_STICKY)");
         }
         this.mStartID = startId;
 
@@ -295,7 +294,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
 
         // 确定待启动的网络 ID
-        if (intent.hasExtra(ZT1_NETWORK_ID)) {
+        if (intent != null && intent.hasExtra(ZT1_NETWORK_ID)) {
             // Intent 中指定了目标网络，直接使用此 ID
             networkId = intent.getLongExtra(ZT1_NETWORK_ID, 0);
             LogUtil.i(TAG, "Starting with network ID from intent: " + Long.toHexString(networkId));
