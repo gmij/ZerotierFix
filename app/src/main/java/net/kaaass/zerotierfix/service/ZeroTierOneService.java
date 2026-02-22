@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
 import android.net.VpnService;
 import android.os.Binder;
 import android.os.Build;
@@ -274,12 +275,71 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     /**
+     * 确保通知渠道存在
+     */
+    private void ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            if (this.notificationManager == null) {
+                this.notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            }
+            if (this.notificationManager.getNotificationChannel(Constants.CHANNEL_ID) == null) {
+                String channelName = getString(R.string.channel_name);
+                String description = getString(R.string.channel_description);
+                var channel = new NotificationChannel(
+                        Constants.CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_HIGH);
+                channel.setDescription(description);
+                this.notificationManager.createNotificationChannel(channel);
+            }
+        }
+    }
+
+    /**
+     * 立即启动前台服务，防止被系统杀死
+     * 当由系统VPN开关或Always-on VPN启动时，必须在5秒内调用startForeground()
+     */
+    private void startForegroundWithNotification() {
+        ensureNotificationChannel();
+        
+        int pendingIntentFlag = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= 31) {
+            pendingIntentFlag |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        var pendingIntent = PendingIntent.getActivity(this, 0,
+                new Intent(this, NetworkListActivity.class)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                                | Intent.FLAG_ACTIVITY_CLEAR_TOP),
+                pendingIntentFlag);
+        
+        var notification = new NotificationCompat.Builder(this, Constants.CHANNEL_ID)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(getString(R.string.notification_title_connecting))
+                .setContentText(getString(R.string.notification_text_connecting))
+                .setColor(ContextCompat.getColor(getApplicationContext(), R.color.zerotier_orange))
+                .setContentIntent(pendingIntent)
+                .build();
+        
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(ZT_NOTIFICATION_TAG, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        } else {
+            startForeground(ZT_NOTIFICATION_TAG, notification);
+        }
+        LogUtil.i(TAG, "Started foreground service with notification");
+    }
+
+    /**
      * 启动 ZT 服务，连接至给定网络或最近连接的网络
      */
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         long networkId;
         LogUtil.d(TAG, "onStartCommand");
+        
+        // 立即启动前台服务，防止被系统杀死
+        // This must be called within 5 seconds when started by Always-on VPN or system VPN toggle
+        startForegroundWithNotification();
+        
         if (startId == 3) {
             LogUtil.i(TAG, "Authorizing VPN");
             return START_NOT_STICKY;
@@ -534,6 +594,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (this.notificationManager != null) {
             this.notificationManager.cancel(ZT_NOTIFICATION_TAG);
         }
+        // 停止前台服务
+        stopForeground(true);
         if (!stopSelfResult(this.mStartID)) {
             LogUtil.e(TAG, "stopSelfResult() failed!");
         }
@@ -1063,18 +1125,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.tunTapAdapter.setFileStreams(this.in, this.out);
         this.tunTapAdapter.startThreads();
 
-        // 状态栏提示
-        if (this.notificationManager == null) {
-            this.notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        }
-        if (Build.VERSION.SDK_INT >= 26) {
-            String channelName = getString(R.string.channel_name);
-            String description = getString(R.string.channel_description);
-            var channel = new NotificationChannel(
-                    Constants.CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_HIGH);
-            channel.setDescription(description);
-            this.notificationManager.createNotificationChannel(channel);
-        }
+        // 状态栏提示 - 更新前台服务通知
+        ensureNotificationChannel();
         int pendingIntentFlag = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= 31) {
             pendingIntentFlag |= PendingIntent.FLAG_IMMUTABLE;
@@ -1086,14 +1138,19 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                                         | Intent.FLAG_ACTIVITY_CLEAR_TOP)
                         , pendingIntentFlag);
         var notification = new NotificationCompat.Builder(this, Constants.CHANNEL_ID)
-                .setPriority(1)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setOngoing(true)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle(getString(R.string.notification_title_connected))
                 .setContentText(getString(R.string.notification_text_connected, network.getNetworkIdStr()))
                 .setColor(ContextCompat.getColor(getApplicationContext(), R.color.zerotier_orange))
                 .setContentIntent(pendingIntent).build();
-        this.notificationManager.notify(ZT_NOTIFICATION_TAG, notification);
+        // 使用 startForeground 更新通知以保持前台服务状态
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(ZT_NOTIFICATION_TAG, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        } else {
+            startForeground(ZT_NOTIFICATION_TAG, notification);
+        }
         LogUtil.i(TAG, "ZeroTier One Connected");
 
 

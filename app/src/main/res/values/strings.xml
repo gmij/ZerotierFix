@@ -143,6 +143,8 @@
     <string name="channel_description">Connection Status</string>
     <string name="notification_title_connected">Connected</string>
     <string name="notification_text_connected">Connected to: %1$s</string>
+    <string name="notification_title_connecting">ZeroTier</string>
+    <string name="notification_text_connecting">Connecting to ZeroTier network...</string>
     <string name="toast_vpn_application_not_prepared">VPN application is not prepared or is revoked.</string>
     <string name="toast_network_status_ok">Successfully connected to network %1$s</string>
     <string name="toast_network_status_access_denied">Cannot connect to network %1$s: Access denied</string>
