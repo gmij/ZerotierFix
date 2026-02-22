@@ -311,7 +311,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 pendingIntentFlag);
         
         var notification = new NotificationCompat.Builder(this, Constants.CHANNEL_ID)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setOngoing(true)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle(getString(R.string.notification_title_connecting))
