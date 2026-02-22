@@ -33,22 +33,10 @@
 
 ## Download
 
-### 📦 Stable Releases
+Check [Releases page](https://github.com/kaaass/ZerotierFix/releases) for latest version.
 
-每次推送到 master 分支时，会自动创建新的 Release。查看 [Releases 页面](https://github.com/gmij/ZerotierFix/releases) 获取最新稳定版本。
-
-Releases are automatically created for every push to the master branch. Check the [Releases page](https://github.com/gmij/ZerotierFix/releases) for the latest stable version.
-
-### 🚧 Development Builds
-
-如果你想尝试开发版本，可以从 [GitHub Actions](https://github.com/gmij/ZerotierFix/actions/workflows/build-app.yml?query=branch%3Amaster) 下载。
-但请注意，开发版本可能包含 **BUG** 并且 **不稳定**。
-
-If you want to try development builds, you can download them from [GitHub Actions](https://github.com/gmij/ZerotierFix/actions/workflows/build-app.yml?query=branch%3Amaster).
-But please note that development builds may be **BUGGY** and **UNSTABLE**.
-
-> 💡 **提示 / Tip**: 所有 Release 都包含自动生成的变更日志，详细列出了自上次版本以来的所有更改。  
-> All releases include an automatically generated changelog detailing all changes since the last version.
+If you want to try the nightly build, you can download it from [GitHub Actions](https://github.com/kaaass/ZerotierFix/actions/workflows/build-app.yml?query=branch%3Amaster).
+But please note that the nightly build may be **BUGGY** and **UNSTABLE**.
 
 ## Usage
 
