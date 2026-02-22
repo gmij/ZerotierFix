@@ -15,6 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
+          fetch-depth: 0  # 获取完整历史，用于生成changelog
       
       # 设置JDK环境
       - name: Set up JDK
@@ -58,3 +59,65 @@ jobs:
         with:
           name: app-release
           path: app/build/outputs/apk/release/app-release.apk
+      
+      # 重命名APK文件以包含版本号 (仅master分支)
+      - name: Rename APK with version
+        if: github.ref == 'refs/heads/master' && success()
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          cp app/build/outputs/apk/release/app-release.apk "ZerotierFix-v${VERSION}.apk"
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "APK_FILE=ZerotierFix-v${VERSION}.apk" >> $GITHUB_ENV
+      
+      # 生成变更日志 (仅master分支)
+      - name: Generate Changelog
+        if: github.ref == 'refs/heads/master' && success()
+        run: |
+          echo "# ZerotierFix v${VERSION}" > RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "## 📦 构建信息 / Build Information" >> RELEASE_NOTES.md
+          echo "- **版本号 / Version:** v${VERSION}" >> RELEASE_NOTES.md
+          echo "- **构建号 / Build Number:** ${{ github.run_number }}" >> RELEASE_NOTES.md
+          echo "- **构建日期 / Build Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> RELEASE_NOTES.md
+          echo "- **提交 / Commit:** ${{ github.sha }}" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "## 📝 更新内容 / Changelog" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          
+          # 获取上一个tag，如果没有则从第一个commit开始
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          # 生成commit历史
+          if [ -n "$PREV_TAG" ]; then
+            echo "Changes since $PREV_TAG:" >> RELEASE_NOTES.md
+            echo "" >> RELEASE_NOTES.md
+            git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges >> RELEASE_NOTES.md
+          else
+            echo "Initial release with all commits:" >> RELEASE_NOTES.md
+            echo "" >> RELEASE_NOTES.md
+            git log --pretty=format:"- %s (%h)" --no-merges >> RELEASE_NOTES.md
+          fi
+          
+          echo "" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "## 📥 下载 / Download" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "下载 \`ZerotierFix-v${VERSION}.apk\` 文件并安装到您的Android设备。" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "Download \`ZerotierFix-v${VERSION}.apk\` and install it on your Android device." >> RELEASE_NOTES.md
+          
+          cat RELEASE_NOTES.md
+      
+      # 创建GitHub Release (仅master分支)
+      - name: Create Release
+        if: github.ref == 'refs/heads/master' && success()
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: ZerotierFix v${{ env.VERSION }}
+          body_path: RELEASE_NOTES.md
+          files: ${{ env.APK_FILE }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
