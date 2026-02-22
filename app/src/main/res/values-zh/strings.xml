@@ -141,6 +141,8 @@
     <string name="channel_description">连接状态</string>
     <string name="notification_title_connected">已连接</string>
     <string name="notification_text_connected">已连接至网络: %1$s</string>
+    <string name="notification_title_connecting">ZeroTier</string>
+    <string name="notification_text_connecting">正在连接 ZeroTier 网络...</string>
     <string name="toast_vpn_application_not_prepared" >VPN 服务还未准备好或已经失效。</string>
     <string name="toast_network_status_ok">成功连接至网络 %1$s</string>
     <string name="toast_network_status_access_denied">无法连接至网络 %1$s: 访问被拒绝</string>
