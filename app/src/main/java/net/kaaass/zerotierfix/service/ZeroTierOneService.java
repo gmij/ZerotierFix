@@ -298,30 +298,66 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (intent.hasExtra(ZT1_NETWORK_ID)) {
             // Intent 中指定了目标网络，直接使用此 ID
             networkId = intent.getLongExtra(ZT1_NETWORK_ID, 0);
+            LogUtil.i(TAG, "Starting with network ID from intent: " + Long.toHexString(networkId));
         } else {
-            // 默认启用最近一次启动的网络
+            // 系统VPN开关触发或Always-on VPN启动，需要自动选择网络
+            LogUtil.i(TAG, "No network ID in intent - detecting from system VPN toggle or Always-on VPN");
+            long firstNetworkId = 0; // 记录需要标记为lastActivated的网络ID
+
             DatabaseUtils.readLock.lock();
             try {
                 var daoSession = ((ZerotierFixApplication) getApplication()).getDaoSession();
                 daoSession.clear();
-                var lastActivatedNetworks = daoSession.getNetworkDao().queryBuilder()
+                var networkDao = daoSession.getNetworkDao();
+
+                // 首先尝试找到最近激活的网络
+                var lastActivatedNetworks = networkDao.queryBuilder()
                         .where(NetworkDao.Properties.LastActivated.eq(true))
                         .list();
-                if (lastActivatedNetworks == null || lastActivatedNetworks.isEmpty()) {
-                    LogUtil.e(TAG, "Couldn't find last activated connection");
-                    return START_NOT_STICKY;
-                } else if (lastActivatedNetworks.size() > 1) {
-                    LogUtil.e(TAG, "Multiple networks marked as last connected: " + lastActivatedNetworks.size());
-                    for (Network network : lastActivatedNetworks) {
-                        LogUtil.e(TAG, "ID: " + Long.toHexString(network.getNetworkId()));
+
+                if (lastActivatedNetworks != null && !lastActivatedNetworks.isEmpty()) {
+                    if (lastActivatedNetworks.size() > 1) {
+                        LogUtil.w(TAG, "Multiple networks marked as last connected: " + lastActivatedNetworks.size());
+                        // 使用第一个
+                        networkId = lastActivatedNetworks.get(0).getNetworkId();
+                    } else {
+                        networkId = lastActivatedNetworks.get(0).getNetworkId();
                     }
-                    throw new IllegalStateException("Database is inconsistent");
+                    LogUtil.i(TAG, "Using last activated network: " + Long.toHexString(networkId));
                 } else {
-                    networkId = lastActivatedNetworks.get(0).getNetworkId();
-                    LogUtil.i(TAG, "Got Always On request for ZeroTier");
+                    // 如果没有lastActivated的网络，从系统VPN开关触发时，选择第一个可用网络
+                    LogUtil.i(TAG, "No last activated network found, using first available network");
+                    var allNetworks = networkDao.loadAll();
+                    if (allNetworks == null || allNetworks.isEmpty()) {
+                        LogUtil.e(TAG, "No networks configured. Please join a network first.");
+                        Toast.makeText(this, R.string.toast_no_network_configured, Toast.LENGTH_LONG).show();
+                        return START_NOT_STICKY;
+                    }
+                    // 记录第一个网络的ID，稍后在writeLock中更新
+                    networkId = allNetworks.get(0).getNetworkId();
+                    firstNetworkId = networkId;
                 }
             } finally {
                 DatabaseUtils.readLock.unlock();
+            }
+
+            // 读锁释放后，如果需要标记网络为lastActivated，使用写锁更新
+            if (firstNetworkId != 0) {
+                DatabaseUtils.writeLock.lock();
+                try {
+                    var writeDaoSession = ((ZerotierFixApplication) getApplication()).getDaoSession();
+                    writeDaoSession.clear();
+                    var writeNetworkDao = writeDaoSession.getNetworkDao();
+                    // 重新加载网络实体以避免竞态条件
+                    Network network = writeNetworkDao.load(firstNetworkId);
+                    if (network != null) {
+                        network.setLastActivated(true);
+                        network.update();
+                        LogUtil.i(TAG, "Auto-selected and marked first network as active: " + Long.toHexString(firstNetworkId));
+                    }
+                } finally {
+                    DatabaseUtils.writeLock.unlock();
+                }
             }
         }
         if (networkId == 0) {
