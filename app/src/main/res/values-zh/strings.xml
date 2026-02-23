@@ -69,7 +69,6 @@
     <string name="status_online">已连接</string>
     <string name="toast_no_network">没有网络连接，无法启动 ZeroTier</string>
     <string name="toast_mobile_data">设备正在使用移动网络，必须开启"允许移动网络下使用"选项以启动 ZeroTier</string>
-    <string name="toast_no_network_configured">未配置网络。请先添加网络。</string>
     <string name="menu_peers">结点列表</string>
     <string name="menu_orbit">入轨</string>
     <string name="menu_logs">日志</string>
