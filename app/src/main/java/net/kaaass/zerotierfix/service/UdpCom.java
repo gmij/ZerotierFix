@@ -41,7 +41,7 @@ public class UdpCom implements PacketSender, Runnable {
         }
         try {
             byte[] bytes = new byte[bArr.remaining()];
-            bArr.get(bytes);
+            bArr.duplicate().get(bytes);
             DatagramPacket datagramPacket = new DatagramPacket(bytes, bytes.length, inetSocketAddress);
             DebugLog.d(TAG, "onSendPacketRequested: Sent " + datagramPacket.getLength() + " bytes to " + inetSocketAddress.toString());
             this.svrSocket.send(datagramPacket);

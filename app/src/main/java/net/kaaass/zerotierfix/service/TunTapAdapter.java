@@ -478,9 +478,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                                       long vlanId, ByteBuffer frameData) {
         // Extract byte array from ByteBuffer for use with existing byte[]-based helpers
         byte[] frameBytes = new byte[frameData.remaining()];
-        int savedPos = frameData.position();
-        frameData.get(frameBytes);
-        frameData.position(savedPos);
+        frameData.duplicate().get(frameBytes);
 
         LogUtil.d(TAG, "收到虚拟网络帧: " +
                 "网络ID=" + StringUtils.networkIdToString(networkId) +
