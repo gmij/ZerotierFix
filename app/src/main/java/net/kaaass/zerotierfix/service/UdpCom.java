@@ -14,8 +14,6 @@ import java.net.InetSocketAddress;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 
-import java.nio.ByteBuffer;
-
 // TODO: clear up
 public class UdpCom implements PacketSender, Runnable {
     private static final String TAG = "UdpCom";
@@ -34,15 +32,13 @@ public class UdpCom implements PacketSender, Runnable {
     }
 
     @Override // com.zerotier.sdk.PacketSender
-    public int onSendPacketRequested(long j, InetSocketAddress inetSocketAddress, ByteBuffer bArr, int i) {
+    public int onSendPacketRequested(long j, InetSocketAddress inetSocketAddress, byte[] bArr, int i) {
         if (this.svrSocket == null) {
             Log.e(TAG, "Attempted to send packet on a null socket");
             return -1;
         }
         try {
-            byte[] bytes = new byte[bArr.remaining()];
-            bArr.duplicate().get(bytes);
-            DatagramPacket datagramPacket = new DatagramPacket(bytes, bytes.length, inetSocketAddress);
+            DatagramPacket datagramPacket = new DatagramPacket(bArr, bArr.length, inetSocketAddress);
             DebugLog.d(TAG, "onSendPacketRequested: Sent " + datagramPacket.getLength() + " bytes to " + inetSocketAddress.toString());
             this.svrSocket.send(datagramPacket);
             return 0;
@@ -75,7 +71,7 @@ public class UdpCom implements PacketSender, Runnable {
                         if (this.node != null) {
                             ResultCode processWirePacket = this.node.processWirePacket(System.currentTimeMillis(), -1, 
                                 new InetSocketAddress(datagramPacket.getAddress(), datagramPacket.getPort()), 
-                                ByteBuffer.wrap(bArr2), jArr);
+                                bArr2, jArr);
                             
                             if (processWirePacket != ResultCode.RESULT_OK) {
                                 Log.e(TAG, "processWirePacket returned: " + processWirePacket.toString());

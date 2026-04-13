@@ -277,7 +277,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                   ", 目标MAC=" + StringUtils.macAddressToString(destMac) + 
                   ", 目的IP=" + destIP);
                   
-            var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, IPV4_PACKET, 0, ByteBuffer.wrap(packetData), nextDeadline);
+            var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, IPV4_PACKET, 0, packetData, nextDeadline);
             if (result != ResultCode.RESULT_OK) {
                 LogUtil.e(TAG, "Error calling processVirtualNetworkFrame: " + result.toString());
                 return;
@@ -289,7 +289,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             LogUtil.d(TAG, "Unknown dest MAC address.  Need to look it up. " + destIP);
             destMac = InetAddressUtils.BROADCAST_MAC_ADDRESS;
             packetData = this.arpTable.getRequestPacket(localMac, localV4Address, destIP);
-            var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, ARP_PACKET, 0, ByteBuffer.wrap(packetData), nextDeadline);
+            var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, ARP_PACKET, 0, packetData, nextDeadline);
             if (result != ResultCode.RESULT_OK) {
                 LogUtil.e(TAG, "Error sending ARP packet: " + result.toString());
                 return;
@@ -407,7 +407,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         }
         // 发送数据包
         if (destMac != 0L) {
-            var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, IPV6_PACKET, 0, ByteBuffer.wrap(packetData), nextDeadline);
+            var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, IPV6_PACKET, 0, packetData, nextDeadline);
             if (result != ResultCode.RESULT_OK) {
                 LogUtil.e(TAG, "Error calling processVirtualNetworkFrame: " + result.toString());
             } else {
@@ -424,7 +424,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             }
             LogUtil.d(TAG, "发送邻居请求(NS): 源IP=" + sourceIP + ", 目的IP=" + destIP);
             packetData = this.ndpTable.getNeighborSolicitationPacket(sourceIP, destIP, localMac);
-            var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, IPV6_PACKET, 0, ByteBuffer.wrap(packetData), nextDeadline);
+            var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, IPV6_PACKET, 0, packetData, nextDeadline);
             if (result != ResultCode.RESULT_OK) {
                 LogUtil.e(TAG, "发送NS包失败: " + result.toString());
             } else {
@@ -475,10 +475,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
      */
     @Override
     public void onVirtualNetworkFrame(long networkId, long srcMac, long destMac, long etherType,
-                                      long vlanId, ByteBuffer frameData) {
-        // Extract byte array from ByteBuffer for use with existing byte[]-based helpers
-        byte[] frameBytes = new byte[frameData.remaining()];
-        frameData.duplicate().get(frameBytes);
+                                      long vlanId, byte[] frameData) {
 
         LogUtil.d(TAG, "收到虚拟网络帧: " +
                 "网络ID=" + StringUtils.networkIdToString(networkId) +
@@ -486,7 +483,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 ", 目标MAC=" + StringUtils.macAddressToString(destMac) +
                 ", 以太网类型=" + StringUtils.etherTypeToString(etherType) +
                 ", VLAN ID=" + vlanId +
-                ", 帧长度=" + frameBytes.length);
+                ", 帧长度=" + frameData.length);
 
         if (this.vpnSocket == null) {
             LogUtil.e(TAG, "vpnSocket为空，无法处理接收的网络帧!");
@@ -499,7 +496,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         if (etherType == ARP_PACKET) {
             // 收到 ARP 包。更新 ARP 表，若需要则进行应答
             LogUtil.d(TAG, "收到ARP数据包");
-            var arpReply = this.arpTable.processARPPacket(frameBytes);
+            var arpReply = this.arpTable.processARPPacket(frameData);
             if (arpReply != null && arpReply.getDestMac() != 0 && arpReply.getDestAddress() != null) {
                 // 获取本地 V4 地址
                 var networkConfig = this.node.networkConfig(networkId);
@@ -521,7 +518,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                     var result = this.node
                             .processVirtualNetworkFrame(System.currentTimeMillis(), networkId,
                                     networkConfig.getMac(), srcMac, ARP_PACKET, 0,
-                                    ByteBuffer.wrap(packetData), nextDeadline);
+                                    packetData, nextDeadline);
                     if (result != ResultCode.RESULT_OK) {
                         LogUtil.e(TAG, "发送ARP应答失败: " + result.toString());
                         return;
@@ -533,11 +530,11 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         } else if (etherType == IPV4_PACKET) {
             // 收到 IPv4 包。根据需要发送至 TUN
             try {
-                var sourceIP = IPPacketUtils.getSourceIP(frameBytes);
-                var destIP = IPPacketUtils.getDestIP(frameBytes);
+                var sourceIP = IPPacketUtils.getSourceIP(frameData);
+                var destIP = IPPacketUtils.getDestIP(frameData);
                 LogUtil.d(TAG, "收到IPv4数据包: 源IP=" + sourceIP +
                         ", 目标IP=" + destIP +
-                        ", 大小=" + frameBytes.length + "字节");
+                        ", 大小=" + frameData.length + "字节");
 
                 if (sourceIP != null) {
                     if (isIPv4Multicast(sourceIP)) {
@@ -550,19 +547,19 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                         LogUtil.d(TAG, "更新ARP表: IP=" + sourceIP + ", MAC=" + StringUtils.macAddressToString(srcMac));
                     }
                 }
-                this.out.write(frameBytes);
-                LogUtil.d(TAG, "IPv4数据包已写入本地TUN: 大小=" + frameBytes.length);
+                this.out.write(frameData);
+                LogUtil.d(TAG, "IPv4数据包已写入本地TUN: 大小=" + frameData.length);
             } catch (Exception e) {
                 LogUtil.e(TAG, "向VPN套接字写入数据失败: " + e.getMessage(), e);
             }
         } else if (etherType == IPV6_PACKET) {
             // 收到 IPv6 包。根据需要发送至 TUN，并更新 NDP 表
             try {
-                var sourceIP = IPPacketUtils.getSourceIP(frameBytes);
-                var destIP = IPPacketUtils.getDestIP(frameBytes);
+                var sourceIP = IPPacketUtils.getSourceIP(frameData);
+                var destIP = IPPacketUtils.getDestIP(frameData);
                 LogUtil.d(TAG, "收到IPv6数据包: 源IP=" + sourceIP +
                         ", 目标IP=" + destIP +
-                        ", 大小=" + frameBytes.length + "字节");
+                        ", 大小=" + frameData.length + "字节");
 
                 if (sourceIP != null) {
                     if (isIPv6Multicast(sourceIP)) {
@@ -575,15 +572,15 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                         LogUtil.d(TAG, "更新NDP表: IP=" + sourceIP + ", MAC=" + StringUtils.macAddressToString(srcMac));
                     }
                 }
-                this.out.write(frameBytes);
-                LogUtil.d(TAG, "IPv6数据包已写入本地TUN: 大小=" + frameBytes.length);
+                this.out.write(frameData);
+                LogUtil.d(TAG, "IPv6数据包已写入本地TUN: 大小=" + frameData.length);
             } catch (Exception e) {
                 LogUtil.e(TAG, "向VPN套接字写入数据失败: " + e.getMessage(), e);
             }
-        } else if (frameBytes.length >= 14) {
-            LogUtil.d(TAG, "收到未知类型数据包: 0x" + String.format("%02X%02X", frameBytes[12], frameBytes[13]));
+        } else if (frameData.length >= 14) {
+            LogUtil.d(TAG, "收到未知类型数据包: 0x" + String.format("%02X%02X", frameData[12], frameData[13]));
         } else {
-            LogUtil.d(TAG, "收到未知数据包. 包长度: " + frameBytes.length);
+            LogUtil.d(TAG, "收到未知数据包. 包长度: " + frameData.length);
         }
     }
 
