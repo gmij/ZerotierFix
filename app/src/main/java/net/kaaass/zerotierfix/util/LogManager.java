@@ -49,6 +49,7 @@ public class LogManager {
         TAG_LABELS.put("Config",             "Config");
         TAG_LABELS.put("GFWListParser",      "GFWList");
         TAG_LABELS.put("CONN",               "CONN");
+        // "DNS_" tag maps to "DNS " so [DNS ] aligns with [CONN] in the log output
         TAG_LABELS.put("DNS_",               "DNS ");
 
         // 以下 TAG 属于底层包/帧处理，对普通用户无意义

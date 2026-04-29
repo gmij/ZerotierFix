@@ -26,9 +26,11 @@ import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 // TODO: clear up
 public class TunTapAdapter implements VirtualNetworkFrameListener {
@@ -64,8 +66,8 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
      * 已记录 [CONN] 日志的连接端点集合（destIP:port），用于每条连接只记录一次日志。
      * TunTapAdapter 每次 VPN 连接都是新实例，无需在 stop 时清理。
      */
-    private final java.util.Set<String> connLoggedSet =
-            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+    private final Set<String> connLoggedSet =
+            Collections.newSetFromMap(new ConcurrentHashMap<>());
     private static final int MAX_CONN_LOG_ENTRIES = 2000;
 
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
