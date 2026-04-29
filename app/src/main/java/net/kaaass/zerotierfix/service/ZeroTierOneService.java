@@ -1372,10 +1372,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.w(TAG, "国内直连模式：chnroutes 数据未就绪，回退为全局路由");
         }
 
-        if (smartRoutingMode == SmartRoutingManager.MODE_COMBINED) {
-            // 组合模式：不添加全局路由，也不添加非中国 CIDR 块
-            // GFW IP 的 /32 显式路由将在后续 GFW IP 路由注入阶段添加
-            LogUtil.i(TAG, "组合模式：跳过全局路由，仅依赖 GFW IP /32 显式路由");
+        if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST
+                || smartRoutingMode == SmartRoutingManager.MODE_COMBINED) {
+            // GFW列表/组合模式：不添加全局路由，也不添加非中国 CIDR 块
+            // 只依赖已知 GFW IP 的 /32 显式路由（在上方路由注入阶段已添加）
+            // 非 GFW 流量走物理网络直连，避免将所有流量送入 ZeroTier overlay 导致黑洞
+            LogUtil.i(TAG, smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST
+                    ? "GFW列表模式：跳过全局路由，仅依赖 GFW IP /32 显式路由"
+                    : "组合模式：跳过全局路由，仅依赖 GFW IP /32 显式路由");
             return;
         }
         
