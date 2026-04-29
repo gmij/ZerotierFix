@@ -60,6 +60,14 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
      */
     private boolean perAppRoutingActive = false;
 
+    /**
+     * 已记录 [CONN] 日志的连接端点集合（destIP:port），用于每条连接只记录一次日志。
+     * TunTapAdapter 每次 VPN 连接都是新实例，无需在 stop 时清理。
+     */
+    private final java.util.Set<String> connLoggedSet =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+    private static final int MAX_CONN_LOG_ENTRIES = 2000;
+
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
         this.ztService = zeroTierOneService;
         this.networkId = j;
@@ -136,6 +144,44 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         this.smartRoutingManager = manager;
         this.smartRoutingMode = mode;
         this.perAppRoutingActive = perAppRouting;
+    }
+
+    /**
+     * 发出 [CONN] 业务日志（每个 destIP:dstPort 仅记录一次）。
+     *
+     * @param packetData 完整 IPv4 数据包字节
+     * @param origDestIP 路由替换前的原始目的 IP
+     * @param sourceIP   源 IP
+     */
+    private void emitConnLog(byte[] packetData, InetAddress origDestIP, InetAddress sourceIP) {
+        if (connLoggedSet.size() >= MAX_CONN_LOG_ENTRIES) return;
+
+        int protocol = packetData[9] & 0xFF; // TCP=6, UDP=17
+        if (protocol != 6 && protocol != 17) return; // 只记录 TCP/UDP
+
+        int ipHdrLen = (packetData[0] & 0x0F) * 4;
+        if (packetData.length < ipHdrLen + 4) return;
+        int srcPort = ((packetData[ipHdrLen]     & 0xFF) << 8) | (packetData[ipHdrLen + 1] & 0xFF);
+        int dstPort = ((packetData[ipHdrLen + 2] & 0xFF) << 8) | (packetData[ipHdrLen + 3] & 0xFF);
+
+        String key = origDestIP.getHostAddress() + ":" + dstPort;
+        if (!connLoggedSet.add(key)) return; // 已记录过此端点
+
+        String destStr = origDestIP.getHostAddress();
+        String hostname = (smartRoutingManager != null)
+                ? smartRoutingManager.getDomainForIp(origDestIP)
+                : null;
+
+        String cacheInfo = (hostname != null)
+                ? "Cache=hit:" + hostname + "; "
+                : "Cache=miss; ";
+        String displayHost = (hostname != null) ? hostname : destStr;
+        String connStr = (sourceIP != null ? sourceIP.getHostAddress() : "?") + ":" + srcPort
+                + "-" + destStr + ":" + dstPort;
+
+        String msg = displayHost + ":" + dstPort + "  ZT  (DNS; " + cacheInfo
+                + "DestIP=" + destStr + "; Conn=" + connStr + ")";
+        LogUtil.i(LogUtil.CONN_TAG, msg);
     }
 
     public void addRouteAndNetwork(Route route, long networkId) {
@@ -268,6 +314,11 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                     LogUtil.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是GFW中国CDN IP，走ZT转发");
                 }
             }
+        }
+
+        // ── [CONN] 业务日志：非多播 unicast 包通过路由过滤，即将转发至 ZT ──
+        if (!isIPv4Multicast(destIP)) {
+            emitConnLog(packetData, destIP, sourceIP);
         }
 
         if (isIPv4Multicast(destIP)) {

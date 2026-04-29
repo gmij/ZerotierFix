@@ -210,13 +210,28 @@ public class SmartRoutingManager {
         // 记录 IP → 域名 映射（用于后续 GFW 检测）
         ipToDomain.put(record.ip.getHostAddress(), record.domain.toLowerCase());
         if (isGfwDomain(record.domain)) {
-            if (gfwIpSet.add(record.ip)) {
-                LogUtil.d(TAG, "新增 GFW IP: " + record.ip.getHostAddress()
-                        + " (域名: " + record.domain + ")");
+            boolean isNew = gfwIpSet.add(record.ip);
+            if (isNew) {
+                LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                        + " -> ZT (GFW)");
                 OnNewGfwIpListener l = onNewGfwIpListener;
                 if (l != null) l.onNewGfwIp(record.ip);
             }
+        } else if (isChineseIp(record.ip)) {
+            LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                    + " -> direct (CN)");
+        } else {
+            LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                    + " -> ZT");
         }
+    }
+
+    /**
+     * 查找某 IP 地址对应的域名（由 DNS 嗅探记录，可能为 null）
+     */
+    public String getDomainForIp(java.net.InetAddress address) {
+        if (address == null) return null;
+        return ipToDomain.get(address.getHostAddress());
     }
 
     // ────────────────────────── 下载 / 加载逻辑 ──────────────────────────

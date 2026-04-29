@@ -40,14 +40,16 @@ public class LogManager {
     private static final Set<String> SKIP_TAGS = new HashSet<>();
 
     static {
-        TAG_LABELS.put("ZT1_Service",        "VPN 服务");
-        TAG_LABELS.put("SmartRoutingManager","智能路由");
-        TAG_LABELS.put("ZeroTierStatus",     "节点状态");
-        TAG_LABELS.put("NetworkEvent",       "网络事件");
-        TAG_LABELS.put("ServiceStatus",      "服务状态");
-        TAG_LABELS.put("System",             "系统");
-        TAG_LABELS.put("Config",             "配置");
-        TAG_LABELS.put("GFWListParser",      "GFW 列表");
+        TAG_LABELS.put("ZT1_Service",        "VPN");
+        TAG_LABELS.put("SmartRoutingManager","SmartRoute");
+        TAG_LABELS.put("ZeroTierStatus",     "Node");
+        TAG_LABELS.put("NetworkEvent",       "Network");
+        TAG_LABELS.put("ServiceStatus",      "Service");
+        TAG_LABELS.put("System",             "System");
+        TAG_LABELS.put("Config",             "Config");
+        TAG_LABELS.put("GFWListParser",      "GFWList");
+        TAG_LABELS.put("CONN",               "CONN");
+        TAG_LABELS.put("DNS_",               "DNS ");
 
         // 以下 TAG 属于底层包/帧处理，对普通用户无意义
         SKIP_TAGS.add("TunTapAdapter");
@@ -523,22 +525,19 @@ public class LogManager {
     public String getBusinessLogs(Context context) {
         StringBuilder sb = new StringBuilder();
 
-        // ── 友好头部 ──
-        sb.append("══════════════════════════════\n");
-        sb.append("  ZeroTier Fix  运行状态概览\n");
-        sb.append("══════════════════════════════\n");
+        // ── header ──
+        sb.append("ZeroTier Fix  Log\n");
         if (context != null) {
             try {
                 String ver = context.getPackageManager()
                         .getPackageInfo(context.getPackageName(), 0).versionName;
-                sb.append("  版本：").append(ver).append("\n");
+                sb.append("v").append(ver).append("  ");
             } catch (Exception ignored) { /* 忽略 */ }
         }
-        sb.append("  时间：").append(
-                new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
+        sb.append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
                         java.util.Locale.getDefault()).format(new java.util.Date()))
           .append("\n");
-        sb.append("──────────────────────────────\n\n");
+        sb.append("──────────────────────────────\n");
 
         // ── 从内部日志缓冲区提取并格式化 ──
         List<String> snapshot;
@@ -565,7 +564,8 @@ public class LogManager {
 
     /**
      * 将内部日志条目（格式：{@code MM-dd HH:mm:ss.SSS thread(id) L/TAG: message}）
-     * 转换为业务友好的单行字符串，不符合要求的条目返回 null。
+     * 转换为 tunproxy 风格的单行字符串，不符合要求的条目返回 null。
+     * 输出格式：{@code HH:mm:ss.SSS [INF/WRN/ERR] [LABEL] message}
      */
     private String formatBusinessEntry(String entry) {
         if (entry == null || entry.isEmpty()) return null;
@@ -574,9 +574,8 @@ public class LogManager {
         String[] parts = entry.split(" ", 4);
         if (parts.length < 4) return null;
 
-        // 提取 HH:mm:ss（去掉毫秒）
-        String timeRaw = parts[1]; // "03:45:12.456"
-        String time = timeRaw.length() >= 8 ? timeRaw.substring(0, 8) : timeRaw;
+        // 提取 HH:mm:ss.SSS（保留毫秒）
+        String time = parts[1]; // "03:45:12.456"
 
         // 解析  parts[3] = "I/SmartRoutingManager: message..."
         String rest = parts[3];
@@ -596,18 +595,18 @@ public class LogManager {
         // 过滤底层噪音 TAG
         if (SKIP_TAGS.contains(tag)) return null;
 
-        // 级别图标
-        String icon;
+        // 级别标签
+        String levelLabel;
         switch (level) {
-            case "E": icon = "✕"; break;
-            case "W": icon = "⚠"; break;
-            default:  icon = "✓"; break;
+            case "E": levelLabel = "[ERR]"; break;
+            case "W": levelLabel = "[WRN]"; break;
+            default:  levelLabel = "[INF]"; break;
         }
 
-        // 友好分类名（找不到映射时显示原始 TAG）
+        // 分类标签（找不到映射时显示原始 TAG）
         String label = TAG_LABELS.containsKey(tag) ? TAG_LABELS.get(tag) : tag;
 
-        return "  " + time + "  " + icon + "  [" + label + "]  " + message;
+        return time + " " + levelLabel + " [" + label + "] " + message;
     }
 
     /**
