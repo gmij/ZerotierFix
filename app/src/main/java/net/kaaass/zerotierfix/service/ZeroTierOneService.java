@@ -104,6 +104,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private static final String[] DISALLOWED_APPS = {"com.android.vending"};
     private static final String TAG = "ZT1_Service";
     private static final int ZT_NOTIFICATION_TAG = 5919812;
+    /** 移动数据接口名称前缀——这些是"上行"互联网提供者，不应排除在 VPN 路由之外。 */
+    private static final String[] MOBILE_DATA_IFACE_PREFIXES = {
+            "rmnet", "v4-rmnet",   // Qualcomm (rmnet_data0 等) 及其 CLAT/464XLAT 接口
+            "ccmni",               // MediaTek
+            "wwan",                // 通用 WWAN
+            "seth",                // Samsung LTE (seth_lte0)
+            "r_rmnet"              // Qualcomm IPA 辅助接口
+    };
+    /** 链路本地地址网络前缀 169.254.0.0，uint32。 */
+    private static final long LINK_LOCAL_PREFIX = 0xA9FE0000L; // 169.254.0.0
+    /** 链路本地地址子网掩码 /16，uint32。 */
+    private static final long LINK_LOCAL_MASK   = 0xFFFF0000L; // /16
     private final IBinder mBinder = new ZeroTierBinder();
     private final DataStore dataStore = new DataStore(this);
     private final EventBus eventBus = EventBus.getDefault();
@@ -1407,10 +1419,19 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     /**
-     * 检测本机所有活跃的本地网络子网（排除 ZeroTier 接口和回环接口）。
-     * <p>返回值用于在配置 VPN 全局路由时通过 CIDR 路由分裂将这些子网排除在 VPN 路由表之外，
+     * 检测本机所有活跃的<em>本地共享</em>网络子网，用于在全局路由模式下从 VPN 路由表中排除这些子网，
      * 避免蓝牙 PAN（bt-pan）、USB 网络共享（usb0/rndis0）、WiFi 局域网等本地连接
      * 被意外路由至 TUN 接口而无法使用。
+     * <p>
+     * 以下接口类型会被跳过，<em>不会</em>加入排除列表：
+     * <ul>
+     *   <li>ZeroTier 虚拟接口（zt*）和 TUN 接口（tun*）</li>
+     *   <li>移动数据接口：rmnet*、ccmni*、wwan*、seth*、r_rmnet* 以及对应的
+     *       CLAT/464XLAT 接口（v4-rmnet*）——这些是"上行"互联网提供者而非本地共享接口，
+     *       将其子网排除在 VPN 路由之外会导致 4G/5G 网络无法访问</li>
+     *   <li>链路本地地址（169.254.x.x）——这些是未连接接口上的自动分配地址</li>
+     *   <li>前缀长度 &lt; 8 的子网——过于宽泛，可能误排除大量公网地址</li>
+     * </ul>
      *
      * @return 每个子网表示为 {@code long[]{networkAddressAsUint32, prefixLen}}
      */
@@ -1423,13 +1444,25 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 String name = ni.getName();
                 // 跳过 ZeroTier 虚拟接口（zt*）和 TUN 接口——它们不是本地物理连接
                 if (name.startsWith("zt") || name.startsWith("tun")) continue;
+                // 跳过移动数据接口：这些是"上行"互联网提供者，排除其子网会导致 4G/5G 断网
+                boolean isMobileData = false;
+                for (String prefix : MOBILE_DATA_IFACE_PREFIXES) {
+                    if (name.startsWith(prefix)) { isMobileData = true; break; }
+                }
+                if (isMobileData) {
+                    LogUtil.d(TAG, "跳过移动数据接口 [" + name + "]，不加入子网排除列表");
+                    continue;
+                }
                 for (InterfaceAddress ia : ni.getInterfaceAddresses()) {
                     InetAddress addr = ia.getAddress();
                     if (!(addr instanceof Inet4Address)) continue;
-                    // getNetworkPrefixLength() returns short; guard against negative/invalid values
+                    // getNetworkPrefixLength() returns short; guard against invalid values
                     int prefix = ia.getNetworkPrefixLength();
-                    if (prefix <= 0 || prefix > 32) continue;
+                    // 前缀过短（< 8）意味着排除超过 1/256 的地址空间，拒绝处理
+                    if (prefix < 8 || prefix > 32) continue;
                     long net = ipv4BytesToLong(addr.getAddress());
+                    // 跳过链路本地地址（169.254.x.x），它们是未连接接口上的自动分配地址
+                    if ((net & LINK_LOCAL_MASK) == LINK_LOCAL_PREFIX) continue;
                     long mask = prefix == 32 ? 0xFFFFFFFFL
                                              : (~0L << (32 - prefix)) & 0xFFFFFFFFL;
                     net &= mask;
