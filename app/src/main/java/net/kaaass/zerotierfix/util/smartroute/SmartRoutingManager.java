@@ -218,10 +218,10 @@ public class SmartRoutingManager {
                 if (l != null) l.onNewGfwIp(record.ip);
             }
         } else if (isChineseIp(record.ip)) {
-            LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+            LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
                     + " -> direct (CN)");
         } else {
-            LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+            LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
                     + " -> ZT");
         }
     }

@@ -151,6 +151,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     /**
      * 发出 [CONN] 业务日志（每个 destIP:dstPort 仅记录一次）。
      *
+     * <p>日志格式：{host/IP}:{port}  [路由原因]  (proto; src)
+     * 路由原因：GFW → 走ZT | CN-直连 | ZT（全局/per-app）
+     *
      * @param packetData 完整 IPv4 数据包字节
      * @param origDestIP 路由替换前的原始目的 IP
      * @param sourceIP   源 IP
@@ -173,16 +176,29 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         String hostname = (smartRoutingManager != null)
                 ? smartRoutingManager.getDomainForIp(origDestIP)
                 : null;
-
-        String cacheInfo = (hostname != null)
-                ? "Cache=hit:" + hostname + "; "
-                : "Cache=miss; ";
         String displayHost = (hostname != null) ? hostname : destStr;
-        String connStr = (sourceIP != null ? sourceIP.getHostAddress() : "?") + ":" + srcPort
-                + "-" + destStr + ":" + dstPort;
+        String protoLabel = (protocol == 6) ? "TCP" : "UDP";
+        String srcStr = (sourceIP != null ? sourceIP.getHostAddress() : "?") + ":" + srcPort;
 
-        String msg = displayHost + ":" + dstPort + "  ZT  (DNS; " + cacheInfo
-                + "DestIP=" + destStr + "; Conn=" + connStr + ")";
+        // 判断路由原因
+        String routeReason;
+        if (perAppRoutingActive) {
+            routeReason = "ZT (per-app)";
+        } else if (smartRoutingManager != null && smartRoutingMode != SmartRoutingManager.MODE_OFF) {
+            boolean isGfw = smartRoutingManager.getGfwIpSet().contains(origDestIP);
+            boolean isCn = smartRoutingManager.isChineseIp(origDestIP);
+            if (isGfw) {
+                routeReason = "ZT (GFW)";
+            } else if (isCn) {
+                routeReason = "ZT (CN)";
+            } else {
+                routeReason = "ZT (非CN)";
+            }
+        } else {
+            routeReason = "ZT (全局)";
+        }
+
+        String msg = displayHost + ":" + dstPort + "  [" + routeReason + "]  (" + protoLabel + "; src=" + srcStr + "; dest=" + destStr + ")";
         LogUtil.i(LogUtil.CONN_TAG, msg);
     }
 

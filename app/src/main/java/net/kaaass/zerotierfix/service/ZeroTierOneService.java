@@ -732,7 +732,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     @Override
     public int onNetworkConfigurationUpdated(long networkId, VirtualNetworkConfigOperation op, VirtualNetworkConfig config) {
-        LogUtil.i(TAG, "Virtual Network Config Operation: " + op);
+        LogUtil.d(TAG, "Virtual Network Config Operation: " + op);
         DatabaseUtils.writeLock.lock();
         try {
             // 查找网络 ID 对应的配置
@@ -753,7 +753,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     // 将网络配置的更新交给第一次 Update
                     break;
                 case VIRTUAL_NETWORK_CONFIG_OPERATION_CONFIG_UPDATE:
-                    LogUtil.i(TAG, "Network Config Update!");
+                    LogUtil.d(TAG, "Network Config Update!");
                     boolean isChanged = setVirtualNetworkConfigAndUpdateDatabase(network, config);
                     this.eventBus.post(new NetworkReconfigureEvent(isChanged, network, config));
                     break;
@@ -829,10 +829,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
 
         // 配置 VPN
-        LogUtil.i(TAG, "Configuring VpnService.Builder");
+        LogUtil.d(TAG, "Configuring VpnService.Builder");
         var builder = new VpnService.Builder();
         var assignedAddresses = virtualNetworkConfig.getAssignedAddresses();
-        LogUtil.i(TAG, "address length: " + assignedAddresses.length);
         boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
         boolean isPerAppRouting = networkConfig.getPerAppRouting();
 
@@ -886,11 +885,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         int smartRoutingMode = networkConfig.getSmartRoutingMode();
         if (shouldAddGlobalRoutes) {
             try {
-                if (isRouteViaZeroTier) {
-                    LogUtil.i(TAG, "使用ZeroTier全局路由模式");
-                } else if (isPerAppRouting) {
-                    LogUtil.i(TAG, "Per-app模式：添加全局路由以支持互联网访问");
-                }
                 configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses,
                         smartRoutingMode, isPerAppRouting);
                 
@@ -1012,11 +1006,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 配置 MTU
         int mtu = virtualNetworkConfig.getMtu();
-        LogUtil.i(TAG, "MTU from Network Config: " + mtu);
+        LogUtil.d(TAG, "MTU from Network Config: " + mtu);
         if (mtu == 0) {
             mtu = 2800;
         }
-        LogUtil.i(TAG, "MTU Set: " + mtu);
+        LogUtil.d(TAG, "MTU Set: " + mtu);
         builder.setMtu(mtu);
 
         builder.setSession(Constants.VPN_SESSION_NAME);
@@ -1156,15 +1150,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 } catch (Exception e) {
                     LogUtil.e(TAG, "无法排除应用 " + getPackageName(), e);
                 }
-                LogUtil.i(TAG, "使用全局路由模式");
             } else {
-                LogUtil.i(TAG, "未启用全局路由或per-app路由");
+                LogUtil.d(TAG, "未启用全局路由或per-app路由");
             }
             return;
         }
 
         // Per-app路由模式（正向模式：仅选中的应用走VPN，其他应用走原始路由）
-        LogUtil.i(TAG, "使用per-app路由模式（正向模式）");
+        LogUtil.d(TAG, "使用per-app路由模式（正向模式）");
 
         // 从数据库获取应用路由设置
         DatabaseUtils.readLock.lock();
@@ -1206,7 +1199,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
 
-        LogUtil.i(TAG, "Per-app路由配置完成（正向模式）: " + allowedCount + " 个应用将走VPN，其他应用走原始路由");
+        LogUtil.i(TAG, "VPN已就绪: " + allowedCount + " 个应用通过Per-app路由走VPN");
     }
 
     private void addDNSServers(VpnService.Builder builder, Network network) {
@@ -1220,8 +1213,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 if (virtualNetworkConfig.getDns() == null) {
                     // 若无网络DNS，但在全局路由模式下，添加可信DNS
                     if (isRouteViaZeroTier) {
-                        LogUtil.i(TAG, "全局路由模式：添加可信DNS服务器");
-                        addTrustedDNSServers(builder);
+                    LogUtil.d(TAG, "全局路由模式：添加可信DNS服务器");
+                    addTrustedDNSServers(builder);
                     }
                     return;
                 }
@@ -1237,7 +1230,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 
                 // 在全局路由模式下，额外添加可信DNS作为备用
                 if (isRouteViaZeroTier) {
-                    LogUtil.i(TAG, "全局路由模式：添加可信DNS服务器");
+                    LogUtil.d(TAG, "全局路由模式：添加可信DNS服务器");
                     addTrustedDNSServers(builder);
                 }
                 break;
@@ -1260,7 +1253,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             default:
                 // 默认情况下，全局路由模式添加可信DNS
                 if (isRouteViaZeroTier) {
-                    LogUtil.i(TAG, "默认DNS模式：添加可信DNS服务器");
+                    LogUtil.d(TAG, "默认DNS模式：添加可信DNS服务器");
                     addTrustedDNSServers(builder);
                 }
                 break;
@@ -1281,7 +1274,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             builder.addDnsServer(InetAddress.getByName("8.8.8.8"));
             builder.addDnsServer(InetAddress.getByName("8.8.4.4"));
             
-            LogUtil.i(TAG, "已添加Cloudflare和Google可信DNS服务器");
+            LogUtil.d(TAG, "已添加Cloudflare和Google可信DNS服务器");
         } catch (Exception e) {
             LogUtil.e(TAG, "添加可信DNS服务器失败: " + e.getMessage(), e);
         }
@@ -1293,8 +1286,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     // 代理功能已移除
     private void configureProxyRouting(VpnService.Builder builder) throws Exception {
-        // 此方法内容已移除，保留空方法签名以避免编译错误
-        LogUtil.i(TAG, "代理功能已移除");
     }
 
     /**
@@ -1302,8 +1293,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * @param builder VPN构建器
      */
     private void configureProxyIPv6Routing(VpnService.Builder builder) throws Exception {
-        // 此方法内容已移除，保留空方法签名以避免编译错误
-        LogUtil.i(TAG, "IPv6代理功能已移除");
     }
     
     /**
@@ -1328,7 +1317,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 var via = routeConfig.getVia();
                 if (via != null) {
                     zerotierGateway = via.getAddress();
-                    LogUtil.i(TAG, "找到ZeroTier网关: " + zerotierGateway.getHostAddress());
+                    LogUtil.d(TAG, "找到ZeroTier网关: " + zerotierGateway.getHostAddress());
                     break;
                 }
             }
@@ -1340,7 +1329,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     byte[] ipBytes = addr.getAddress().getAddress();
                     ipBytes[3] = 1;
                     zerotierGateway = InetAddress.getByAddress(ipBytes);
-                    LogUtil.i(TAG, "推断的网关地址: " + zerotierGateway.getHostAddress());
+                    LogUtil.d(TAG, "推断的网关地址: " + zerotierGateway.getHostAddress());
                     break;
                 }
             }
@@ -1355,7 +1344,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         Route defaultRoute = new Route(v4DefaultRoute, 0);
         if (zerotierGateway != null) defaultRoute.setGateway(zerotierGateway);
         this.tunTapAdapter.addRouteAndNetwork(defaultRoute, networkId);
-        LogUtil.i(TAG, isPerAppRouting
+        LogUtil.d(TAG, isPerAppRouting
                 ? "Per-app路由模式：添加全局路由 0.0.0.0/0（仅指定应用生效）"
                 : "全局路由模式：添加全局路由 0.0.0.0/0，所有流量通过ZeroTier");
     }
@@ -1367,7 +1356,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                                            InetSocketAddress[] assignedAddresses) throws Exception {
         InetAddress v6DefaultRoute = InetAddress.getByName("::");
         builder.addRoute(v6DefaultRoute, 0);
-        LogUtil.i(TAG, "添加IPv6全局路由 ::/0");
+        LogUtil.d(TAG, "添加IPv6全局路由 ::/0");
         
         // 创建IPv6路由
         Route ipv6Route = new Route(v6DefaultRoute, 0);
@@ -1378,7 +1367,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 if (addr.getAddress() instanceof Inet6Address) {
                     // 推断IPv6网关
                     ipv6Route.setGateway(addr.getAddress());
-                    LogUtil.i(TAG, "IPv6推断网关: " + addr.getAddress().getHostAddress());
+                    LogUtil.d(TAG, "IPv6推断网关: " + addr.getAddress().getHostAddress());
                     break;
                 }
             }
