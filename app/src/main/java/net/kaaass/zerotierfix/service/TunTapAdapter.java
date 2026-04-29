@@ -53,6 +53,12 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private SmartRoutingManager smartRoutingManager;
     /** 当前网络的智能路由模式（0=关闭，1=国内直连，2=GFW列表，3=组合模式） */
     private int smartRoutingMode = SmartRoutingManager.MODE_OFF;
+    /**
+     * 是否启用了 per-app 路由模式。
+     * 为 true 时，TUN 中只有指定应用的流量，无需再做智能路由过滤，
+     * 所有进入 TUN 的包都应无条件转发给 ZeroTier。
+     */
+    private boolean perAppRoutingActive = false;
 
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
         this.ztService = zeroTierOneService;
@@ -122,12 +128,14 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     /**
      * 配置智能路由
      *
-     * @param manager 智能路由管理器（null 表示禁用）
-     * @param mode    路由模式，见 {@link SmartRoutingManager#MODE_OFF} 等
+     * @param manager          智能路由管理器（null 表示禁用）
+     * @param mode             路由模式，见 {@link SmartRoutingManager#MODE_OFF} 等
+     * @param perAppRouting    是否为 per-app 路由模式（指定应用全部走 ZT，无需包过滤）
      */
-    public void setSmartRouting(SmartRoutingManager manager, int mode) {
+    public void setSmartRouting(SmartRoutingManager manager, int mode, boolean perAppRouting) {
         this.smartRoutingManager = manager;
         this.smartRoutingMode = mode;
+        this.perAppRoutingActive = perAppRouting;
     }
 
     public void addRouteAndNetwork(Route route, long networkId) {
@@ -229,37 +237,36 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
         // 代理功能已移除
 
-        // ── 智能路由：GFW 列表模式 ──
-        // 仅当 smartRoutingMode=GFW_LIST 时：如果目的 IP 是已知的非 GFW IP，则跳过 ZT 转发
-        // （依赖 DNS 嗅探结果，IP 必须已被 onVirtualNetworkFrame 中记录）
-        if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST
-                && smartRoutingManager != null
-                && !isIPv4Multicast(destIP)) {
-            Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
-            // 只有 GFW IP 集合非空（已有 DNS 嗅探结果）时才进行过滤
-            // 集合为空时不过滤，避免初始阶段所有流量被丢弃
-            if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
-                // destIP 不在 GFW 列表中：不通过 ZeroTier 转发（走物理网络直接路由）
-                LogUtil.d(TAG, "智能路由(GFW): 目的IP=" + destIP + " 不在GFW列表，跳过ZT转发");
-                return;
-            }
-        }
+        // ── 智能路由过滤（per-app 模式下跳过：TUN 中只有指定应用的流量，无条件走 ZT）──
+        if (!perAppRoutingActive && !isIPv4Multicast(destIP) && smartRoutingManager != null) {
 
-        // ── 智能路由：组合模式 ──
-        // GFW IP 进入 VPN 后，额外检查是否为中国 IP；若是则丢弃（中国直连优先）
-        if (smartRoutingMode == SmartRoutingManager.MODE_COMBINED
-                && smartRoutingManager != null
-                && !isIPv4Multicast(destIP)) {
-            Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
-            if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
-                // 不在 GFW 列表：跳过 ZT 转发
-                LogUtil.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 不在GFW列表，跳过ZT转发");
-                return;
+            // ── GFW 列表模式 ──
+            // 路由表中没有全局路由，仅有已知 GFW IP /32 显式路由会进入 TUN。
+            // 额外检查：防止极少数情况下非 GFW 包误入（集合为空时不过滤，避免初始阶段黑洞）。
+            if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST) {
+                Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
+                if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
+                    LogUtil.d(TAG, "智能路由(GFW): 目的IP=" + destIP + " 不在GFW列表，跳过ZT转发");
+                    return;
+                }
             }
-            if (smartRoutingManager.isChineseIp(destIP)) {
-                // GFW 域名但解析到了中国 IP（CDN 等情况）：强制直连
-                LogUtil.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是中国IP，强制直连");
-                return;
+
+            // ── 组合模式 ──
+            // 路由表中包含所有非中国 CIDR，GFW 域名的中国 CDN IP 作为 /32 显式路由。
+            // 规则：中国IP 且 不在 GFW 集合 → 丢弃（不应出现在路由表中，但作为安全网）
+            //       中国IP 且 在 GFW 集合  → 允许（GFW 域名的中国 CDN，仍需走 ZT）
+            //       非中国IP               → 允许（非中国 CIDR 路由正常命中）
+            if (smartRoutingMode == SmartRoutingManager.MODE_COMBINED) {
+                if (smartRoutingManager.isChineseIp(destIP)) {
+                    Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
+                    if (!gfwIps.contains(destIP)) {
+                        // 中国IP 且 非GFW域名 → 不应进入 ZT，丢弃（物理网络直连兜底）
+                        LogUtil.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是非GFW中国IP，跳过ZT转发");
+                        return;
+                    }
+                    // 中国IP 但属于 GFW 域名（CDN 情况）→ 继续走 ZT
+                    LogUtil.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是GFW中国CDN IP，走ZT转发");
+                }
             }
         }
 

@@ -893,7 +893,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     LogUtil.i(TAG, "Per-app模式：添加全局路由以支持互联网访问");
                 }
                 configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses,
-                        smartRoutingMode);
+                        smartRoutingMode, isPerAppRouting);
                 
                 // 大幅增强对本地连接的保护，避免VPN路由循环
                 // 1. 保护常用DNS查询连接
@@ -1050,7 +1050,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 配置智能路由（smartRoutingMode 已在上方路由配置时获取）
         SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
-        this.tunTapAdapter.setSmartRouting(smartRouter, smartRoutingMode);
+        this.tunTapAdapter.setSmartRouting(smartRouter, smartRoutingMode, isPerAppRouting);
 
         this.tunTapAdapter.startThreads();
 
@@ -1318,12 +1318,23 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
     
     /**
-     * 配置直接通过ZeroTier的IPv4全局路由(不使用代理)
-     * 支持智能路由模式：CHINA_DIRECT 模式下仅添加非中国 IP 的路由
+     * 配置直接通过ZeroTier的IPv4路由（不使用代理）。
+     *
+     * <p>路由策略说明：
+     * <ul>
+     *   <li><b>isPerAppRouting=true</b>：指定应用无条件走 ZT。TUN 通过 addAllowedApplication 限定
+     *       只有指定应用的流量进入，因此添加全局 0.0.0.0/0 路由不会影响其他应用。</li>
+     *   <li><b>MODE_COMBINED（非 per-app）</b>：所有非中国 CIDR 路由到 ZT，GFW 域名的中国 CDN IP
+     *       通过 DNS 嗅探追加 /32 显式路由。TunTapAdapter 会进一步过滤（中国IP且非GFW→丢弃）。</li>
+     *   <li><b>MODE_CHINA_DIRECT</b>：同 COMBINED，添加非中国 CIDR 路由。</li>
+     *   <li><b>MODE_GFW_LIST（非 per-app）</b>：不加全局路由，仅依赖 DNS 嗅探产生的 GFW IP /32
+     *       显式路由，其余流量走物理网络。</li>
+     *   <li><b>MODE_OFF / 默认</b>：添加 0.0.0.0/0 全局路由。</li>
+     * </ul>
      */
-    private void configureDirectGlobalRouting(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig, 
+    private void configureDirectGlobalRouting(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig,
                                              InetSocketAddress[] assignedAddresses,
-                                             int smartRoutingMode) throws Exception {
+                                             int smartRoutingMode, boolean isPerAppRouting) throws Exception {
         // 获取ZeroTier网络中的网关
         InetAddress zerotierGateway = null;
         
@@ -1350,12 +1361,29 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
 
-        if (smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT) {
-            // 国内直连模式：只将非中国 CIDR 路由到 ZT
+        // ── Per-app 路由模式：指定应用无条件全走 ZT ──
+        // addAllowedApplication 已限定只有指定应用的流量进入 VPN，
+        // 此处添加 0.0.0.0/0 让这些应用的全部流量都走 ZT（不受智能路由模式影响）。
+        if (isPerAppRouting) {
+            InetAddress v4DefaultRoute = InetAddress.getByName("0.0.0.0");
+            builder.addRoute(v4DefaultRoute, 0);
+            Route defaultRoute = new Route(v4DefaultRoute, 0);
+            if (zerotierGateway != null) defaultRoute.setGateway(zerotierGateway);
+            this.tunTapAdapter.addRouteAndNetwork(defaultRoute, networkId);
+            LogUtil.i(TAG, "Per-app路由模式：添加全局路由 0.0.0.0/0（仅指定应用生效，其他应用绕过VPN走物理网络）");
+            return;
+        }
+
+        // ── 组合模式 / 国内直连模式：非中国 CIDR 路由到 ZT ──
+        // 两者均将非中国 CIDR 加入路由表，中国 IP 走物理网络。
+        // COMBINED 还会通过 DNS 嗅探为 GFW 域名的中国 CDN IP 添加 /32 显式路由。
+        if (smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT
+                || smartRoutingMode == SmartRoutingManager.MODE_COMBINED) {
             SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
             List<CidrBlock> nonChinaRoutes = smartRouter.getNonChinaCidrs();
             if (!nonChinaRoutes.isEmpty()) {
-                LogUtil.i(TAG, "国内直连模式：添加 " + nonChinaRoutes.size() + " 条非中国路由");
+                String modeLabel = (smartRoutingMode == SmartRoutingManager.MODE_COMBINED) ? "组合" : "国内直连";
+                LogUtil.i(TAG, modeLabel + "模式：添加 " + nonChinaRoutes.size() + " 条非中国路由（中国IP走物理网络）");
                 for (CidrBlock block : nonChinaRoutes) {
                     InetAddress addr = block.toInetAddress();
                     if (addr != null) {
@@ -1365,21 +1393,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         this.tunTapAdapter.addRouteAndNetwork(r, networkId);
                     }
                 }
-                LogUtil.i(TAG, "国内直连模式路由配置完成（中国IP走物理网络直连）");
+                LogUtil.i(TAG, modeLabel + "模式路由配置完成");
                 return;
             }
             // 数据未就绪时回退到全局路由
-            LogUtil.w(TAG, "国内直连模式：chnroutes 数据未就绪，回退为全局路由");
+            LogUtil.w(TAG, "智能路由模式：chnroutes 数据未就绪，回退为全局路由");
         }
 
-        if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST
-                || smartRoutingMode == SmartRoutingManager.MODE_COMBINED) {
-            // GFW列表/组合模式：不添加全局路由，也不添加非中国 CIDR 块
-            // 只依赖已知 GFW IP 的 /32 显式路由（在上方路由注入阶段已添加）
-            // 非 GFW 流量走物理网络直连，避免将所有流量送入 ZeroTier overlay 导致黑洞
-            LogUtil.i(TAG, smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST
-                    ? "GFW列表模式：跳过全局路由，仅依赖 GFW IP /32 显式路由"
-                    : "组合模式：跳过全局路由，仅依赖 GFW IP /32 显式路由");
+        // ── GFW 列表模式（非 per-app）：不加全局或非中国路由 ──
+        // 仅依赖 DNS 嗅探后动态注入的 GFW IP /32 显式路由，其余流量走物理网络直连。
+        if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST) {
+            LogUtil.i(TAG, "GFW列表模式：跳过全局路由，仅依赖 GFW IP /32 显式路由，其余走物理网络");
             return;
         }
         
