@@ -308,7 +308,9 @@ public class SmartRoutingManager {
 
     private void deleteFile(String name) {
         File f = new File(context.getFilesDir(), name);
-        if (f.exists()) f.delete();
+        if (f.exists() && !f.delete()) {
+            LogUtil.w(TAG, "无法删除文件: " + name);
+        }
     }
 
     // ────────────────────────── 工具方法 ──────────────────────────

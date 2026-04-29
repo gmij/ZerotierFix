@@ -1000,6 +1000,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
                 for (InetAddress gfwIp : smartRouter.getGfwIpSet()) {
                     if (gfwIp instanceof Inet4Address) {
+                        // addRoute: 将此 IP 纳入 VPN 路由表（Android OS 拦截）
+                        // addRouteAndNetwork: 告知 TunTapAdapter 如何转发至 ZT（必须两者均调用）
                         builder.addRoute(gfwIp, 32);
                         Route gfwRoute = new Route(gfwIp, 32);
                         this.tunTapAdapter.addRouteAndNetwork(gfwRoute, networkId);

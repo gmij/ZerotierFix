@@ -236,6 +236,8 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 && smartRoutingManager != null
                 && !isIPv4Multicast(destIP)) {
             Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
+            // 只有 GFW IP 集合非空（已有 DNS 嗅探结果）时才进行过滤
+            // 集合为空时不过滤，避免初始阶段所有流量被丢弃
             if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
                 // destIP 不在 GFW 列表中：不通过 ZeroTier 转发（走物理网络直接路由）
                 LogUtil.d(TAG, "智能路由(GFW): 目的IP=" + destIP + " 不在GFW列表，跳过ZT转发");
