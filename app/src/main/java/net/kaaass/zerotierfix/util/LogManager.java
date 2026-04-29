@@ -527,7 +527,7 @@ public class LogManager {
         StringBuilder sb = new StringBuilder();
 
         // ── header ──
-        sb.append("ZeroTier Fix  Log\n");
+        sb.append("ZeroTier Fix Log\n");
         if (context != null) {
             try {
                 String ver = context.getPackageManager()
