@@ -6,11 +6,8 @@ import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
 import android.widget.FrameLayout;
-import android.widget.Spinner;
 import android.widget.TableRow;
 import android.widget.TextView;
 
@@ -60,12 +57,6 @@ public class NetworkDetailFragment extends Fragment {
     private TextView ipAddressesView;
     private TableRow dnsView;
     private TextView dnsServersView;
-    private Spinner smartRoutingSpinner;
-    private TextView smartRoutingDataStatus;
-    private TableRow smartRoutingRow;
-    private TableRow smartRoutingStatusRow;
-    /** spinner 初始化时是否正在程序化赋值（避免触发用户监听） */
-    private boolean spinnerInitializing = false;
 
     private long networkId;
     private AppRoutingFragment appRoutingFragment;
@@ -105,55 +96,23 @@ public class NetworkDetailFragment extends Fragment {
         this.ipAddressesView = view.findViewById(R.id.network_ipaddresses_textview);
         this.dnsView = view.findViewById(R.id.custom_dns_row);
         this.dnsServersView = view.findViewById(R.id.network_dns_textview);
-        this.smartRoutingSpinner = view.findViewById(R.id.network_smart_routing_spinner);
-        this.smartRoutingDataStatus = view.findViewById(R.id.smart_routing_data_status);
-        this.smartRoutingRow = view.findViewById(R.id.smart_routing_row);
-        this.smartRoutingStatusRow = view.findViewById(R.id.smart_routing_status_row);
-
-        // 初始化智能路由模式 Spinner
-        String[] modeLabels = new String[]{
-                getString(R.string.smart_routing_mode_off),
-                getString(R.string.smart_routing_mode_china_direct),
-                getString(R.string.smart_routing_mode_gfw_list),
-                getString(R.string.smart_routing_mode_combined)
-        };
-        ArrayAdapter<String> spinnerAdapter = new ArrayAdapter<>(
-                requireContext(), android.R.layout.simple_spinner_item, modeLabels);
-        spinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        this.smartRoutingSpinner.setAdapter(spinnerAdapter);
-        this.smartRoutingSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View v, int position, long id) {
-                if (spinnerInitializing) return;
-                viewModel.doUpdateSmartRoutingMode(position);
-                updateSmartRoutingDataStatus();
-            }
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {}
-        });
 
         // "Route All Traffic" checkbox listener
-        // When checked: global routing (per-app routing disabled, app list hidden, smart routing visible)
-        // When unchecked: per-app routing (app list shown, smart routing hidden)
+        // When checked: global routing (per-app routing disabled, app list hidden)
+        //               Smart routing automatically set to COMBINED mode
+        // When unchecked: per-app routing (app list shown)
         CheckBox.OnCheckedChangeListener routingAllChangeListener = (buttonView, isChecked) -> {
             if (isChecked) {
-                // Global routing mode: all traffic through ZeroTier
+                // Global routing mode: all traffic through ZeroTier with COMBINED smart routing
                 viewModel.doUpdateRouteViaZeroTier(true);
                 viewModel.doUpdatePerAppRouting(false);
+                viewModel.doUpdateSmartRoutingMode(SmartRoutingManager.MODE_COMBINED);
                 hideAppRoutingFragment();
-                setSmartRoutingRowsVisible(true);
-                // Default to COMBINED smart routing when switching to global mode
-                if (smartRoutingSpinner.getSelectedItemPosition() == SmartRoutingManager.MODE_OFF) {
-                    smartRoutingSpinner.setSelection(SmartRoutingManager.MODE_COMBINED);
-                    viewModel.doUpdateSmartRoutingMode(SmartRoutingManager.MODE_COMBINED);
-                    updateSmartRoutingDataStatus();
-                }
             } else {
                 // Per-app routing mode: show app list for selection
                 viewModel.doUpdateRouteViaZeroTier(false);
                 viewModel.doUpdatePerAppRouting(true);
                 showAppRoutingFragment();
-                setSmartRoutingRowsVisible(false);
             }
         };
 
@@ -224,12 +183,6 @@ public class NetworkDetailFragment extends Fragment {
             return;
         }
 
-        // 智能路由模式
-        spinnerInitializing = true;
-        this.smartRoutingSpinner.setSelection(networkConfig.getSmartRoutingMode());
-        spinnerInitializing = false;
-        updateSmartRoutingDataStatus();
-
         // DNS 模式
         var dnsMode = DNSMode.fromInt(networkConfig.getDnsMode());
         this.dnsModeView.setText(dnsMode.toStringId());
@@ -240,23 +193,15 @@ public class NetworkDetailFragment extends Fragment {
         // 路由配置
         boolean routeViaZt = networkConfig.getRouteViaZeroTier();
         boolean perAppRouting = networkConfig.getPerAppRouting();
-        
-        // Checkbox state logic:
-        // - If per-app routing is enabled: unchecked (per-app mode)
-        // - If global routing is enabled without per-app: checked (global mode)
-        // - If neither is enabled: unchecked (no routing)
-        // Note: routeViaZt and perAppRouting should be mutually exclusive, 
-        // but we handle the case where both might be set by prioritizing per-app
+
         boolean isGlobalMode = routeViaZt && !perAppRouting;
         this.routingAllView.setChecked(isGlobalMode);
-        
-        // Show/hide app routing fragment and smart routing based on routing mode
+
+        // Show/hide app routing fragment based on routing mode
         if (perAppRouting) {
             showAppRoutingFragment();
-            setSmartRoutingRowsVisible(false);
         } else {
             hideAppRoutingFragment();
-            setSmartRoutingRowsVisible(true);
         }
     }
 
@@ -315,42 +260,6 @@ public class NetworkDetailFragment extends Fragment {
 
     private String booleanToLocalString(boolean z) {
         return z ? getString(R.string.enabled) : getString(R.string.disabled);
-    }
-
-    /**
-     * 显示或隐藏智能路由相关的行（per-app 模式下无需显示）
-     */
-    private void setSmartRoutingRowsVisible(boolean visible) {
-        int visibility = visible ? View.VISIBLE : View.GONE;
-        if (smartRoutingRow != null) smartRoutingRow.setVisibility(visibility);
-        if (smartRoutingStatusRow != null) smartRoutingStatusRow.setVisibility(visibility);
-    }
-
-    /**
-     * 更新智能路由数据文件下载状态文本
-     */
-    private void updateSmartRoutingDataStatus() {
-        if (smartRoutingDataStatus == null) return;
-        SmartRoutingManager mgr = SmartRoutingManager.getInstance(requireContext());
-        int mode = this.smartRoutingSpinner.getSelectedItemPosition();
-        String status;
-        if (mode == SmartRoutingManager.MODE_CHINA_DIRECT) {
-            status = mgr.isChnroutesReady()
-                    ? getString(R.string.smart_routing_data_ready)
-                    : getString(R.string.smart_routing_data_not_ready);
-        } else if (mode == SmartRoutingManager.MODE_GFW_LIST) {
-            status = mgr.isGfwListReady()
-                    ? getString(R.string.smart_routing_data_ready)
-                    : getString(R.string.smart_routing_data_not_ready);
-        } else if (mode == SmartRoutingManager.MODE_COMBINED) {
-            boolean bothReady = mgr.isGfwListReady() && mgr.isChnroutesReady();
-            status = bothReady
-                    ? getString(R.string.smart_routing_data_ready)
-                    : getString(R.string.smart_routing_data_not_ready);
-        } else {
-            status = getString(R.string.smart_routing_mode_off);
-        }
-        smartRoutingDataStatus.setText(status);
     }
 
     private String inetSocketAddressToString(InetSocketAddress inetSocketAddress) {

@@ -215,50 +215,6 @@
                 android:text="" />
         </TableRow>
 
-        <!-- Smart Routing Mode -->
-        <TableRow android:id="@+id/smart_routing_row"
-            android:layout_width="match_parent"
-            android:layout_marginTop="4dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end|center_vertical"
-                android:paddingLeft="40dp"
-                android:paddingRight="20dp"
-                android:text="@string/smart_routing_label" />
-
-            <Spinner
-                android:id="@+id/network_smart_routing_spinner"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end" />
-        </TableRow>
-
-        <!-- Smart Routing Data Status -->
-        <TableRow android:id="@+id/smart_routing_status_row"
-            android:layout_width="match_parent">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end|center_vertical"
-                android:paddingLeft="40dp"
-                android:paddingRight="8dp"
-                android:text="@string/smart_routing_data_status"
-                android:textSize="12sp"
-                android:textColor="?attr/greyText" />
-
-            <TextView
-                android:id="@+id/smart_routing_data_status"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end|center_vertical"
-                android:text="@string/smart_routing_data_not_ready"
-                android:textSize="12sp"
-                android:textColor="?attr/greyText" />
-        </TableRow>
-
     </TableLayout>
 
     <!-- App Routing Fragment Container -->
