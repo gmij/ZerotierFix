@@ -13,8 +13,12 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -29,6 +33,28 @@ public class LogManager {
     private static final int MAX_LOG_LINES = 10000;
     private static final String LOG_COMMAND = "logcat -d -v threadtime";
     private static final String CLEAR_COMMAND = "logcat -c";
+
+    // ────────────── 业务视图：TAG → 友好分类名映射 ──────────────
+    private static final Map<String, String> TAG_LABELS = new HashMap<>();
+    /** 在业务视图中完全跳过的 TAG（包级调试噪音） */
+    private static final Set<String> SKIP_TAGS = new HashSet<>();
+
+    static {
+        TAG_LABELS.put("ZT1_Service",        "VPN 服务");
+        TAG_LABELS.put("SmartRoutingManager","智能路由");
+        TAG_LABELS.put("ZeroTierStatus",     "节点状态");
+        TAG_LABELS.put("NetworkEvent",       "网络事件");
+        TAG_LABELS.put("ServiceStatus",      "服务状态");
+        TAG_LABELS.put("System",             "系统");
+        TAG_LABELS.put("Config",             "配置");
+        TAG_LABELS.put("GFWListParser",      "GFW 列表");
+
+        // 以下 TAG 属于底层包/帧处理，对普通用户无意义
+        SKIP_TAGS.add("TunTapAdapter");
+        SKIP_TAGS.add("DnsPacketParser");
+        SKIP_TAGS.add("LogManager");
+        SKIP_TAGS.add("LogsFragment");
+    }
     
     private static LogManager instance;
     private final LinkedList<String> logBuffer = new LinkedList<>();
@@ -457,6 +483,133 @@ public class LogManager {
         }
     }
     
+    // ────────────────────────── 业务视图日志 ──────────────────────────
+
+    /**
+     * 异步获取业务日志（用户友好格式）
+     */
+    public void getBusinessLogsAsync(Context context, LogCallback callback) {
+        if (context == null || callback == null) return;
+        if (isShutdown || executorService.isShutdown()) {
+            safelyCallCallback(callback, "日志服务未启动");
+            return;
+        }
+        if (isTaskRunning.get()) return;
+        try {
+            final Context appContext = context.getApplicationContext();
+            executorService.execute(() -> {
+                if (!isTaskRunning.compareAndSet(false, true)) return;
+                try {
+                    if (!isShutdown) {
+                        safelyCallCallback(callback, getBusinessLogs(appContext));
+                    }
+                } finally {
+                    isTaskRunning.set(false);
+                }
+            });
+        } catch (RejectedExecutionException | Exception e) {
+            Log.e(TAG, "提交业务日志任务失败", e);
+            safelyCallCallback(callback, "获取日志失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 同步获取业务日志。
+     * <p>
+     * 仅展示内部日志缓冲区中 INFO / WARN / ERROR 级别的条目，
+     * 并将技术 TAG 转换为用户友好的中文分类名称。
+     */
+    @NonNull
+    public String getBusinessLogs(Context context) {
+        StringBuilder sb = new StringBuilder();
+
+        // ── 友好头部 ──
+        sb.append("══════════════════════════════\n");
+        sb.append("  ZeroTier Fix  运行状态概览\n");
+        sb.append("══════════════════════════════\n");
+        if (context != null) {
+            try {
+                String ver = context.getPackageManager()
+                        .getPackageInfo(context.getPackageName(), 0).versionName;
+                sb.append("  版本：").append(ver).append("\n");
+            } catch (Exception ignored) { /* 忽略 */ }
+        }
+        sb.append("  时间：").append(
+                new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
+                        java.util.Locale.getDefault()).format(new java.util.Date()))
+          .append("\n");
+        sb.append("──────────────────────────────\n\n");
+
+        // ── 从内部日志缓冲区提取并格式化 ──
+        List<String> snapshot;
+        synchronized (internalLogBuffer) {
+            snapshot = new ArrayList<>(internalLogBuffer);
+        }
+
+        int count = 0;
+        for (String entry : snapshot) {
+            String line = formatBusinessEntry(entry);
+            if (line != null) {
+                sb.append(line).append("\n");
+                count++;
+            }
+        }
+
+        if (count == 0) {
+            sb.append("  暂无业务日志记录。\n");
+            sb.append("  启动 VPN 连接后此处将显示运行状态。\n");
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * 将内部日志条目（格式：{@code MM-dd HH:mm:ss.SSS thread(id) L/TAG: message}）
+     * 转换为业务友好的单行字符串，不符合要求的条目返回 null。
+     */
+    private String formatBusinessEntry(String entry) {
+        if (entry == null || entry.isEmpty()) return null;
+
+        // 分成最多 4 段：[0]=日期  [1]=时间  [2]=线程  [3]=L/TAG: message
+        String[] parts = entry.split(" ", 4);
+        if (parts.length < 4) return null;
+
+        // 提取 HH:mm:ss（去掉毫秒）
+        String timeRaw = parts[1]; // "03:45:12.456"
+        String time = timeRaw.length() >= 8 ? timeRaw.substring(0, 8) : timeRaw;
+
+        // 解析  parts[3] = "I/SmartRoutingManager: message..."
+        String rest = parts[3];
+        int slashIdx = rest.indexOf('/');
+        int colonIdx = rest.indexOf(": ");
+        if (slashIdx < 0 || colonIdx < 0 || colonIdx <= slashIdx) return null;
+
+        String level   = rest.substring(0, slashIdx);           // "I"
+        String tag     = rest.substring(slashIdx + 1, colonIdx); // "SmartRoutingManager"
+        // 多行消息（堆栈跟踪等）只取第一行
+        String rawMsg  = rest.substring(colonIdx + 2);
+        int nl = rawMsg.indexOf('\n');
+        String message = nl >= 0 ? rawMsg.substring(0, nl) : rawMsg;
+
+        // 过滤 DEBUG / VERBOSE
+        if ("D".equals(level) || "V".equals(level)) return null;
+        // 过滤底层噪音 TAG
+        if (SKIP_TAGS.contains(tag)) return null;
+
+        // 级别图标
+        String icon;
+        switch (level) {
+            case "E": icon = "✕"; break;
+            case "W": icon = "⚠"; break;
+            default:  icon = "✓"; break;
+        }
+
+        // 友好分类名（找不到映射时显示原始 TAG）
+        String label = TAG_LABELS.containsKey(tag) ? TAG_LABELS.get(tag) : tag;
+
+        return "  " + time + "  " + icon + "  [" + label + "]  " + message;
+    }
+
     /**
      * 日志回调接口
      */
