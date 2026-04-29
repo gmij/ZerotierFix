@@ -507,7 +507,7 @@ public class LogManager {
                     isTaskRunning.set(false);
                 }
             });
-        } catch (RejectedExecutionException | Exception e) {
+        } catch (Exception e) {
             Log.e(TAG, "提交业务日志任务失败", e);
             safelyCallCallback(callback, "获取日志失败: " + e.getMessage());
         }
