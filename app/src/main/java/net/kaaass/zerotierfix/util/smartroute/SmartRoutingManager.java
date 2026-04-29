@@ -11,6 +11,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.URL;
 import java.util.ArrayList;
@@ -228,6 +229,9 @@ public class SmartRoutingManager {
     private void loadOrDownloadChnroutes() {
         File file = new File(context.getFilesDir(), Constants.FILE_CHNROUTES);
         if (!file.exists() || file.length() < 100) {
+            // 先尝试从 APK 内置 assets 复制（无需网络，立即可用）
+            copyFromAssets(Constants.FILE_CHNROUTES, file);
+            // 再尝试从网络下载最新版本（可能覆盖内置版本）
             downloadFile(CHNROUTES_URL, CHNROUTES_URL_FALLBACK, file, "chnroutes");
         }
         if (file.exists()) {
@@ -238,10 +242,30 @@ public class SmartRoutingManager {
     private void loadOrDownloadGfwList() {
         File file = new File(context.getFilesDir(), Constants.FILE_GFWLIST);
         if (!file.exists() || file.length() < 100) {
+            // 先尝试从 APK 内置 assets 复制（无需网络，立即可用）
+            copyFromAssets(Constants.FILE_GFWLIST, file);
+            // 再尝试从网络下载最新版本（可能覆盖内置版本）
             downloadFile(GFWLIST_URL, GFWLIST_URL_FALLBACK, file, "gfwlist");
         }
         if (file.exists()) {
             parseGfwList(file);
+        }
+    }
+
+    /**
+     * 将 APK assets 目录中的内置数据文件复制到 filesDir（仅在文件不存在时调用）。
+     *
+     * @return 复制成功返回 true，assets 中不存在或复制失败返回 false
+     */
+    private boolean copyFromAssets(String fileName, File dest) {
+        try (InputStream in = context.getAssets().open(fileName)) {
+            FileUtils.copyInputStreamToFile(in, dest);
+            LogUtil.i(TAG, "从内置 assets 复制 " + fileName + "（" + dest.length() + " bytes）");
+            return true;
+        } catch (IOException e) {
+            // assets 中不存在该文件属于正常情况（本地开发环境）
+            LogUtil.d(TAG, "assets 中无 " + fileName + "，将通过网络下载");
+            return false;
         }
     }
 
