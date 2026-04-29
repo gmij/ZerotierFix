@@ -81,6 +81,7 @@ import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.UnknownHostException;
@@ -1335,18 +1336,30 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
 
-        // 无论 per-app 还是全局路由，均添加 0.0.0.0/0 作为 VPN 路由。
-        // per-app 模式：addAllowedApplication 已限定只有选中应用的流量进入 VPN，
-        //             0.0.0.0/0 让这些应用的全部流量都走 ZT。
-        // 全局路由模式：所有应用（除本应用外）的流量均通过 ZT，TunTapAdapter 不做包过滤。
-        InetAddress v4DefaultRoute = InetAddress.getByName("0.0.0.0");
-        builder.addRoute(v4DefaultRoute, 0);
-        Route defaultRoute = new Route(v4DefaultRoute, 0);
-        if (zerotierGateway != null) defaultRoute.setGateway(zerotierGateway);
-        this.tunTapAdapter.addRouteAndNetwork(defaultRoute, networkId);
+        // 检测本机活跃的本地网络子网（蓝牙PAN bt-pan、WiFi局域网 wlan0、USB共享 usb0 等），
+        // 使用 CIDR 路由分裂将这些子网排除在 VPN 之外，避免本地连接被意外路由至 TUN。
+        // per-app 模式：addAllowedApplication 已限定哪些应用走 VPN，排除本地子网后
+        //             这些应用访问局域网设备仍走真实接口。
+        // 全局路由模式：所有应用（除本应用外）的公网流量走 ZT，本地子网流量仍走真实接口。
+        List<long[]> localSubnets = detectLocalSubnetsToExclude();
+        List<long[]> vpnRoutes = localSubnets.isEmpty()
+                ? Collections.singletonList(new long[]{0L, 0L})
+                : computeGlobalRoutesExcluding(localSubnets);
+        if (!localSubnets.isEmpty()) {
+            LogUtil.d(TAG, "路由分裂：排除 " + localSubnets.size() + " 个本地子网，生成 "
+                    + vpnRoutes.size() + " 条VPN路由");
+        }
+        for (long[] r : vpnRoutes) {
+            InetAddress addr = longToIpv4Addr(r[0]);
+            int prefix = (int) r[1];
+            builder.addRoute(addr, prefix);
+            Route vpnRoute = new Route(addr, prefix);
+            if (zerotierGateway != null) vpnRoute.setGateway(zerotierGateway);
+            this.tunTapAdapter.addRouteAndNetwork(vpnRoute, networkId);
+        }
         LogUtil.d(TAG, isPerAppRouting
-                ? "Per-app路由模式：添加全局路由 0.0.0.0/0（仅指定应用生效）"
-                : "全局路由模式：添加全局路由 0.0.0.0/0，所有流量通过ZeroTier");
+                ? "Per-app路由模式：添加全局路由（排除本地子网，仅指定应用生效）"
+                : "全局路由模式：添加全局路由（排除本地子网），所有非本地流量通过ZeroTier");
     }
     
     /**
@@ -1379,6 +1392,124 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         protectSocketConnection("2001:4860:4860::8888", 53);
         protectSocketConnection("2400:3200::1", 53);
         protectSocketConnection("2606:4700:4700::1111", 53);
+    }
+
+    /**
+     * 检测本机所有活跃的本地网络子网（排除 ZeroTier 接口和回环接口）。
+     * <p>返回值用于在配置 VPN 全局路由时通过 CIDR 路由分裂将这些子网排除在 VPN 路由表之外，
+     * 避免蓝牙 PAN（bt-pan）、USB 网络共享（usb0/rndis0）、WiFi 局域网等本地连接
+     * 被意外路由至 TUN 接口而无法使用。
+     *
+     * @return 每个子网表示为 {@code long[]{networkAddressAsUint32, prefixLen}}
+     */
+    private static List<long[]> detectLocalSubnetsToExclude() {
+        List<long[]> subnets = new ArrayList<>();
+        try {
+            List<NetworkInterface> interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
+            for (NetworkInterface ni : interfaces) {
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                String name = ni.getName();
+                // 跳过 ZeroTier 虚拟接口（zt*）和 TUN 接口——它们不是本地物理连接
+                if (name.startsWith("zt") || name.startsWith("tun")) continue;
+                for (InterfaceAddress ia : ni.getInterfaceAddresses()) {
+                    InetAddress addr = ia.getAddress();
+                    if (!(addr instanceof Inet4Address)) continue;
+                    // getNetworkPrefixLength() returns short; guard against negative/invalid values
+                    int prefix = ia.getNetworkPrefixLength();
+                    if (prefix <= 0 || prefix > 32) continue;
+                    long net = ipv4BytesToLong(addr.getAddress());
+                    long mask = prefix == 32 ? 0xFFFFFFFFL
+                                             : (~0L << (32 - prefix)) & 0xFFFFFFFFL;
+                    net &= mask;
+                    subnets.add(new long[]{net, prefix});
+                    LogUtil.d(TAG, "排除本地子网 [" + name + "]: " + addr.getHostAddress() + "/" + prefix);
+                }
+            }
+        } catch (Exception e) {
+            LogUtil.w(TAG, "检测本地子网时出错: " + e.getMessage());
+        }
+        return subnets;
+    }
+
+    /**
+     * 计算覆盖 0.0.0.0/0 但排除 {@code excludedCidrs} 中所有子网的最小 CIDR 路由集合。
+     * <p>采用 CIDR 路由分裂（route splitting）算法：从完整地址空间 0.0.0.0/0 出发，
+     * 逐步剔除需要排除的子网，返回剩余路由列表。
+     * 每个路由表示为 {@code long[]{networkAddressAsUint32, prefixLen}}。
+     */
+    static List<long[]> computeGlobalRoutesExcluding(List<long[]> excludedCidrs) {
+        List<long[]> remaining = new ArrayList<>();
+        remaining.add(new long[]{0L, 0L}); // 0.0.0.0/0
+        for (long[] excl : excludedCidrs) {
+            List<long[]> next = new ArrayList<>();
+            for (long[] r : remaining) {
+                next.addAll(routeMinusCidr(r, excl));
+            }
+            remaining = next;
+        }
+        return remaining;
+    }
+
+    /**
+     * 从 {@code route} CIDR 中减去 {@code excl} CIDR，返回不与 excl 重叠的子路由列表。
+     * route 和 excl 均为 {@code long[]{networkAddressAsUint32, prefixLen}}。
+     */
+    private static List<long[]> routeMinusCidr(long[] route, long[] excl) {
+        long rNet = route[0]; int rPfx = (int) route[1];
+        long eNet = excl[0]; int ePfx = (int) excl[1];
+        // excl 与 route 无重叠，route 保持不变
+        if (!ipv4CidrContains(rNet, rPfx, eNet)) {
+            return Collections.singletonList(route);
+        }
+        // 完全重叠，移除 route
+        if (rNet == eNet && rPfx == ePfx) {
+            return Collections.emptyList();
+        }
+        // excl 在 route 内部：将 route 一分为二，递归处理包含 excl 的那一半
+        int newPfx = rPfx + 1;
+        long bitPos = 1L << (31 - rPfx);
+        long lower = rNet;
+        long upper = rNet | bitPos;
+        List<long[]> result = new ArrayList<>();
+        if (ipv4CidrContains(lower, newPfx, eNet)) {
+            // excl 在下半部分
+            result.addAll(routeMinusCidr(new long[]{lower, newPfx}, excl));
+            result.add(new long[]{upper, newPfx});
+        } else {
+            // excl 在上半部分
+            result.add(new long[]{lower, newPfx});
+            result.addAll(routeMinusCidr(new long[]{upper, newPfx}, excl));
+        }
+        return result;
+    }
+
+    /**
+     * 判断 IPv4 地址 {@code ipLong}（uint32）是否属于 {@code network/prefix} 所表示的子网。
+     */
+    private static boolean ipv4CidrContains(long network, int prefix, long ipLong) {
+        if (prefix == 0) return true;
+        long mask = (~0L << (32 - prefix)) & 0xFFFFFFFFL;
+        return (network & mask) == (ipLong & mask);
+    }
+
+    /**
+     * 将 IPv4 地址的 uint32 表示转换为 {@link InetAddress}。
+     */
+    private static InetAddress longToIpv4Addr(long ipLong) throws UnknownHostException {
+        return InetAddress.getByAddress(new byte[]{
+                (byte) ((ipLong >> 24) & 0xFF),
+                (byte) ((ipLong >> 16) & 0xFF),
+                (byte) ((ipLong >> 8) & 0xFF),
+                (byte) (ipLong & 0xFF)
+        });
+    }
+
+    /**
+     * 将 IPv4 地址的 4 字节数组转换为 uint32 的 long 表示。
+     */
+    static long ipv4BytesToLong(byte[] bytes) {
+        return ((bytes[0] & 0xFFL) << 24) | ((bytes[1] & 0xFFL) << 16)
+             | ((bytes[2] & 0xFFL) << 8)  |  (bytes[3] & 0xFFL);
     }
 
     /**
