@@ -8,6 +8,14 @@ import android.util.Log;
  */
 public class LogUtil {
     private static final LogManager logManager = LogManager.getInstance();
+
+    /** Tag used for [CONN] business log entries (connection forwarded to ZeroTier) */
+    public static final String CONN_TAG = "CONN";
+    /**
+     * Tag used for [DNS ] business log entries (DNS resolution snoop result).
+     * The trailing underscore pads the tag to 4 chars so that [DNS ] aligns with [CONN] in logs.
+     */
+    public static final String DNS_TAG = "DNS_";
     
     /**
      * 记录调试级别日志

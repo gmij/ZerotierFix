@@ -13,8 +13,12 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -29,6 +33,31 @@ public class LogManager {
     private static final int MAX_LOG_LINES = 10000;
     private static final String LOG_COMMAND = "logcat -d -v threadtime";
     private static final String CLEAR_COMMAND = "logcat -c";
+
+    // ────────────── 业务视图：TAG → 友好分类名映射 ──────────────
+    private static final Map<String, String> TAG_LABELS = new HashMap<>();
+    /** 在业务视图中完全跳过的 TAG（包级调试噪音） */
+    private static final Set<String> SKIP_TAGS = new HashSet<>();
+
+    static {
+        TAG_LABELS.put("ZT1_Service",        "VPN");
+        TAG_LABELS.put("SmartRoutingManager","SmartRoute");
+        TAG_LABELS.put("ZeroTierStatus",     "Node");
+        TAG_LABELS.put("NetworkEvent",       "Network");
+        TAG_LABELS.put("ServiceStatus",      "Service");
+        TAG_LABELS.put("System",             "System");
+        TAG_LABELS.put("Config",             "Config");
+        TAG_LABELS.put("GFWListParser",      "GFWList");
+        TAG_LABELS.put("CONN",               "CONN");
+        // "DNS_" tag maps to "DNS " so [DNS ] aligns with [CONN] in the log output
+        TAG_LABELS.put("DNS_",               "DNS ");
+
+        // 以下 TAG 属于底层包/帧处理，对普通用户无意义
+        SKIP_TAGS.add("TunTapAdapter");
+        SKIP_TAGS.add("DnsPacketParser");
+        SKIP_TAGS.add("LogManager");
+        SKIP_TAGS.add("LogsFragment");
+    }
     
     private static LogManager instance;
     private final LinkedList<String> logBuffer = new LinkedList<>();
@@ -457,6 +486,150 @@ public class LogManager {
         }
     }
     
+    // ────────────────────────── 业务视图日志 ──────────────────────────
+
+    /**
+     * 异步获取业务日志（用户友好格式）
+     */
+    public void getBusinessLogsAsync(Context context, LogCallback callback) {
+        if (context == null || callback == null) return;
+        if (isShutdown || executorService.isShutdown()) {
+            safelyCallCallback(callback, "日志服务未启动");
+            return;
+        }
+        if (isTaskRunning.get()) return;
+        try {
+            final Context appContext = context.getApplicationContext();
+            executorService.execute(() -> {
+                if (!isTaskRunning.compareAndSet(false, true)) return;
+                try {
+                    if (!isShutdown) {
+                        safelyCallCallback(callback, getBusinessLogs(appContext));
+                    }
+                } finally {
+                    isTaskRunning.set(false);
+                }
+            });
+        } catch (Exception e) {
+            Log.e(TAG, "提交业务日志任务失败", e);
+            safelyCallCallback(callback, "获取日志失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 同步获取业务日志。
+     * <p>
+     * 仅展示内部日志缓冲区中 INFO / WARN / ERROR 级别的条目，
+     * 并将技术 TAG 转换为用户友好的中文分类名称。
+     */
+    @NonNull
+    public String getBusinessLogs(Context context) {
+        StringBuilder sb = new StringBuilder();
+
+        // ── header ──
+        sb.append("ZeroTier Fix Log\n");
+        if (context != null) {
+            try {
+                String ver = context.getPackageManager()
+                        .getPackageInfo(context.getPackageName(), 0).versionName;
+                sb.append("v").append(ver).append("  ");
+            } catch (Exception ignored) { /* 忽略 */ }
+        }
+        sb.append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
+                        java.util.Locale.getDefault()).format(new java.util.Date()))
+          .append("\n");
+        sb.append("──────────────────────────────\n");
+
+        // ── 从内部日志缓冲区提取并格式化 ──
+        List<String> snapshot;
+        synchronized (internalLogBuffer) {
+            snapshot = new ArrayList<>(internalLogBuffer);
+        }
+
+        int count = 0;
+        for (String entry : snapshot) {
+            String line = formatBusinessEntry(entry);
+            if (line != null) {
+                sb.append(line).append("\n");
+                count++;
+            }
+        }
+
+        if (count == 0) {
+            sb.append("  暂无业务日志记录。\n");
+            sb.append("  启动 VPN 连接后此处将显示运行状态。\n");
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * 将内部日志条目（格式：{@code MM-dd HH:mm:ss.SSS thread(id) L/TAG: message}）
+     * 转换为 tunproxy 风格的单行字符串，不符合要求的条目返回 null。
+     * 输出格式：{@code HH:mm:ss.SSS [INF/WRN/ERR] [LABEL] message}
+     *
+     * <p>线程名可能包含空格（例如 "Tunnel Receive Thread(68)"），因此不能简单地
+     * 用 split(" ", 4) 分割。这里通过搜索 " L/" 模式（空格 + 单个大写日志级别字母 + 斜杠）
+     * 来定位真正的 level/TAG 段落，实现鲁棒解析。
+     */
+    private String formatBusinessEntry(String entry) {
+        if (entry == null || entry.isEmpty()) return null;
+
+        // 提取时间戳（第二个空格分隔的 token = "HH:mm:ss.SSS"）
+        int firstSpace = entry.indexOf(' ');
+        if (firstSpace < 0) return null;
+        int secondSpace = entry.indexOf(' ', firstSpace + 1);
+        if (secondSpace < 0) return null;
+        String time = entry.substring(firstSpace + 1, secondSpace); // "HH:mm:ss.SSS"
+
+        // 在剩余部分（时间戳之后）搜索 " L/" 模式
+        // 其中 L 是合法的日志级别字母（D V I W E）
+        String afterTime = entry.substring(secondSpace + 1);
+        int levelIdx = -1; // afterTime 中级别字母的位置
+        for (int i = 0; i < afterTime.length() - 2; i++) {
+            if (afterTime.charAt(i) == ' ') {
+                char l = afterTime.charAt(i + 1);
+                if ((l == 'D' || l == 'V' || l == 'I' || l == 'W' || l == 'E')
+                        && afterTime.charAt(i + 2) == '/') {
+                    levelIdx = i + 1;
+                    break;
+                }
+            }
+        }
+        if (levelIdx < 0) return null;
+
+        // 从 levelIdx 起解析 "L/TAG: message"
+        String rest = afterTime.substring(levelIdx);
+        int slashIdx = rest.indexOf('/');
+        int colonIdx = rest.indexOf(": ");
+        if (slashIdx < 0 || colonIdx < 0 || colonIdx <= slashIdx) return null;
+
+        String level   = rest.substring(0, slashIdx);           // "I"
+        String tag     = rest.substring(slashIdx + 1, colonIdx); // "SmartRoutingManager"
+        // 多行消息（堆栈跟踪等）只取第一行
+        String rawMsg  = rest.substring(colonIdx + 2);
+        int nl = rawMsg.indexOf('\n');
+        String message = nl >= 0 ? rawMsg.substring(0, nl) : rawMsg;
+
+        // 过滤 DEBUG / VERBOSE
+        if ("D".equals(level) || "V".equals(level)) return null;
+        // 过滤底层噪音 TAG
+        if (SKIP_TAGS.contains(tag)) return null;
+
+        // 级别标签
+        String levelLabel;
+        switch (level) {
+            case "E": levelLabel = "[ERR]"; break;
+            case "W": levelLabel = "[WRN]"; break;
+            default:  levelLabel = "[INF]"; break;
+        }
+
+        // 分类标签（找不到映射时显示原始 TAG）
+        String label = TAG_LABELS.containsKey(tag) ? TAG_LABELS.get(tag) : tag;
+
+        return time + " " + levelLabel + " [" + label + "] " + message;
+    }
+
     /**
      * 日志回调接口
      */

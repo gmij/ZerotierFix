@@ -13,6 +13,8 @@ import net.kaaass.zerotierfix.util.DebugLog;
 import net.kaaass.zerotierfix.util.IPPacketUtils;
 import net.kaaass.zerotierfix.util.InetAddressUtils;
 import net.kaaass.zerotierfix.util.LogUtil;
+import net.kaaass.zerotierfix.util.smartroute.DnsPacketParser;
+import net.kaaass.zerotierfix.util.smartroute.SmartRoutingManager;
 
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -24,8 +26,11 @@ import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 // TODO: clear up
 public class TunTapAdapter implements VirtualNetworkFrameListener {
@@ -46,6 +51,24 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private FileOutputStream out;
     private Thread receiveThread;
     private ParcelFileDescriptor vpnSocket;
+    /** 智能路由管理器（可为 null，表示功能未启用） */
+    private SmartRoutingManager smartRoutingManager;
+    /** 当前网络的智能路由模式（0=关闭，1=国内直连，2=GFW列表，3=组合模式） */
+    private int smartRoutingMode = SmartRoutingManager.MODE_OFF;
+    /**
+     * 是否启用了 per-app 路由模式。
+     * 为 true 时，TUN 中只有指定应用的流量，无需再做智能路由过滤，
+     * 所有进入 TUN 的包都应无条件转发给 ZeroTier。
+     */
+    private boolean perAppRoutingActive = false;
+
+    /**
+     * 已记录 [CONN] 日志的连接端点集合（destIP:port），用于每条连接只记录一次日志。
+     * TunTapAdapter 每次 VPN 连接都是新实例，无需在 stop 时清理。
+     */
+    private final Set<String> connLoggedSet =
+            Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private static final int MAX_CONN_LOG_ENTRIES = 2000;
 
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
         this.ztService = zeroTierOneService;
@@ -112,6 +135,73 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         this.out = fileOutputStream;
     }
 
+    /**
+     * 配置智能路由
+     *
+     * @param manager          智能路由管理器（null 表示禁用）
+     * @param mode             路由模式，见 {@link SmartRoutingManager#MODE_OFF} 等
+     * @param perAppRouting    是否为 per-app 路由模式（指定应用全部走 ZT，无需包过滤）
+     */
+    public void setSmartRouting(SmartRoutingManager manager, int mode, boolean perAppRouting) {
+        this.smartRoutingManager = manager;
+        this.smartRoutingMode = mode;
+        this.perAppRoutingActive = perAppRouting;
+    }
+
+    /**
+     * 发出 [CONN] 业务日志（每个 destIP:dstPort 仅记录一次）。
+     *
+     * <p>日志格式：{host/IP}:{port}  [路由原因]  (proto; src)
+     * 路由原因：GFW → 走ZT | CN-直连 | ZT（全局/per-app）
+     *
+     * @param packetData 完整 IPv4 数据包字节
+     * @param origDestIP 路由替换前的原始目的 IP
+     * @param sourceIP   源 IP
+     */
+    private void emitConnLog(byte[] packetData, InetAddress origDestIP, InetAddress sourceIP) {
+        if (connLoggedSet.size() >= MAX_CONN_LOG_ENTRIES) return;
+
+        int protocol = packetData[9] & 0xFF; // TCP=6, UDP=17
+        if (protocol != 6 && protocol != 17) return; // 只记录 TCP/UDP
+
+        int ipHdrLen = (packetData[0] & 0x0F) * 4;
+        if (packetData.length < ipHdrLen + 4) return;
+        int srcPort = ((packetData[ipHdrLen]     & 0xFF) << 8) | (packetData[ipHdrLen + 1] & 0xFF);
+        int dstPort = ((packetData[ipHdrLen + 2] & 0xFF) << 8) | (packetData[ipHdrLen + 3] & 0xFF);
+
+        String key = origDestIP.getHostAddress() + ":" + dstPort;
+        if (!connLoggedSet.add(key)) return; // 已记录过此端点
+
+        String destStr = origDestIP.getHostAddress();
+        String hostname = (smartRoutingManager != null)
+                ? smartRoutingManager.getDomainForIp(origDestIP)
+                : null;
+        String displayHost = (hostname != null) ? hostname : destStr;
+        String protoLabel = (protocol == 6) ? "TCP" : "UDP";
+        String srcStr = (sourceIP != null ? sourceIP.getHostAddress() : "?") + ":" + srcPort;
+
+        // 判断路由原因
+        String routeReason;
+        if (perAppRoutingActive) {
+            routeReason = "ZT (per-app)";
+        } else if (smartRoutingManager != null && smartRoutingMode != SmartRoutingManager.MODE_OFF) {
+            boolean isGfw = smartRoutingManager.getGfwIpSet().contains(origDestIP);
+            boolean isCn = smartRoutingManager.isChineseIp(origDestIP);
+            if (isGfw) {
+                routeReason = "ZT (GFW)";
+            } else if (isCn) {
+                routeReason = "ZT (CN)";
+            } else {
+                routeReason = "ZT (非CN)";
+            }
+        } else {
+            routeReason = "ZT (全局)";
+        }
+
+        String msg = displayHost + ":" + dstPort + "  [" + routeReason + "]  (" + protoLabel + "; src=" + srcStr + "; dest=" + destStr + ")";
+        LogUtil.i(LogUtil.CONN_TAG, msg);
+    }
+
     public void addRouteAndNetwork(Route route, long networkId) {
         synchronized (this.routeMap) {
             this.routeMap.put(route, networkId);
@@ -145,7 +235,6 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 if (TunTapAdapter.this.arpTable == null) {
                     TunTapAdapter.this.arpTable = new ARPTable();
                 }
-                // 转发 TUN 消息至 Zerotier
                 try {
                     LogUtil.d(TunTapAdapter.TAG, "TUN Receive Thread Started");
                     var buffer = ByteBuffer.allocate(32767);
@@ -211,6 +300,44 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         }
 
         // 代理功能已移除
+
+        // ── 智能路由过滤（per-app 模式下跳过：TUN 中只有指定应用的流量，无条件走 ZT）──
+        if (!perAppRoutingActive && !isIPv4Multicast(destIP) && smartRoutingManager != null) {
+
+            // ── GFW 列表模式 ──
+            // 路由表中没有全局路由，仅有已知 GFW IP /32 显式路由会进入 TUN。
+            // 额外检查：防止极少数情况下非 GFW 包误入（集合为空时不过滤，避免初始阶段黑洞）。
+            if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST) {
+                Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
+                if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
+                    LogUtil.d(TAG, "智能路由(GFW): 目的IP=" + destIP + " 不在GFW列表，跳过ZT转发");
+                    return;
+                }
+            }
+
+            // ── 组合模式 ──
+            // 路由表中包含所有非中国 CIDR，GFW 域名的中国 CDN IP 作为 /32 显式路由。
+            // 规则：中国IP 且 不在 GFW 集合 → 丢弃（不应出现在路由表中，但作为安全网）
+            //       中国IP 且 在 GFW 集合  → 允许（GFW 域名的中国 CDN，仍需走 ZT）
+            //       非中国IP               → 允许（非中国 CIDR 路由正常命中）
+            if (smartRoutingMode == SmartRoutingManager.MODE_COMBINED) {
+                if (smartRoutingManager.isChineseIp(destIP)) {
+                    Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
+                    if (!gfwIps.contains(destIP)) {
+                        // 中国IP 且 非GFW域名 → 不应进入 ZT，丢弃（物理网络直连兜底）
+                        LogUtil.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是非GFW中国IP，跳过ZT转发");
+                        return;
+                    }
+                    // 中国IP 但属于 GFW 域名（CDN 情况）→ 继续走 ZT
+                    LogUtil.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是GFW中国CDN IP，走ZT转发");
+                }
+            }
+        }
+
+        // ── [CONN] 业务日志：非多播 unicast 包通过路由过滤，即将转发至 ZT ──
+        if (!isIPv4Multicast(destIP)) {
+            emitConnLog(packetData, destIP, sourceIP);
+        }
 
         if (isIPv4Multicast(destIP)) {
             var result = this.node.multicastSubscribe(this.networkId, multicastAddressToMAC(destIP));
@@ -547,6 +674,16 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                         LogUtil.d(TAG, "更新ARP表: IP=" + sourceIP + ", MAC=" + StringUtils.macAddressToString(srcMac));
                     }
                 }
+
+                // DNS 嗅探：解析 ZT 返回的 DNS 响应，填充 GFW IP 集合
+                if (smartRoutingMode != SmartRoutingManager.MODE_OFF && smartRoutingManager != null) {
+                    java.util.List<DnsPacketParser.DnsRecord> records =
+                            DnsPacketParser.parseFromIpPacket(frameData);
+                    for (DnsPacketParser.DnsRecord record : records) {
+                        smartRoutingManager.onDnsRecord(record);
+                    }
+                }
+
                 this.out.write(frameData);
                 LogUtil.d(TAG, "IPv4数据包已写入本地TUN: 大小=" + frameData.length);
             } catch (Exception e) {

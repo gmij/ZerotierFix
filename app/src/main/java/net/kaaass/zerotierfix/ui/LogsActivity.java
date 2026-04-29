@@ -51,13 +51,14 @@ public class LogsActivity extends AppCompatActivity {
     }
     
     /**
-     * 加载日志
+     * 加载日志（业务视图：仅展示 INFO+ 级别的用户友好日志）
      */
     private void loadLogs() {
         showLoading(true);
         
-        // 使用LogManager获取日志
-        LogManager.getInstance().getLogsAsync(this, logs -> {
+        // 使用业务视图——只显示 INFO/WARN/ERROR 级别的用户友好日志，
+        // 过滤掉 TunTapAdapter 等底层调试噪音。
+        LogManager.getInstance().getBusinessLogsAsync(this, logs -> {
             showLoading(false);
             displayLogs(logs);
         });

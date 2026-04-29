@@ -68,6 +68,7 @@ import net.kaaass.zerotierfix.util.LogUtil;
 import net.kaaass.zerotierfix.util.NetworkInfoUtils;
 // import net.kaaass.zerotierfix.util.ProxyManager; // 代理功能已移除
 import net.kaaass.zerotierfix.util.StringUtils;
+import net.kaaass.zerotierfix.util.smartroute.SmartRoutingManager;
 
 import org.greenrobot.eventbus.EventBus;
 import org.greenrobot.eventbus.Subscribe;
@@ -80,6 +81,7 @@ import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.UnknownHostException;
@@ -102,6 +104,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private static final String[] DISALLOWED_APPS = {"com.android.vending"};
     private static final String TAG = "ZT1_Service";
     private static final int ZT_NOTIFICATION_TAG = 5919812;
+    /** 移动数据接口名称前缀——这些是"上行"互联网提供者，不应排除在 VPN 路由之外。 */
+    private static final String[] MOBILE_DATA_IFACE_PREFIXES = {
+            "rmnet", "v4-rmnet",   // Qualcomm (rmnet_data0 等) 及其 CLAT/464XLAT 接口
+            "ccmni",               // MediaTek
+            "wwan",                // 通用 WWAN
+            "seth",                // Samsung LTE (seth_lte0)
+            "r_rmnet"              // Qualcomm IPA 辅助接口
+    };
+    /** 链路本地地址网络前缀 169.254.0.0，uint32。 */
+    private static final long LINK_LOCAL_PREFIX = 0xA9FE0000L; // 169.254.0.0
+    /** 链路本地地址子网掩码 /16，uint32。 */
+    private static final long LINK_LOCAL_MASK   = 0xFFFF0000L; // /16
     private final IBinder mBinder = new ZeroTierBinder();
     private final DataStore dataStore = new DataStore(this);
     private final EventBus eventBus = EventBus.getDefault();
@@ -330,6 +344,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return START_NOT_STICKY;
         }
         this.networkId = networkId;
+
+        // 触发智能路由数据文件下载（后台进行，不阻塞启动）
+        SmartRoutingManager.getInstance(this).ensureDataReady();
 
         // 检查当前的网络环境
         var preferences = PreferenceManager.getDefaultSharedPreferences(this);
@@ -728,7 +745,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     @Override
     public int onNetworkConfigurationUpdated(long networkId, VirtualNetworkConfigOperation op, VirtualNetworkConfig config) {
-        LogUtil.i(TAG, "Virtual Network Config Operation: " + op);
+        LogUtil.d(TAG, "Virtual Network Config Operation: " + op);
         DatabaseUtils.writeLock.lock();
         try {
             // 查找网络 ID 对应的配置
@@ -749,7 +766,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     // 将网络配置的更新交给第一次 Update
                     break;
                 case VIRTUAL_NETWORK_CONFIG_OPERATION_CONFIG_UPDATE:
-                    LogUtil.i(TAG, "Network Config Update!");
+                    LogUtil.d(TAG, "Network Config Update!");
                     boolean isChanged = setVirtualNetworkConfigAndUpdateDatabase(network, config);
                     this.eventBus.post(new NetworkReconfigureEvent(isChanged, network, config));
                     break;
@@ -811,24 +828,35 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.tunTapAdapter.clearRouteMap();
 
         // 重启 VPN Socket
+        if (this.in != null) {
+            try {
+                this.in.close();
+            } catch (Exception e) {
+                LogUtil.e(TAG, "Error closing VPN input stream: " + e, e);
+            }
+            this.in = null;
+        }
+        if (this.out != null) {
+            try {
+                this.out.close();
+            } catch (Exception e) {
+                LogUtil.e(TAG, "Error closing VPN output stream: " + e, e);
+            }
+            this.out = null;
+        }
         if (this.vpnSocket != null) {
             try {
                 this.vpnSocket.close();
-                this.in.close();
-                this.out.close();
             } catch (Exception e) {
                 LogUtil.e(TAG, "Error closing VPN socket: " + e, e);
             }
             this.vpnSocket = null;
-            this.in = null;
-            this.out = null;
         }
 
         // 配置 VPN
-        LogUtil.i(TAG, "Configuring VpnService.Builder");
+        LogUtil.d(TAG, "Configuring VpnService.Builder");
         var builder = new VpnService.Builder();
         var assignedAddresses = virtualNetworkConfig.getAssignedAddresses();
-        LogUtil.i(TAG, "address length: " + assignedAddresses.length);
         boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
         boolean isPerAppRouting = networkConfig.getPerAppRouting();
 
@@ -879,16 +907,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // Per-app模式需要全局路由，这样选中的应用才能访问互联网
         // 只有选中的应用能使用这些路由（通过addAllowedApplication限制）
         boolean shouldAddGlobalRoutes = isRouteViaZeroTier || isPerAppRouting;
+        int smartRoutingMode = networkConfig.getSmartRoutingMode();
         if (shouldAddGlobalRoutes) {
             try {
-                if (isRouteViaZeroTier) {
-                    // 使用ZeroTier全局路由模式
-                    LogUtil.i(TAG, "使用ZeroTier全局路由模式");
-                } else if (isPerAppRouting) {
-                    // Per-app模式也需要全局路由
-                    LogUtil.i(TAG, "Per-app模式：添加全局路由以支持互联网访问");
-                }
-                configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses);
+                configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses,
+                        smartRoutingMode, isPerAppRouting);
                 
                 // 大幅增强对本地连接的保护，避免VPN路由循环
                 // 1. 保护常用DNS查询连接
@@ -989,6 +1012,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 }
             }
             builder.addRoute(InetAddress.getByName("224.0.0.0"), 4);
+
         } catch (Exception e) {
             this.eventBus.post(new VPNErrorEvent(e.getLocalizedMessage()));
             return false;
@@ -1007,11 +1031,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 配置 MTU
         int mtu = virtualNetworkConfig.getMtu();
-        LogUtil.i(TAG, "MTU from Network Config: " + mtu);
+        LogUtil.d(TAG, "MTU from Network Config: " + mtu);
         if (mtu == 0) {
             mtu = 2800;
         }
-        LogUtil.i(TAG, "MTU Set: " + mtu);
+        LogUtil.d(TAG, "MTU Set: " + mtu);
         builder.setMtu(mtu);
 
         builder.setSession(Constants.VPN_SESSION_NAME);
@@ -1026,6 +1050,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.out = new FileOutputStream(this.vpnSocket.getFileDescriptor());
         this.tunTapAdapter.setVpnSocket(this.vpnSocket);
         this.tunTapAdapter.setFileStreams(this.in, this.out);
+
+        // 配置智能路由
+        // 全局路由模式（isRouteViaZeroTier=true, isPerAppRouting=false）：禁用包过滤（MODE_OFF），
+        // 避免 COMBINED 过滤器丢弃中国 IP 导致中国网站无法访问。
+        // Per-app 模式：perAppRoutingActive=true 已跳过所有过滤器，effectiveMode 实际无影响。
+        int effectiveSmartRoutingMode = (isRouteViaZeroTier && !isPerAppRouting)
+                ? SmartRoutingManager.MODE_OFF : smartRoutingMode;
+        SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
+        this.tunTapAdapter.setSmartRouting(smartRouter, effectiveSmartRoutingMode, isPerAppRouting);
+
         this.tunTapAdapter.startThreads();
 
         // 状态栏提示
@@ -1141,15 +1175,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 } catch (Exception e) {
                     LogUtil.e(TAG, "无法排除应用 " + getPackageName(), e);
                 }
-                LogUtil.i(TAG, "使用全局路由模式");
             } else {
-                LogUtil.i(TAG, "未启用全局路由或per-app路由");
+                LogUtil.d(TAG, "未启用全局路由或per-app路由");
             }
             return;
         }
 
         // Per-app路由模式（正向模式：仅选中的应用走VPN，其他应用走原始路由）
-        LogUtil.i(TAG, "使用per-app路由模式（正向模式）");
+        LogUtil.d(TAG, "使用per-app路由模式（正向模式）");
 
         // 从数据库获取应用路由设置
         DatabaseUtils.readLock.lock();
@@ -1191,7 +1224,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
 
-        LogUtil.i(TAG, "Per-app路由配置完成（正向模式）: " + allowedCount + " 个应用将走VPN，其他应用走原始路由");
+        LogUtil.i(TAG, "VPN已就绪: " + allowedCount + " 个应用通过Per-app路由走VPN");
     }
 
     private void addDNSServers(VpnService.Builder builder, Network network) {
@@ -1205,8 +1238,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 if (virtualNetworkConfig.getDns() == null) {
                     // 若无网络DNS，但在全局路由模式下，添加可信DNS
                     if (isRouteViaZeroTier) {
-                        LogUtil.i(TAG, "全局路由模式：添加可信DNS服务器");
-                        addTrustedDNSServers(builder);
+                    LogUtil.d(TAG, "全局路由模式：添加可信DNS服务器");
+                    addTrustedDNSServers(builder);
                     }
                     return;
                 }
@@ -1222,7 +1255,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 
                 // 在全局路由模式下，额外添加可信DNS作为备用
                 if (isRouteViaZeroTier) {
-                    LogUtil.i(TAG, "全局路由模式：添加可信DNS服务器");
+                    LogUtil.d(TAG, "全局路由模式：添加可信DNS服务器");
                     addTrustedDNSServers(builder);
                 }
                 break;
@@ -1245,7 +1278,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             default:
                 // 默认情况下，全局路由模式添加可信DNS
                 if (isRouteViaZeroTier) {
-                    LogUtil.i(TAG, "默认DNS模式：添加可信DNS服务器");
+                    LogUtil.d(TAG, "默认DNS模式：添加可信DNS服务器");
                     addTrustedDNSServers(builder);
                 }
                 break;
@@ -1266,7 +1299,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             builder.addDnsServer(InetAddress.getByName("8.8.8.8"));
             builder.addDnsServer(InetAddress.getByName("8.8.4.4"));
             
-            LogUtil.i(TAG, "已添加Cloudflare和Google可信DNS服务器");
+            LogUtil.d(TAG, "已添加Cloudflare和Google可信DNS服务器");
         } catch (Exception e) {
             LogUtil.e(TAG, "添加可信DNS服务器失败: " + e.getMessage(), e);
         }
@@ -1278,8 +1311,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     // 代理功能已移除
     private void configureProxyRouting(VpnService.Builder builder) throws Exception {
-        // 此方法内容已移除，保留空方法签名以避免编译错误
-        LogUtil.i(TAG, "代理功能已移除");
     }
 
     /**
@@ -1287,57 +1318,72 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * @param builder VPN构建器
      */
     private void configureProxyIPv6Routing(VpnService.Builder builder) throws Exception {
-        // 此方法内容已移除，保留空方法签名以避免编译错误
-        LogUtil.i(TAG, "IPv6代理功能已移除");
     }
     
     /**
-     * 配置直接通过ZeroTier的IPv4全局路由(不使用代理)
+     * 配置直接通过ZeroTier的IPv4路由（不使用代理）。
+     *
+     * <p>统一使用 0.0.0.0/0 全局路由。之前的 COMBINED/CHINA_DIRECT 模式曾尝试添加
+     * ~14000 条非中国 CIDR 路由作为补集，但这会超出 Android VPN Builder/Binder 限制，
+     * 导致 VPN 建立失败。现在无论何种模式，均使用单条全局路由：
+     * <ul>
+     *   <li><b>isPerAppRouting=true</b>：仅指定应用流量进入 VPN（由 addAllowedApplication 限定）</li>
+     *   <li><b>全局路由</b>：所有应用流量（除本应用外）通过 ZeroTier；TunTapAdapter 不再进行包过滤</li>
+     * </ul>
      */
-    private void configureDirectGlobalRouting(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig, 
-                                             InetSocketAddress[] assignedAddresses) throws Exception {
+    private void configureDirectGlobalRouting(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig,
+                                             InetSocketAddress[] assignedAddresses,
+                                             int smartRoutingMode, boolean isPerAppRouting) throws Exception {
         // 获取ZeroTier网络中的网关
         InetAddress zerotierGateway = null;
         
-        // 1. 尝试从路由配置中找到网关
         if (virtualNetworkConfig.getRoutes().length > 0) {
             for (var routeConfig : virtualNetworkConfig.getRoutes()) {
                 var via = routeConfig.getVia();
                 if (via != null) {
                     zerotierGateway = via.getAddress();
-                    LogUtil.i(TAG, "找到ZeroTier网关: " + zerotierGateway.getHostAddress());
+                    LogUtil.d(TAG, "找到ZeroTier网关: " + zerotierGateway.getHostAddress());
                     break;
                 }
             }
         }
         
-        // 2. 如果没有明确的网关，尝试使用分配给本设备的第一个IP作为默认网关
         if (zerotierGateway == null && assignedAddresses.length > 0) {
             for (var addr : assignedAddresses) {
                 if (addr.getAddress() instanceof Inet4Address) {
-                    // 尝试从IPv4地址推断网关 (通常是网络的第一个地址)
                     byte[] ipBytes = addr.getAddress().getAddress();
-                    ipBytes[3] = 1; // 将最后一位改为1，通常是网关
+                    ipBytes[3] = 1;
                     zerotierGateway = InetAddress.getByAddress(ipBytes);
-                    LogUtil.i(TAG, "推断的网关地址: " + zerotierGateway.getHostAddress());
+                    LogUtil.d(TAG, "推断的网关地址: " + zerotierGateway.getHostAddress());
                     break;
                 }
             }
         }
-        
-        // 添加IPv4全局路由 (0.0.0.0/0)
-        InetAddress v4DefaultRoute = InetAddress.getByName("0.0.0.0");
-        builder.addRoute(v4DefaultRoute, 0);
-        LogUtil.i(TAG, "添加IPv4全局路由 0.0.0.0/0" + (zerotierGateway != null ? 
-                " 网关: " + zerotierGateway.getHostAddress() : " 无指定网关"));
-        
-        // 添加路由到TunTap，如果有网关则设置网关
-        Route defaultRoute = new Route(v4DefaultRoute, 0);
-        if (zerotierGateway != null) {
-            defaultRoute.setGateway(zerotierGateway);
+
+        // 检测本机活跃的本地网络子网（蓝牙PAN bt-pan、WiFi局域网 wlan0、USB共享 usb0 等），
+        // 使用 CIDR 路由分裂将这些子网排除在 VPN 之外，避免本地连接被意外路由至 TUN。
+        // per-app 模式：addAllowedApplication 已限定哪些应用走 VPN，排除本地子网后
+        //             这些应用访问局域网设备仍走真实接口。
+        // 全局路由模式：所有应用（除本应用外）的公网流量走 ZT，本地子网流量仍走真实接口。
+        List<long[]> localSubnets = detectLocalSubnetsToExclude();
+        List<long[]> vpnRoutes = localSubnets.isEmpty()
+                ? Collections.singletonList(new long[]{0L, 0L})
+                : computeGlobalRoutesExcluding(localSubnets);
+        if (!localSubnets.isEmpty()) {
+            LogUtil.d(TAG, "路由分裂：排除 " + localSubnets.size() + " 个本地子网，生成 "
+                    + vpnRoutes.size() + " 条VPN路由");
         }
-        this.tunTapAdapter.addRouteAndNetwork(defaultRoute, networkId);
-        LogUtil.i(TAG, "全局路由模式：直接通过ZeroTier网络");
+        for (long[] r : vpnRoutes) {
+            InetAddress addr = longToIpv4Addr(r[0]);
+            int prefix = (int) r[1];
+            builder.addRoute(addr, prefix);
+            Route vpnRoute = new Route(addr, prefix);
+            if (zerotierGateway != null) vpnRoute.setGateway(zerotierGateway);
+            this.tunTapAdapter.addRouteAndNetwork(vpnRoute, networkId);
+        }
+        LogUtil.d(TAG, isPerAppRouting
+                ? "Per-app路由模式：添加全局路由（排除本地子网，仅指定应用生效）"
+                : "全局路由模式：添加全局路由（排除本地子网），所有非本地流量通过ZeroTier");
     }
     
     /**
@@ -1347,7 +1393,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                                            InetSocketAddress[] assignedAddresses) throws Exception {
         InetAddress v6DefaultRoute = InetAddress.getByName("::");
         builder.addRoute(v6DefaultRoute, 0);
-        LogUtil.i(TAG, "添加IPv6全局路由 ::/0");
+        LogUtil.d(TAG, "添加IPv6全局路由 ::/0");
         
         // 创建IPv6路由
         Route ipv6Route = new Route(v6DefaultRoute, 0);
@@ -1358,7 +1404,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 if (addr.getAddress() instanceof Inet6Address) {
                     // 推断IPv6网关
                     ipv6Route.setGateway(addr.getAddress());
-                    LogUtil.i(TAG, "IPv6推断网关: " + addr.getAddress().getHostAddress());
+                    LogUtil.d(TAG, "IPv6推断网关: " + addr.getAddress().getHostAddress());
                     break;
                 }
             }
@@ -1370,6 +1416,145 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         protectSocketConnection("2001:4860:4860::8888", 53);
         protectSocketConnection("2400:3200::1", 53);
         protectSocketConnection("2606:4700:4700::1111", 53);
+    }
+
+    /**
+     * 检测本机所有活跃的<em>本地共享</em>网络子网，用于在全局路由模式下从 VPN 路由表中排除这些子网，
+     * 避免蓝牙 PAN（bt-pan）、USB 网络共享（usb0/rndis0）、WiFi 局域网等本地连接
+     * 被意外路由至 TUN 接口而无法使用。
+     * <p>
+     * 以下接口类型会被跳过，<em>不会</em>加入排除列表：
+     * <ul>
+     *   <li>ZeroTier 虚拟接口（zt*）和 TUN 接口（tun*）</li>
+     *   <li>移动数据接口：rmnet*、ccmni*、wwan*、seth*、r_rmnet* 以及对应的
+     *       CLAT/464XLAT 接口（v4-rmnet*）——这些是"上行"互联网提供者而非本地共享接口，
+     *       将其子网排除在 VPN 路由之外会导致 4G/5G 网络无法访问</li>
+     *   <li>链路本地地址（169.254.x.x）——这些是未连接接口上的自动分配地址</li>
+     *   <li>前缀长度 &lt; 8 的子网——过于宽泛，可能误排除大量公网地址</li>
+     * </ul>
+     *
+     * @return 每个子网表示为 {@code long[]{networkAddressAsUint32, prefixLen}}
+     */
+    private static List<long[]> detectLocalSubnetsToExclude() {
+        List<long[]> subnets = new ArrayList<>();
+        try {
+            List<NetworkInterface> interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
+            for (NetworkInterface ni : interfaces) {
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                String name = ni.getName();
+                // 跳过 ZeroTier 虚拟接口（zt*）和 TUN 接口——它们不是本地物理连接
+                if (name.startsWith("zt") || name.startsWith("tun")) continue;
+                // 跳过移动数据接口：这些是"上行"互联网提供者，排除其子网会导致 4G/5G 断网
+                boolean isMobileData = false;
+                for (String prefix : MOBILE_DATA_IFACE_PREFIXES) {
+                    if (name.startsWith(prefix)) { isMobileData = true; break; }
+                }
+                if (isMobileData) {
+                    LogUtil.d(TAG, "跳过移动数据接口 [" + name + "]，不加入子网排除列表");
+                    continue;
+                }
+                for (InterfaceAddress ia : ni.getInterfaceAddresses()) {
+                    InetAddress addr = ia.getAddress();
+                    if (!(addr instanceof Inet4Address)) continue;
+                    // getNetworkPrefixLength() returns short; guard against invalid values
+                    int prefix = ia.getNetworkPrefixLength();
+                    // 前缀过短（< 8）意味着排除超过 1/256 的地址空间，拒绝处理
+                    if (prefix < 8 || prefix > 32) continue;
+                    long net = ipv4BytesToLong(addr.getAddress());
+                    // 跳过链路本地地址（169.254.x.x），它们是未连接接口上的自动分配地址
+                    if ((net & LINK_LOCAL_MASK) == LINK_LOCAL_PREFIX) continue;
+                    long mask = prefix == 32 ? 0xFFFFFFFFL
+                                             : (~0L << (32 - prefix)) & 0xFFFFFFFFL;
+                    net &= mask;
+                    subnets.add(new long[]{net, prefix});
+                    LogUtil.d(TAG, "排除本地子网 [" + name + "]: " + addr.getHostAddress() + "/" + prefix);
+                }
+            }
+        } catch (Exception e) {
+            LogUtil.w(TAG, "检测本地子网时出错: " + e.getMessage());
+        }
+        return subnets;
+    }
+
+    /**
+     * 计算覆盖 0.0.0.0/0 但排除 {@code excludedCidrs} 中所有子网的最小 CIDR 路由集合。
+     * <p>采用 CIDR 路由分裂（route splitting）算法：从完整地址空间 0.0.0.0/0 出发，
+     * 逐步剔除需要排除的子网，返回剩余路由列表。
+     * 每个路由表示为 {@code long[]{networkAddressAsUint32, prefixLen}}。
+     */
+    static List<long[]> computeGlobalRoutesExcluding(List<long[]> excludedCidrs) {
+        List<long[]> remaining = new ArrayList<>();
+        remaining.add(new long[]{0L, 0L}); // 0.0.0.0/0
+        for (long[] excl : excludedCidrs) {
+            List<long[]> next = new ArrayList<>();
+            for (long[] r : remaining) {
+                next.addAll(routeMinusCidr(r, excl));
+            }
+            remaining = next;
+        }
+        return remaining;
+    }
+
+    /**
+     * 从 {@code route} CIDR 中减去 {@code excl} CIDR，返回不与 excl 重叠的子路由列表。
+     * route 和 excl 均为 {@code long[]{networkAddressAsUint32, prefixLen}}。
+     */
+    private static List<long[]> routeMinusCidr(long[] route, long[] excl) {
+        long rNet = route[0]; int rPfx = (int) route[1];
+        long eNet = excl[0]; int ePfx = (int) excl[1];
+        // excl 与 route 无重叠，route 保持不变
+        if (!ipv4CidrContains(rNet, rPfx, eNet)) {
+            return Collections.singletonList(route);
+        }
+        // 完全重叠，移除 route
+        if (rNet == eNet && rPfx == ePfx) {
+            return Collections.emptyList();
+        }
+        // excl 在 route 内部：将 route 一分为二，递归处理包含 excl 的那一半
+        int newPfx = rPfx + 1;
+        long bitPos = 1L << (31 - rPfx);
+        long lower = rNet;
+        long upper = rNet | bitPos;
+        List<long[]> result = new ArrayList<>();
+        if (ipv4CidrContains(lower, newPfx, eNet)) {
+            // excl 在下半部分
+            result.addAll(routeMinusCidr(new long[]{lower, newPfx}, excl));
+            result.add(new long[]{upper, newPfx});
+        } else {
+            // excl 在上半部分
+            result.add(new long[]{lower, newPfx});
+            result.addAll(routeMinusCidr(new long[]{upper, newPfx}, excl));
+        }
+        return result;
+    }
+
+    /**
+     * 判断 IPv4 地址 {@code ipLong}（uint32）是否属于 {@code network/prefix} 所表示的子网。
+     */
+    private static boolean ipv4CidrContains(long network, int prefix, long ipLong) {
+        if (prefix == 0) return true;
+        long mask = (~0L << (32 - prefix)) & 0xFFFFFFFFL;
+        return (network & mask) == (ipLong & mask);
+    }
+
+    /**
+     * 将 IPv4 地址的 uint32 表示转换为 {@link InetAddress}。
+     */
+    private static InetAddress longToIpv4Addr(long ipLong) throws UnknownHostException {
+        return InetAddress.getByAddress(new byte[]{
+                (byte) ((ipLong >> 24) & 0xFF),
+                (byte) ((ipLong >> 16) & 0xFF),
+                (byte) ((ipLong >> 8) & 0xFF),
+                (byte) (ipLong & 0xFF)
+        });
+    }
+
+    /**
+     * 将 IPv4 地址的 4 字节数组转换为 uint32 的 long 表示。
+     */
+    static long ipv4BytesToLong(byte[] bytes) {
+        return ((bytes[0] & 0xFFL) << 24) | ((bytes[1] & 0xFFL) << 16)
+             | ((bytes[2] & 0xFFL) << 8)  |  (bytes[3] & 0xFFL);
     }
 
     /**

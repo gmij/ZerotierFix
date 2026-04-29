@@ -19,7 +19,7 @@ jobs:
       
       # 设置JDK环境
       - name: Set up JDK
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -42,6 +42,30 @@ jobs:
             echo "No keystore found, will build unsigned APK"
           fi
       
+      # 下载最新的智能路由数据文件并打包进 assets
+      # 优先使用 jsDelivr CDN（国内可访问），主源失败时回退到 raw.githubusercontent.com
+      - name: Download Smart Routing Data Files
+        run: |
+          mkdir -p app/src/main/assets
+
+          echo "=== 下载 gfwlist.txt ==="
+          curl -fsSL --retry 3 --retry-delay 5 \
+            "https://cdn.jsdelivr.net/gh/gfwlist/gfwlist@master/gfwlist.txt" \
+            -o app/src/main/assets/gfwlist.txt \
+          || curl -fsSL --retry 3 --retry-delay 5 \
+            "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt" \
+            -o app/src/main/assets/gfwlist.txt
+          echo "gfwlist.txt: $(wc -c < app/src/main/assets/gfwlist.txt) bytes"
+
+          echo "=== 下载 chnroutes.txt ==="
+          curl -fsSL --retry 3 --retry-delay 5 \
+            "https://cdn.jsdelivr.net/gh/17mon/china_ip_list@master/china_ip_list.txt" \
+            -o app/src/main/assets/chnroutes.txt \
+          || curl -fsSL --retry 3 --retry-delay 5 \
+            "https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt" \
+            -o app/src/main/assets/chnroutes.txt
+          echo "chnroutes.txt: $(wc -c < app/src/main/assets/chnroutes.txt) bytes"
+
       # 直接构建Release APK，不再专门构建Debug APK
       - name: Build Release APK
         env:
@@ -54,7 +78,7 @@ jobs:
       
       # 只上传Release构建产物
       - name: Upload Release APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: success()
         with:
           name: app-release

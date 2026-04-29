@@ -15,3 +15,7 @@
 .cxx
 local.properties
 .idea
+
+# 智能路由数据文件（构建时自动生成，不提交）
+app/src/main/assets/gfwlist.txt
+app/src/main/assets/chnroutes.txt

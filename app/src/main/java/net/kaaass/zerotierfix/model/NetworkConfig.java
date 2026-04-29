@@ -48,6 +48,9 @@ public class NetworkConfig {
 
     private int dnsMode;
 
+    /** 智能路由模式：0=关闭, 1=国内直连, 2=GFW 列表 */
+    private int smartRoutingMode;
+
     @Deprecated
     @ToMany(referencedJoinProperty = "networkId")
     private List<AssignedAddress> assignedAddresses;
@@ -70,7 +73,7 @@ public class NetworkConfig {
     @Keep
     public NetworkConfig(Long id, NetworkType type, NetworkStatus status, String mac, String mtu,
             boolean broadcast, boolean bridging, boolean routeViaZeroTier, boolean perAppRouting, 
-            boolean useCustomDNS, int dnsMode) {
+            boolean useCustomDNS, int dnsMode, int smartRoutingMode) {
         this.id = id;
         this.type = type;
         this.status = status;
@@ -82,6 +85,7 @@ public class NetworkConfig {
         this.perAppRouting = perAppRouting;
         this.useCustomDNS = useCustomDNS;
         this.dnsMode = dnsMode;
+        this.smartRoutingMode = smartRoutingMode;
     }
 
     @Keep
@@ -90,6 +94,7 @@ public class NetworkConfig {
         this.routeViaZeroTier = routeViaZeroTier;
         this.perAppRouting = false;
         this.dnsMode = dnsMode;
+        this.smartRoutingMode = 0;
     }
 
     @Generated(hash = 850630533)
@@ -196,6 +201,14 @@ public class NetworkConfig {
 
     public void setDnsMode(int dnsMode) {
         this.dnsMode = dnsMode;
+    }
+
+    public int getSmartRoutingMode() {
+        return this.smartRoutingMode;
+    }
+
+    public void setSmartRoutingMode(int smartRoutingMode) {
+        this.smartRoutingMode = smartRoutingMode;
     }
 
     /**

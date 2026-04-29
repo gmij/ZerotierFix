@@ -4,8 +4,6 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
-import android.net.ConnectivityManager;
-import android.net.NetworkInfo;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -145,44 +143,12 @@ public class LogsFragment extends Fragment {
     }
     
     /**
-     * 添加初始日志
+     * 添加初始日志（加载提示）
      */
     private void addInitialLog() {
-        // 使用内部应用信息收集
-        String appInfo = logManager.getAppInfo(requireContext());
-        
-        // 添加操作系统版本信息
-        String initialLog = "=== ZeroTier Fix 日志 ===\n"
-                + "当前时间：" + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", 
-                java.util.Locale.getDefault()).format(new java.util.Date()) + "\n"
-                + appInfo
-                + "======================\n\n"
-                + "正在加载系统日志...\n";
-                
-        // 添加网络信息
-        try {
-            boolean isNetworkConnected = isNetworkConnected();
-            initialLog += "网络连接状态: " + (isNetworkConnected ? "已连接" : "未连接") + "\n";
-        } catch (Exception e) {
-            initialLog += "无法获取网络状态信息\n";
-        }
-        
-        // 记录初始日志
-        currentLogs = initialLog;
-        
-        // 添加到LogManager的内部日志
+        currentLogs = "正在加载运行状态…";
+        // 让 LogManager 知道日志页面已初始化
         logManager.info("LogsFragment", "日志界面已初始化");
-    }
-    
-    /**
-     * 检查网络连接状态
-     */
-    private boolean isNetworkConnected() {
-        ConnectivityManager cm = (ConnectivityManager) requireContext().getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (cm == null) return false;
-        
-        NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
-        return activeNetwork != null && activeNetwork.isConnectedOrConnecting();
     }
     
     /**
@@ -244,8 +210,11 @@ public class LogsFragment extends Fragment {
             bottomAppBar.setOnMenuItemClickListener(item -> {
                 try {
                     int id = item.getItemId();
-                    if (id == R.id.menu_item_refresh) {
+                    if (id == R.id.menu_item_copy) {
                         copyLogsToClipboard();
+                        return true;
+                    } else if (id == R.id.menu_item_refresh) {
+                        loadLogs();
                         return true;
                     } else if (id == R.id.menu_item_clear) {
                         clearLogs();
@@ -330,8 +299,8 @@ public class LogsFragment extends Fragment {
         if (getContext() == null) return;
 
         try {
-            // 使用静态内部类保持回调，避免内存泄漏
-            logManager.getLogsAsync(requireContext(), logCallback);
+            // 使用业务视图（用户友好格式）异步加载日志
+            logManager.getBusinessLogsAsync(requireContext(), logCallback);
         } catch (Exception e) {
             showError("加载日志失败", e);
             if (isFragmentActive && isAdded()) {

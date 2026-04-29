@@ -29,6 +29,7 @@ import net.kaaass.zerotierfix.ui.AppRoutingFragment;
 import net.kaaass.zerotierfix.ui.NetworkListFragment;
 import net.kaaass.zerotierfix.ui.viewmodel.NetworkDetailModel;
 import net.kaaass.zerotierfix.util.Constants;
+import net.kaaass.zerotierfix.util.smartroute.SmartRoutingManager;
 
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -98,12 +99,14 @@ public class NetworkDetailFragment extends Fragment {
 
         // "Route All Traffic" checkbox listener
         // When checked: global routing (per-app routing disabled, app list hidden)
-        // When unchecked: per-app routing (app list shown for selection)
+        //               Smart routing automatically set to COMBINED mode
+        // When unchecked: per-app routing (app list shown)
         CheckBox.OnCheckedChangeListener routingAllChangeListener = (buttonView, isChecked) -> {
             if (isChecked) {
-                // Global routing mode: all traffic through ZeroTier
+                // Global routing mode: all traffic through ZeroTier with COMBINED smart routing
                 viewModel.doUpdateRouteViaZeroTier(true);
                 viewModel.doUpdatePerAppRouting(false);
+                viewModel.doUpdateSmartRoutingMode(SmartRoutingManager.MODE_COMBINED);
                 hideAppRoutingFragment();
             } else {
                 // Per-app routing mode: show app list for selection
@@ -190,16 +193,10 @@ public class NetworkDetailFragment extends Fragment {
         // 路由配置
         boolean routeViaZt = networkConfig.getRouteViaZeroTier();
         boolean perAppRouting = networkConfig.getPerAppRouting();
-        
-        // Checkbox state logic:
-        // - If per-app routing is enabled: unchecked (per-app mode)
-        // - If global routing is enabled without per-app: checked (global mode)
-        // - If neither is enabled: unchecked (no routing)
-        // Note: routeViaZt and perAppRouting should be mutually exclusive, 
-        // but we handle the case where both might be set by prioritizing per-app
+
         boolean isGlobalMode = routeViaZt && !perAppRouting;
         this.routingAllView.setChecked(isGlobalMode);
-        
+
         // Show/hide app routing fragment based on routing mode
         if (perAppRouting) {
             showAppRoutingFragment();
