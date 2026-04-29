@@ -56,6 +56,14 @@ public class SmartRoutingManager {
      */
     public static final int MODE_GFW_LIST = 2;
 
+    /**
+     * 组合模式：GFW 封锁的域名走 ZeroTier，中国 IP 强制直连，其余直连
+     * 需配合 routeViaZeroTier=false 使用；
+     * 同时使用 GFW 域名列表（DNS 嗅探）和 chnroutes 中国 IP 列表。
+     * 优先级：中国 IP 直连 &gt; GFW 域名走 ZT &gt; 其余直连
+     */
+    public static final int MODE_COMBINED = 3;
+
     // ────────────────────────── 下载地址 ──────────────────────────
 
     private static final String CHNROUTES_URL =

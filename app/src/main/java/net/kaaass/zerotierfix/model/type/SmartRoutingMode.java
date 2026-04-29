@@ -20,7 +20,13 @@ public enum SmartRoutingMode {
      * GFW 列表模式：GFW 封锁的域名走 ZeroTier，其余直连
      * 无需开启全部路由；已知 GFW IP 作为显式路由通过 ZT
      */
-    GFW_LIST(SmartRoutingManager.MODE_GFW_LIST);
+    GFW_LIST(SmartRoutingManager.MODE_GFW_LIST),
+
+    /**
+     * 组合模式：GFW 封锁的域名走 ZeroTier，中国 IP 强制直连，其余直连
+     * 同时使用 GFW 域名列表（DNS 嗅探）和 chnroutes 中国 IP 列表
+     */
+    COMBINED(SmartRoutingManager.MODE_COMBINED);
 
     private final int id;
 
@@ -38,6 +44,8 @@ public enum SmartRoutingMode {
                 return CHINA_DIRECT;
             case SmartRoutingManager.MODE_GFW_LIST:
                 return GFW_LIST;
+            case SmartRoutingManager.MODE_COMBINED:
+                return COMBINED;
             default:
                 return OFF;
         }
@@ -49,6 +57,8 @@ public enum SmartRoutingMode {
                 return R.string.smart_routing_mode_china_direct;
             case GFW_LIST:
                 return R.string.smart_routing_mode_gfw_list;
+            case COMBINED:
+                return R.string.smart_routing_mode_combined;
             default:
                 return R.string.smart_routing_mode_off;
         }

@@ -110,7 +110,8 @@ public class NetworkDetailFragment extends Fragment {
         String[] modeLabels = new String[]{
                 getString(R.string.smart_routing_mode_off),
                 getString(R.string.smart_routing_mode_china_direct),
-                getString(R.string.smart_routing_mode_gfw_list)
+                getString(R.string.smart_routing_mode_gfw_list),
+                getString(R.string.smart_routing_mode_combined)
         };
         ArrayAdapter<String> spinnerAdapter = new ArrayAdapter<>(
                 requireContext(), android.R.layout.simple_spinner_item, modeLabels);
@@ -316,6 +317,11 @@ public class NetworkDetailFragment extends Fragment {
                     : getString(R.string.smart_routing_data_not_ready);
         } else if (mode == SmartRoutingManager.MODE_GFW_LIST) {
             status = mgr.isGfwListReady()
+                    ? getString(R.string.smart_routing_data_ready)
+                    : getString(R.string.smart_routing_data_not_ready);
+        } else if (mode == SmartRoutingManager.MODE_COMBINED) {
+            boolean bothReady = mgr.isGfwListReady() && mgr.isChnroutesReady();
+            status = bothReady
                     ? getString(R.string.smart_routing_data_ready)
                     : getString(R.string.smart_routing_data_not_ready);
         } else {

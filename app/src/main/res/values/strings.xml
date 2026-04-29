@@ -222,6 +222,7 @@
     <string name="smart_routing_mode_off">Off</string>
     <string name="smart_routing_mode_china_direct">China Direct (domestic IPs bypass ZT)</string>
     <string name="smart_routing_mode_gfw_list">GFW List (blocked domains via ZT)</string>
+    <string name="smart_routing_mode_combined">Combined (GFW via ZT + China Direct)</string>
     <string name="smart_routing_data_status">Data status: </string>
     <string name="smart_routing_data_ready">Ready</string>
     <string name="smart_routing_data_downloading">Downloading…</string>

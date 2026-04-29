@@ -51,7 +51,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private ParcelFileDescriptor vpnSocket;
     /** 智能路由管理器（可为 null，表示功能未启用） */
     private SmartRoutingManager smartRoutingManager;
-    /** 当前网络的智能路由模式（0=关闭，1=国内直连，2=GFW列表） */
+    /** 当前网络的智能路由模式（0=关闭，1=国内直连，2=GFW列表，3=组合模式） */
     private int smartRoutingMode = SmartRoutingManager.MODE_OFF;
 
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
@@ -241,6 +241,24 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
                 // destIP 不在 GFW 列表中：不通过 ZeroTier 转发（走物理网络直接路由）
                 LogUtil.d(TAG, "智能路由(GFW): 目的IP=" + destIP + " 不在GFW列表，跳过ZT转发");
+                return;
+            }
+        }
+
+        // ── 智能路由：组合模式 ──
+        // GFW IP 进入 VPN 后，额外检查是否为中国 IP；若是则丢弃（中国直连优先）
+        if (smartRoutingMode == SmartRoutingManager.MODE_COMBINED
+                && smartRoutingManager != null
+                && !isIPv4Multicast(destIP)) {
+            Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
+            if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
+                // 不在 GFW 列表：跳过 ZT 转发
+                LogUtil.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 不在GFW列表，跳过ZT转发");
+                return;
+            }
+            if (smartRoutingManager.isChineseIp(destIP)) {
+                // GFW 域名但解析到了中国 IP（CDN 等情况）：强制直连
+                LogUtil.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是中国IP，强制直连");
                 return;
             }
         }

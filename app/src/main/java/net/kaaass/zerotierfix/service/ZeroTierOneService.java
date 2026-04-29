@@ -995,8 +995,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
             builder.addRoute(InetAddress.getByName("224.0.0.0"), 4);
 
-            // GFW 列表模式：将已知 GFW IP 添加为显式路由（通过 ZT 出口）
-            if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST) {
+            // GFW 列表模式 / 组合模式：将已知 GFW IP 添加为显式路由（通过 ZT 出口）
+            if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST
+                    || smartRoutingMode == SmartRoutingManager.MODE_COMBINED) {
                 SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
                 for (InetAddress gfwIp : smartRouter.getGfwIpSet()) {
                     if (gfwIp instanceof Inet4Address) {
@@ -1369,6 +1370,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
             // 数据未就绪时回退到全局路由
             LogUtil.w(TAG, "国内直连模式：chnroutes 数据未就绪，回退为全局路由");
+        }
+
+        if (smartRoutingMode == SmartRoutingManager.MODE_COMBINED) {
+            // 组合模式：不添加全局路由，也不添加非中国 CIDR 块
+            // GFW IP 的 /32 显式路由将在后续 GFW IP 路由注入阶段添加
+            LogUtil.i(TAG, "组合模式：跳过全局路由，仅依赖 GFW IP /32 显式路由");
+            return;
         }
         
         // 默认：添加IPv4全局路由 (0.0.0.0/0)
