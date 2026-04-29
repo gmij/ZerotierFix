@@ -59,4 +59,8 @@ public class Constants {
 
     // 检查全局流量 VPN 功能是否正常工作的常量
     public static final String CHECK_GLOBAL_TRAFFIC_VPN_WORKING = "check_global_traffic_vpn_working";
+
+    // 智能路由相关文件名
+    public static final String FILE_CHNROUTES = "chnroutes.txt";
+    public static final String FILE_GFWLIST   = "gfwlist.txt";
 }

@@ -13,6 +13,8 @@ import net.kaaass.zerotierfix.util.DebugLog;
 import net.kaaass.zerotierfix.util.IPPacketUtils;
 import net.kaaass.zerotierfix.util.InetAddressUtils;
 import net.kaaass.zerotierfix.util.LogUtil;
+import net.kaaass.zerotierfix.util.smartroute.DnsPacketParser;
+import net.kaaass.zerotierfix.util.smartroute.SmartRoutingManager;
 
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -26,6 +28,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.HashMap;
 import java.util.Objects;
+import java.util.Set;
 
 // TODO: clear up
 public class TunTapAdapter implements VirtualNetworkFrameListener {
@@ -41,11 +44,15 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private final ZeroTierOneService ztService;
     private ARPTable arpTable = new ARPTable();
     private FileInputStream in;
-    private NDPTable ndpTable = new NDPTable();
+    private NDPTable ndpTable;
     private Node node;
     private FileOutputStream out;
     private Thread receiveThread;
     private ParcelFileDescriptor vpnSocket;
+    /** 智能路由管理器（可为 null，表示功能未启用） */
+    private SmartRoutingManager smartRoutingManager;
+    /** 当前网络的智能路由模式（0=关闭，1=国内直连，2=GFW列表） */
+    private int smartRoutingMode = SmartRoutingManager.MODE_OFF;
 
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
         this.ztService = zeroTierOneService;
@@ -112,6 +119,17 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         this.out = fileOutputStream;
     }
 
+    /**
+     * 配置智能路由
+     *
+     * @param manager 智能路由管理器（null 表示禁用）
+     * @param mode    路由模式，见 {@link SmartRoutingManager#MODE_OFF} 等
+     */
+    public void setSmartRouting(SmartRoutingManager manager, int mode) {
+        this.smartRoutingManager = manager;
+        this.smartRoutingMode = mode;
+    }
+
     public void addRouteAndNetwork(Route route, long networkId) {
         synchronized (this.routeMap) {
             this.routeMap.put(route, networkId);
@@ -145,7 +163,6 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 if (TunTapAdapter.this.arpTable == null) {
                     TunTapAdapter.this.arpTable = new ARPTable();
                 }
-                // 转发 TUN 消息至 Zerotier
                 try {
                     LogUtil.d(TunTapAdapter.TAG, "TUN Receive Thread Started");
                     var buffer = ByteBuffer.allocate(32767);
@@ -211,6 +228,20 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         }
 
         // 代理功能已移除
+
+        // ── 智能路由：GFW 列表模式 ──
+        // 仅当 smartRoutingMode=GFW_LIST 时：如果目的 IP 是已知的非 GFW IP，则跳过 ZT 转发
+        // （依赖 DNS 嗅探结果，IP 必须已被 onVirtualNetworkFrame 中记录）
+        if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST
+                && smartRoutingManager != null
+                && !isIPv4Multicast(destIP)) {
+            Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
+            if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
+                // destIP 不在 GFW 列表中：不通过 ZeroTier 转发（走物理网络直接路由）
+                LogUtil.d(TAG, "智能路由(GFW): 目的IP=" + destIP + " 不在GFW列表，跳过ZT转发");
+                return;
+            }
+        }
 
         if (isIPv4Multicast(destIP)) {
             var result = this.node.multicastSubscribe(this.networkId, multicastAddressToMAC(destIP));
@@ -547,6 +578,16 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                         LogUtil.d(TAG, "更新ARP表: IP=" + sourceIP + ", MAC=" + StringUtils.macAddressToString(srcMac));
                     }
                 }
+
+                // DNS 嗅探：解析 ZT 返回的 DNS 响应，填充 GFW IP 集合
+                if (smartRoutingMode != SmartRoutingManager.MODE_OFF && smartRoutingManager != null) {
+                    java.util.List<DnsPacketParser.DnsRecord> records =
+                            DnsPacketParser.parseFromIpPacket(frameData);
+                    for (DnsPacketParser.DnsRecord record : records) {
+                        smartRoutingManager.onDnsRecord(record);
+                    }
+                }
+
                 this.out.write(frameData);
                 LogUtil.d(TAG, "IPv4数据包已写入本地TUN: 大小=" + frameData.length);
             } catch (Exception e) {

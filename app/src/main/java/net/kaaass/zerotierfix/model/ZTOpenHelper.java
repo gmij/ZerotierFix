@@ -38,6 +38,7 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
         migrations.add(new MigrationV20());
         migrations.add(new MigrationV21());
         migrations.add(new MigrationV22());
+        migrations.add(new MigrationV24());
         Collections.sort(migrations, (migration, migration2) -> migration.getVersion().compareTo(migration2.getVersion()));
         return migrations;
     }
@@ -120,6 +121,30 @@ public class ZTOpenHelper extends DaoMaster.OpenHelper {
         @Override
         public void runMigration(Database database) {
             database.execSQL("ALTER TABLE MOON_ORBIT ADD COLUMN " + MoonOrbitDao.Properties.FromFile.columnName + " INTEGER NOT NULL DEFAULT 0 ");
+        }
+    }
+
+    private static class MigrationV24 implements Migration {
+        private MigrationV24() {
+        }
+
+        @Override
+        public Integer getVersion() {
+            return 24;
+        }
+
+        @Override
+        public void runMigration(Database database) {
+            addColumnSafe(database,
+                    "ALTER TABLE NETWORK_CONFIG ADD COLUMN SMART_ROUTING_MODE INTEGER NOT NULL DEFAULT 0");
+        }
+
+        private void addColumnSafe(Database database, String sql) {
+            try {
+                database.execSQL(sql);
+            } catch (android.database.sqlite.SQLiteException e) {
+                Log.w(TAG, "addColumnSafe: " + e.getMessage());
+            }
         }
     }
 }

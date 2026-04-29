@@ -199,4 +199,14 @@
     <string name="routing_configuration_section">路由配置</string>
     <string name="dns_configuration_section">DNS 配置</string>
     <string name="routing_all_traffic">全部流量路由</string>
+
+    <!-- 智能路由相关字符串 -->
+    <string name="smart_routing_label">智能路由模式</string>
+    <string name="smart_routing_mode_off">关闭</string>
+    <string name="smart_routing_mode_china_direct">国内直连（国内IP走物理网络，境外走ZT）</string>
+    <string name="smart_routing_mode_gfw_list">GFW列表（被封锁域名走ZT）</string>
+    <string name="smart_routing_data_status">数据状态：</string>
+    <string name="smart_routing_data_ready">已就绪</string>
+    <string name="smart_routing_data_downloading">下载中…</string>
+    <string name="smart_routing_data_not_ready">未下载</string>
 </resources>

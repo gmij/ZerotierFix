@@ -68,6 +68,8 @@ import net.kaaass.zerotierfix.util.LogUtil;
 import net.kaaass.zerotierfix.util.NetworkInfoUtils;
 // import net.kaaass.zerotierfix.util.ProxyManager; // 代理功能已移除
 import net.kaaass.zerotierfix.util.StringUtils;
+import net.kaaass.zerotierfix.util.smartroute.CidrBlock;
+import net.kaaass.zerotierfix.util.smartroute.SmartRoutingManager;
 
 import org.greenrobot.eventbus.EventBus;
 import org.greenrobot.eventbus.Subscribe;
@@ -330,6 +332,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return START_NOT_STICKY;
         }
         this.networkId = networkId;
+
+        // 触发智能路由数据文件下载（后台进行，不阻塞启动）
+        SmartRoutingManager.getInstance(this).ensureDataReady();
 
         // 检查当前的网络环境
         var preferences = PreferenceManager.getDefaultSharedPreferences(this);
@@ -879,16 +884,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // Per-app模式需要全局路由，这样选中的应用才能访问互联网
         // 只有选中的应用能使用这些路由（通过addAllowedApplication限制）
         boolean shouldAddGlobalRoutes = isRouteViaZeroTier || isPerAppRouting;
+        int smartRoutingMode = networkConfig.getSmartRoutingMode();
         if (shouldAddGlobalRoutes) {
             try {
                 if (isRouteViaZeroTier) {
-                    // 使用ZeroTier全局路由模式
                     LogUtil.i(TAG, "使用ZeroTier全局路由模式");
                 } else if (isPerAppRouting) {
-                    // Per-app模式也需要全局路由
                     LogUtil.i(TAG, "Per-app模式：添加全局路由以支持互联网访问");
                 }
-                configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses);
+                configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses,
+                        smartRoutingMode);
                 
                 // 大幅增强对本地连接的保护，避免VPN路由循环
                 // 1. 保护常用DNS查询连接
@@ -989,6 +994,19 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 }
             }
             builder.addRoute(InetAddress.getByName("224.0.0.0"), 4);
+
+            // GFW 列表模式：将已知 GFW IP 添加为显式路由（通过 ZT 出口）
+            if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST) {
+                SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
+                for (InetAddress gfwIp : smartRouter.getGfwIpSet()) {
+                    if (gfwIp instanceof Inet4Address) {
+                        builder.addRoute(gfwIp, 32);
+                        Route gfwRoute = new Route(gfwIp, 32);
+                        this.tunTapAdapter.addRouteAndNetwork(gfwRoute, networkId);
+                    }
+                }
+                LogUtil.i(TAG, "GFW模式：已添加 " + smartRouter.getGfwIpSet().size() + " 条 GFW IP 显式路由");
+            }
         } catch (Exception e) {
             this.eventBus.post(new VPNErrorEvent(e.getLocalizedMessage()));
             return false;
@@ -1026,6 +1044,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.out = new FileOutputStream(this.vpnSocket.getFileDescriptor());
         this.tunTapAdapter.setVpnSocket(this.vpnSocket);
         this.tunTapAdapter.setFileStreams(this.in, this.out);
+
+        // 配置智能路由
+        var networkConfig = network.getNetworkConfig();
+        int smartRoutingMode = networkConfig.getSmartRoutingMode();
+        SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
+        this.tunTapAdapter.setSmartRouting(smartRouter, smartRoutingMode);
+
         this.tunTapAdapter.startThreads();
 
         // 状态栏提示
@@ -1293,13 +1318,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     
     /**
      * 配置直接通过ZeroTier的IPv4全局路由(不使用代理)
+     * 支持智能路由模式：CHINA_DIRECT 模式下仅添加非中国 IP 的路由
      */
     private void configureDirectGlobalRouting(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig, 
-                                             InetSocketAddress[] assignedAddresses) throws Exception {
+                                             InetSocketAddress[] assignedAddresses,
+                                             int smartRoutingMode) throws Exception {
         // 获取ZeroTier网络中的网关
         InetAddress zerotierGateway = null;
         
-        // 1. 尝试从路由配置中找到网关
         if (virtualNetworkConfig.getRoutes().length > 0) {
             for (var routeConfig : virtualNetworkConfig.getRoutes()) {
                 var via = routeConfig.getVia();
@@ -1311,27 +1337,46 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
         
-        // 2. 如果没有明确的网关，尝试使用分配给本设备的第一个IP作为默认网关
         if (zerotierGateway == null && assignedAddresses.length > 0) {
             for (var addr : assignedAddresses) {
                 if (addr.getAddress() instanceof Inet4Address) {
-                    // 尝试从IPv4地址推断网关 (通常是网络的第一个地址)
                     byte[] ipBytes = addr.getAddress().getAddress();
-                    ipBytes[3] = 1; // 将最后一位改为1，通常是网关
+                    ipBytes[3] = 1;
                     zerotierGateway = InetAddress.getByAddress(ipBytes);
                     LogUtil.i(TAG, "推断的网关地址: " + zerotierGateway.getHostAddress());
                     break;
                 }
             }
         }
+
+        if (smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT) {
+            // 国内直连模式：只将非中国 CIDR 路由到 ZT
+            SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
+            List<CidrBlock> nonChinaRoutes = smartRouter.getNonChinaCidrs();
+            if (!nonChinaRoutes.isEmpty()) {
+                LogUtil.i(TAG, "国内直连模式：添加 " + nonChinaRoutes.size() + " 条非中国路由");
+                for (CidrBlock block : nonChinaRoutes) {
+                    InetAddress addr = block.toInetAddress();
+                    if (addr != null) {
+                        builder.addRoute(addr, block.prefixLen);
+                        Route r = new Route(addr, block.prefixLen);
+                        if (zerotierGateway != null) r.setGateway(zerotierGateway);
+                        this.tunTapAdapter.addRouteAndNetwork(r, networkId);
+                    }
+                }
+                LogUtil.i(TAG, "国内直连模式路由配置完成（中国IP走物理网络直连）");
+                return;
+            }
+            // 数据未就绪时回退到全局路由
+            LogUtil.w(TAG, "国内直连模式：chnroutes 数据未就绪，回退为全局路由");
+        }
         
-        // 添加IPv4全局路由 (0.0.0.0/0)
+        // 默认：添加IPv4全局路由 (0.0.0.0/0)
         InetAddress v4DefaultRoute = InetAddress.getByName("0.0.0.0");
         builder.addRoute(v4DefaultRoute, 0);
         LogUtil.i(TAG, "添加IPv4全局路由 0.0.0.0/0" + (zerotierGateway != null ? 
                 " 网关: " + zerotierGateway.getHostAddress() : " 无指定网关"));
         
-        // 添加路由到TunTap，如果有网关则设置网关
         Route defaultRoute = new Route(v4DefaultRoute, 0);
         if (zerotierGateway != null) {
             defaultRoute.setGateway(zerotierGateway);

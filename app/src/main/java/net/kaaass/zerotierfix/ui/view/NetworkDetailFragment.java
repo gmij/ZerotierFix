@@ -6,8 +6,11 @@ import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
 import android.widget.FrameLayout;
+import android.widget.Spinner;
 import android.widget.TableRow;
 import android.widget.TextView;
 
@@ -25,10 +28,12 @@ import net.kaaass.zerotierfix.model.Network;
 import net.kaaass.zerotierfix.model.NetworkConfig;
 import net.kaaass.zerotierfix.model.type.DNSMode;
 import net.kaaass.zerotierfix.model.type.NetworkType;
+import net.kaaass.zerotierfix.model.type.SmartRoutingMode;
 import net.kaaass.zerotierfix.ui.AppRoutingFragment;
 import net.kaaass.zerotierfix.ui.NetworkListFragment;
 import net.kaaass.zerotierfix.ui.viewmodel.NetworkDetailModel;
 import net.kaaass.zerotierfix.util.Constants;
+import net.kaaass.zerotierfix.util.smartroute.SmartRoutingManager;
 
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -56,6 +61,10 @@ public class NetworkDetailFragment extends Fragment {
     private TextView ipAddressesView;
     private TableRow dnsView;
     private TextView dnsServersView;
+    private Spinner smartRoutingSpinner;
+    private TextView smartRoutingDataStatus;
+    /** spinner 初始化时是否正在程序化赋值（避免触发用户监听） */
+    private boolean spinnerInitializing = false;
 
     private long networkId;
     private AppRoutingFragment appRoutingFragment;
@@ -95,6 +104,29 @@ public class NetworkDetailFragment extends Fragment {
         this.ipAddressesView = view.findViewById(R.id.network_ipaddresses_textview);
         this.dnsView = view.findViewById(R.id.custom_dns_row);
         this.dnsServersView = view.findViewById(R.id.network_dns_textview);
+        this.smartRoutingSpinner = view.findViewById(R.id.network_smart_routing_spinner);
+        this.smartRoutingDataStatus = view.findViewById(R.id.smart_routing_data_status);
+
+        // 初始化智能路由模式 Spinner
+        String[] modeLabels = new String[]{
+                getString(R.string.smart_routing_mode_off),
+                getString(R.string.smart_routing_mode_china_direct),
+                getString(R.string.smart_routing_mode_gfw_list)
+        };
+        ArrayAdapter<String> spinnerAdapter = new ArrayAdapter<>(
+                requireContext(), android.R.layout.simple_spinner_item, modeLabels);
+        spinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        this.smartRoutingSpinner.setAdapter(spinnerAdapter);
+        this.smartRoutingSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View v, int position, long id) {
+                if (spinnerInitializing) return;
+                viewModel.doUpdateSmartRoutingMode(position);
+                updateSmartRoutingDataStatus();
+            }
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
 
         // "Route All Traffic" checkbox listener
         // When checked: global routing (per-app routing disabled, app list hidden)
@@ -180,6 +212,12 @@ public class NetworkDetailFragment extends Fragment {
             return;
         }
 
+        // 智能路由模式
+        spinnerInitializing = true;
+        this.smartRoutingSpinner.setSelection(networkConfig.getSmartRoutingMode());
+        spinnerInitializing = false;
+        updateSmartRoutingDataStatus();
+
         // DNS 模式
         var dnsMode = DNSMode.fromInt(networkConfig.getDnsMode());
         this.dnsModeView.setText(dnsMode.toStringId());
@@ -263,6 +301,28 @@ public class NetworkDetailFragment extends Fragment {
 
     private String booleanToLocalString(boolean z) {
         return z ? getString(R.string.enabled) : getString(R.string.disabled);
+    }
+
+    /**
+     * 更新智能路由数据文件下载状态文本
+     */
+    private void updateSmartRoutingDataStatus() {
+        if (smartRoutingDataStatus == null) return;
+        SmartRoutingManager mgr = SmartRoutingManager.getInstance(requireContext());
+        int mode = this.smartRoutingSpinner.getSelectedItemPosition();
+        String status;
+        if (mode == SmartRoutingManager.MODE_CHINA_DIRECT) {
+            status = mgr.isChnroutesReady()
+                    ? getString(R.string.smart_routing_data_ready)
+                    : getString(R.string.smart_routing_data_not_ready);
+        } else if (mode == SmartRoutingManager.MODE_GFW_LIST) {
+            status = mgr.isGfwListReady()
+                    ? getString(R.string.smart_routing_data_ready)
+                    : getString(R.string.smart_routing_data_not_ready);
+        } else {
+            status = getString(R.string.smart_routing_mode_off);
+        }
+        smartRoutingDataStatus.setText(status);
     }
 
     private String inetSocketAddressToString(InetSocketAddress inetSocketAddress) {

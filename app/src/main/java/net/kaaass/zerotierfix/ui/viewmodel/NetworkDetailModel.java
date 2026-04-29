@@ -128,6 +128,24 @@ public class NetworkDetailModel extends AndroidViewModel {
     }
 
     /**
+     * 更新智能路由模式
+     */
+    public void doUpdateSmartRoutingMode(int mode) {
+        var networkConfig = this.networkConfig.getValue();
+        if (networkConfig == null) {
+            Log.e(TAG, "Network config not found!");
+            return;
+        }
+        networkConfig.setSmartRoutingMode(mode);
+        networkConfig.update();
+
+        var network = this.network.getValue();
+        if (network != null) {
+            this.eventBus.post(new NetworkConfigChangedByUserEvent(network));
+        }
+    }
+
+    /**
      * 处理网络配置回复事件
      */
     @Subscribe(threadMode = ThreadMode.MAIN)
