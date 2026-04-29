@@ -816,17 +816,29 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.tunTapAdapter.clearRouteMap();
 
         // 重启 VPN Socket
+        if (this.in != null) {
+            try {
+                this.in.close();
+            } catch (Exception e) {
+                LogUtil.e(TAG, "Error closing VPN input stream: " + e, e);
+            }
+            this.in = null;
+        }
+        if (this.out != null) {
+            try {
+                this.out.close();
+            } catch (Exception e) {
+                LogUtil.e(TAG, "Error closing VPN output stream: " + e, e);
+            }
+            this.out = null;
+        }
         if (this.vpnSocket != null) {
             try {
                 this.vpnSocket.close();
-                this.in.close();
-                this.out.close();
             } catch (Exception e) {
                 LogUtil.e(TAG, "Error closing VPN socket: " + e, e);
             }
             this.vpnSocket = null;
-            this.in = null;
-            this.out = null;
         }
 
         // 配置 VPN
