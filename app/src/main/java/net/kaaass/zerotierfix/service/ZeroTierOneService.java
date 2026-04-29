@@ -1045,9 +1045,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.tunTapAdapter.setVpnSocket(this.vpnSocket);
         this.tunTapAdapter.setFileStreams(this.in, this.out);
 
-        // 配置智能路由
-        var networkConfig = network.getNetworkConfig();
-        int smartRoutingMode = networkConfig.getSmartRoutingMode();
+        // 配置智能路由（smartRoutingMode 已在上方路由配置时获取）
         SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
         this.tunTapAdapter.setSmartRouting(smartRouter, smartRoutingMode);
 

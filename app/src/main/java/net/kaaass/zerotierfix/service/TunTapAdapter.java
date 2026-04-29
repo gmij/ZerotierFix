@@ -44,7 +44,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private final ZeroTierOneService ztService;
     private ARPTable arpTable = new ARPTable();
     private FileInputStream in;
-    private NDPTable ndpTable;
+    private NDPTable ndpTable = new NDPTable();
     private Node node;
     private FileOutputStream out;
     private Thread receiveThread;

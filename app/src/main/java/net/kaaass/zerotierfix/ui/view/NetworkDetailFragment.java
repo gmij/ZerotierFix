@@ -28,7 +28,6 @@ import net.kaaass.zerotierfix.model.Network;
 import net.kaaass.zerotierfix.model.NetworkConfig;
 import net.kaaass.zerotierfix.model.type.DNSMode;
 import net.kaaass.zerotierfix.model.type.NetworkType;
-import net.kaaass.zerotierfix.model.type.SmartRoutingMode;
 import net.kaaass.zerotierfix.ui.AppRoutingFragment;
 import net.kaaass.zerotierfix.ui.NetworkListFragment;
 import net.kaaass.zerotierfix.ui.viewmodel.NetworkDetailModel;

@@ -18,7 +18,11 @@ public class CidrBlock implements Comparable<CidrBlock> {
         this.startIp = startIp;
         this.prefixLen = prefixLen;
         if (prefixLen == 0) {
-            this.endIp = 0xFFFFFFFF;
+            // 0.0.0.0/0: covers the entire address space
+            // We use the mask approach but avoid the Java shift-by-32 wrap-around:
+            // mask = all zeros when prefix=0 (shift by 32 wraps to 0 in Java)
+            // So we set endIp explicitly for this edge case.
+            this.endIp = (int) 0xFFFFFFFFL; // = -1 signed, = 4294967295 unsigned
         } else {
             int mask = 0xFFFFFFFF << (32 - prefixLen);
             this.endIp = (startIp & mask) | (~mask);

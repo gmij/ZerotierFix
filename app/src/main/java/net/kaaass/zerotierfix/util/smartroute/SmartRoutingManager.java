@@ -2,6 +2,7 @@ package net.kaaass.zerotierfix.util.smartroute;
 
 import android.content.Context;
 
+import net.kaaass.zerotierfix.util.Constants;
 import net.kaaass.zerotierfix.util.LogUtil;
 
 import org.apache.commons.io.FileUtils;
@@ -67,9 +68,6 @@ public class SmartRoutingManager {
     private static final String GFWLIST_URL_FALLBACK =
             "https://cdn.jsdelivr.net/gh/gfwlist/gfwlist@master/gfwlist.txt";
 
-    private static final String FILE_CHNROUTES = "chnroutes.txt";
-    private static final String FILE_GFWLIST   = "gfwlist.txt";
-
     private static final int DOWNLOAD_CONN_TIMEOUT = 10_000;
     private static final int DOWNLOAD_READ_TIMEOUT = 30_000;
 
@@ -105,9 +103,9 @@ public class SmartRoutingManager {
     private volatile Set<String> gfwDomains = Collections.emptySet();
 
     /**
-     * DNS 嗅探：域名 → IP（可能一个域名对应多个 IP）
+     * DNS 嗅探：IP 字符串 → 域名（用于 GFW 域名检测）
      */
-    private final ConcurrentHashMap<String, InetAddress> ipToDomain = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> ipToDomain = new ConcurrentHashMap<>();
 
     /**
      * 已知的 GFW 封锁 IP 集合（GFW_LIST 使用，用于 VPN 路由添加）
@@ -200,7 +198,8 @@ public class SmartRoutingManager {
      */
     public void onDnsRecord(DnsPacketParser.DnsRecord record) {
         if (record == null || record.ip == null || record.domain == null) return;
-        ipToDomain.put(record.ip.getHostAddress(), record.ip);
+        // 记录 IP → 域名 映射（用于后续 GFW 检测）
+        ipToDomain.put(record.ip.getHostAddress(), record.domain.toLowerCase());
         if (isGfwDomain(record.domain)) {
             if (gfwIpSet.add(record.ip)) {
                 LogUtil.d(TAG, "新增 GFW IP: " + record.ip.getHostAddress()
@@ -219,7 +218,7 @@ public class SmartRoutingManager {
     }
 
     private void loadOrDownloadChnroutes() {
-        File file = new File(context.getFilesDir(), FILE_CHNROUTES);
+        File file = new File(context.getFilesDir(), Constants.FILE_CHNROUTES);
         if (!file.exists() || file.length() < 100) {
             downloadFile(CHNROUTES_URL, CHNROUTES_URL_FALLBACK, file, "chnroutes");
         }
@@ -229,7 +228,7 @@ public class SmartRoutingManager {
     }
 
     private void loadOrDownloadGfwList() {
-        File file = new File(context.getFilesDir(), FILE_GFWLIST);
+        File file = new File(context.getFilesDir(), Constants.FILE_GFWLIST);
         if (!file.exists() || file.length() < 100) {
             downloadFile(GFWLIST_URL, GFWLIST_URL_FALLBACK, file, "gfwlist");
         }
@@ -301,8 +300,8 @@ public class SmartRoutingManager {
      */
     public void forceRefresh() {
         executor.execute(() -> {
-            deleteFile(FILE_CHNROUTES);
-            deleteFile(FILE_GFWLIST);
+            deleteFile(Constants.FILE_CHNROUTES);
+            deleteFile(Constants.FILE_GFWLIST);
             loadOrDownloadAll();
         });
     }
