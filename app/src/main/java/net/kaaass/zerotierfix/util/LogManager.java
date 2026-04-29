@@ -567,19 +567,39 @@ public class LogManager {
      * 将内部日志条目（格式：{@code MM-dd HH:mm:ss.SSS thread(id) L/TAG: message}）
      * 转换为 tunproxy 风格的单行字符串，不符合要求的条目返回 null。
      * 输出格式：{@code HH:mm:ss.SSS [INF/WRN/ERR] [LABEL] message}
+     *
+     * <p>线程名可能包含空格（例如 "Tunnel Receive Thread(68)"），因此不能简单地
+     * 用 split(" ", 4) 分割。这里通过搜索 " L/" 模式（空格 + 单个大写日志级别字母 + 斜杠）
+     * 来定位真正的 level/TAG 段落，实现鲁棒解析。
      */
     private String formatBusinessEntry(String entry) {
         if (entry == null || entry.isEmpty()) return null;
 
-        // 分成最多 4 段：[0]=日期  [1]=时间  [2]=线程  [3]=L/TAG: message
-        String[] parts = entry.split(" ", 4);
-        if (parts.length < 4) return null;
+        // 提取时间戳（第二个空格分隔的 token = "HH:mm:ss.SSS"）
+        int firstSpace = entry.indexOf(' ');
+        if (firstSpace < 0) return null;
+        int secondSpace = entry.indexOf(' ', firstSpace + 1);
+        if (secondSpace < 0) return null;
+        String time = entry.substring(firstSpace + 1, secondSpace); // "HH:mm:ss.SSS"
 
-        // 提取 HH:mm:ss.SSS（保留毫秒）
-        String time = parts[1]; // "03:45:12.456"
+        // 在剩余部分（时间戳之后）搜索 " L/" 模式
+        // 其中 L 是合法的日志级别字母（D V I W E）
+        String afterTime = entry.substring(secondSpace + 1);
+        int levelIdx = -1; // afterTime 中级别字母的位置
+        for (int i = 0; i < afterTime.length() - 2; i++) {
+            if (afterTime.charAt(i) == ' ') {
+                char l = afterTime.charAt(i + 1);
+                if ((l == 'D' || l == 'V' || l == 'I' || l == 'W' || l == 'E')
+                        && afterTime.charAt(i + 2) == '/') {
+                    levelIdx = i + 1;
+                    break;
+                }
+            }
+        }
+        if (levelIdx < 0) return null;
 
-        // 解析  parts[3] = "I/SmartRoutingManager: message..."
-        String rest = parts[3];
+        // 从 levelIdx 起解析 "L/TAG: message"
+        String rest = afterTime.substring(levelIdx);
         int slashIdx = rest.indexOf('/');
         int colonIdx = rest.indexOf(": ");
         if (slashIdx < 0 || colonIdx < 0 || colonIdx <= slashIdx) return null;
