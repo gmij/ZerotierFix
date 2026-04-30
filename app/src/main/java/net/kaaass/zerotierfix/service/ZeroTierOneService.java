@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
 import android.net.VpnService;
 import android.os.Binder;
 import android.os.Build;
@@ -134,6 +135,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private TunTapAdapter tunTapAdapter;
     private UdpCom udpCom;
     private Thread udpThread;
+    /** 网络变化回调，用于在 WiFi/4G 切换时重新配置 VPN 路由 */
+    private ConnectivityManager.NetworkCallback networkCallback;
+    /** 防止网络变化事件过于频繁触发重配的最小间隔（毫秒） */
+    private static final long NETWORK_CHANGE_DEBOUNCE_MS = 3000;
+    /** 上次因网络变化而触发重配的时间戳 */
+    private volatile long lastNetworkChangeTime = 0;
     private Thread v4MulticastScanner = new Thread() {
         /* class com.zerotier.one.service.ZeroTierOneService.AnonymousClass1 */
         List<String> subscriptions = new ArrayList<>();
@@ -453,6 +460,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     public void stopZeroTier() {
+        // 取消网络变化回调
+        unregisterNetworkChangeCallback();
+
         if (this.svrSocket != null) {
             this.svrSocket.close();
             this.svrSocket = null;
@@ -1095,6 +1105,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.notificationManager.notify(ZT_NOTIFICATION_TAG, notification);
         LogUtil.i(TAG, "ZeroTier One Connected");
 
+        // 注册网络变化回调：当手机在 WiFi/4G/5G 之间切换时重新配置 VPN 路由
+        registerNetworkChangeCallback();
 
         // 旧版本 Android 多播处理
         if (Build.VERSION.SDK_INT < 29) {
@@ -1129,6 +1141,101 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         //     // 忽略连接错误，不是所有地址都能连接成功
         //     LogUtil.d(TAG, "保护连接尝试: " + host + ":" + port + " - " + e.getMessage());
         // }
+    }
+
+    /**
+     * 注册网络变化回调。
+     * 当手机在 WiFi、4G/5G、蓝牙热点等网络之间切换时，本地子网会发生变化，
+     * 需要重新计算 VPN 路由排除列表以确保本地子网不被意外路由至 TUN。
+     */
+    private void registerNetworkChangeCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            // API 24 以下不支持 registerDefaultNetworkCallback
+            return;
+        }
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return;
+            unregisterNetworkChangeCallback(); // 避免重复注册
+            this.networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(android.net.Network network) {
+                    LogUtil.i(TAG, "网络变化: 新网络可用 (" + network + ")");
+                    onNetworkChanged();
+                }
+
+                @Override
+                public void onLost(android.net.Network network) {
+                    LogUtil.i(TAG, "网络变化: 网络丢失 (" + network + ")");
+                    onNetworkChanged();
+                }
+
+                @Override
+                public void onCapabilitiesChanged(android.net.Network network,
+                                                  android.net.NetworkCapabilities capabilities) {
+                    // IP 地址变化（如 4G/5G 重新分配 IP）也会触发此回调
+                    onNetworkChanged();
+                }
+            };
+            cm.registerDefaultNetworkCallback(this.networkCallback);
+            LogUtil.d(TAG, "已注册网络变化回调");
+        } catch (Exception e) {
+            LogUtil.w(TAG, "注册网络变化回调失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 取消网络变化回调
+     */
+    private void unregisterNetworkChangeCallback() {
+        if (this.networkCallback == null) return;
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                cm.unregisterNetworkCallback(this.networkCallback);
+            }
+        } catch (Exception e) {
+            LogUtil.d(TAG, "取消网络回调时出错: " + e.getMessage());
+        }
+        this.networkCallback = null;
+    }
+
+    /**
+     * 网络环境发生变化时的处理逻辑。
+     * 使用 debounce 机制避免频繁触发（网络切换时可能短时间内收到多个回调）。
+     * 触发 VPN 隧道重建，使得新的本地子网排除列表生效。
+     */
+    private synchronized void onNetworkChanged() {
+        long now = System.currentTimeMillis();
+        if (now - lastNetworkChangeTime < NETWORK_CHANGE_DEBOUNCE_MS) {
+            return; // debounce：过于频繁，跳过
+        }
+        lastNetworkChangeTime = now;
+
+        // 清除连接日志缓存，以便网络切换后重新记录
+        if (this.tunTapAdapter != null) {
+            this.tunTapAdapter.clearConnLog();
+        }
+
+        // 触发 VPN 隧道重建
+        if (this.networkId != 0 && this.node != null) {
+            LogUtil.i(TAG, "网络环境变化，将重新配置 VPN 路由");
+            DatabaseUtils.readLock.lock();
+            try {
+                var daoSession = ((ZerotierFixApplication) getApplication()).getDaoSession();
+                var networks = daoSession.getNetworkDao().queryBuilder()
+                        .where(NetworkDao.Properties.NetworkId.eq(this.networkId))
+                        .list();
+                if (networks.size() == 1) {
+                    Network network = networks.get(0);
+                    updateTunnelConfig(network);
+                }
+            } catch (Exception e) {
+                LogUtil.e(TAG, "网络变化后重配 VPN 失败: " + e.getMessage(), e);
+            } finally {
+                DatabaseUtils.readLock.unlock();
+            }
+        }
     }
     
     /**
@@ -1437,6 +1544,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private static List<long[]> detectLocalSubnetsToExclude() {
         List<long[]> subnets = new ArrayList<>();
+        Set<String> seen = new HashSet<>(); // 去重：避免相同子网被多次加入
         try {
             List<NetworkInterface> interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
             for (NetworkInterface ni : interfaces) {
@@ -1453,6 +1561,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     LogUtil.d(TAG, "跳过移动数据接口 [" + name + "]，不加入子网排除列表");
                     continue;
                 }
+                // 跳过 dummy 接口（某些系统上虚拟创建的占位接口）
+                if (name.startsWith("dummy")) continue;
                 for (InterfaceAddress ia : ni.getInterfaceAddresses()) {
                     InetAddress addr = ia.getAddress();
                     if (!(addr instanceof Inet4Address)) continue;
@@ -1463,9 +1573,19 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     long net = ipv4BytesToLong(addr.getAddress());
                     // 跳过链路本地地址（169.254.x.x），它们是未连接接口上的自动分配地址
                     if ((net & LINK_LOCAL_MASK) == LINK_LOCAL_PREFIX) continue;
+                    // 跳过 CGN 地址（100.64.0.0/10），部分运营商使用该段，不应排除
+                    long cgn = ipv4BytesToLong(new byte[]{100, 64, 0, 0});
+                    long cgnMask = 0xFFC00000L; // /10
+                    if ((net & cgnMask) == cgn) {
+                        LogUtil.d(TAG, "跳过 CGN 地址 [" + name + "]: " + addr.getHostAddress() + "/" + prefix);
+                        continue;
+                    }
                     long mask = prefix == 32 ? 0xFFFFFFFFL
                                              : (~0L << (32 - prefix)) & 0xFFFFFFFFL;
                     net &= mask;
+                    // 去重
+                    String key = net + "/" + prefix;
+                    if (!seen.add(key)) continue;
                     subnets.add(new long[]{net, prefix});
                     LogUtil.d(TAG, "排除本地子网 [" + name + "]: " + addr.getHostAddress() + "/" + prefix);
                 }

@@ -64,15 +64,23 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
     /**
      * 已记录 [CONN] 日志的连接端点集合（destIP:port），用于每条连接只记录一次日志。
-     * TunTapAdapter 每次 VPN 连接都是新实例，无需在 stop 时清理。
+     * 网络切换时通过 {@link #clearConnLog()} 清空，重新记录新的连接。
      */
     private final Set<String> connLoggedSet =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
-    private static final int MAX_CONN_LOG_ENTRIES = 2000;
+    private static final int MAX_CONN_LOG_ENTRIES = 5000;
 
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
         this.ztService = zeroTierOneService;
         this.networkId = j;
+    }
+
+    /**
+     * 清除已记录的连接日志集合。
+     * 在网络切换时调用，使得新网络上的连接能被重新记录。
+     */
+    public void clearConnLog() {
+        connLoggedSet.clear();
     }
 
     /**
@@ -675,8 +683,10 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                     }
                 }
 
-                // DNS 嗅探：解析 ZT 返回的 DNS 响应，填充 GFW IP 集合
-                if (smartRoutingMode != SmartRoutingManager.MODE_OFF && smartRoutingManager != null) {
+                // DNS 嗅探：解析 ZT 返回的 DNS 响应，填充 IP→域名 映射和 GFW IP 集合。
+                // 即使在全局路由模式（smartRoutingMode=OFF）下也需要解析，
+                // 以便 [CONN] 日志能显示域名而非纯 IP。
+                if (smartRoutingManager != null) {
                     java.util.List<DnsPacketParser.DnsRecord> records =
                             DnsPacketParser.parseFromIpPacket(frameData);
                     for (DnsPacketParser.DnsRecord record : records) {
