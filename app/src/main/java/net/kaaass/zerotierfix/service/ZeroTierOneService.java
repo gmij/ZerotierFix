@@ -1509,6 +1509,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             for (long[] subnet : localSubnets) {
                 InetAddress addr = longToIpv4Addr(subnet[0]);
                 int prefix = (int) subnet[1];
+                // excludeRoute is an Android 13+ API; the TIRAMISU guard above is required.
+                // Older devices use the CIDR split fallback below to preserve the same behavior.
                 builder.excludeRoute(new IpPrefix(addr, prefix));
             }
             if (!localSubnets.isEmpty()) {
