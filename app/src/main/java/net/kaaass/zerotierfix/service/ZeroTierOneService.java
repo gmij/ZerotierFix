@@ -117,6 +117,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private static final long LINK_LOCAL_PREFIX = 0xA9FE0000L; // 169.254.0.0
     /** 链路本地地址子网掩码 /16，uint32。 */
     private static final long LINK_LOCAL_MASK   = 0xFFFF0000L; // /16
+    /** CGN（运营商级 NAT）网段 100.64.0.0，uint32。 */
+    private static final long CGN_PREFIX = 0x64400000L; // 100.64.0.0
+    /** CGN 子网掩码 /10，uint32。 */
+    private static final long CGN_MASK   = 0xFFC00000L; // /10
     private final IBinder mBinder = new ZeroTierBinder();
     private final DataStore dataStore = new DataStore(this);
     private final EventBus eventBus = EventBus.getDefault();
@@ -1544,7 +1548,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private static List<long[]> detectLocalSubnetsToExclude() {
         List<long[]> subnets = new ArrayList<>();
-        Set<String> seen = new HashSet<>(); // 去重：避免相同子网被多次加入
+        Set<String> processedSubnets = new HashSet<>(); // 去重：避免相同子网被多次加入
         try {
             List<NetworkInterface> interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
             for (NetworkInterface ni : interfaces) {
@@ -1574,9 +1578,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     // 跳过链路本地地址（169.254.x.x），它们是未连接接口上的自动分配地址
                     if ((net & LINK_LOCAL_MASK) == LINK_LOCAL_PREFIX) continue;
                     // 跳过 CGN 地址（100.64.0.0/10），部分运营商使用该段，不应排除
-                    long cgn = ipv4BytesToLong(new byte[]{100, 64, 0, 0});
-                    long cgnMask = 0xFFC00000L; // /10
-                    if ((net & cgnMask) == cgn) {
+                    if ((net & CGN_MASK) == CGN_PREFIX) {
                         LogUtil.d(TAG, "跳过 CGN 地址 [" + name + "]: " + addr.getHostAddress() + "/" + prefix);
                         continue;
                     }
@@ -1585,7 +1587,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     net &= mask;
                     // 去重
                     String key = net + "/" + prefix;
-                    if (!seen.add(key)) continue;
+                    if (!processedSubnets.add(key)) continue;
                     subnets.add(new long[]{net, prefix});
                     LogUtil.d(TAG, "排除本地子网 [" + name + "]: " + addr.getHostAddress() + "/" + prefix);
                 }
