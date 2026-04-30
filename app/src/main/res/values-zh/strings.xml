@@ -186,7 +186,7 @@
     <string name="remove_app">移除应用</string>
     <string name="no_apps_selected">未选择应用。点击"添加应用"来选择应用程序。</string>
     <string name="global_routing_description">全局路由模式: 所有流量通过 ZeroTier</string>
-    <string name="per_app_routing_description">指定应用路由模式: 仅选定的应用通过 ZeroTier</string>
+    <string name="per_app_routing_description">指定应用路由：仅选定应用通过 ZeroTier，本地子网尽量保留物理网络访问</string>
     <string name="show_system_apps">显示系统应用</string>
     <string name="selected_apps_count">已选择: %d 个应用</string>
     <string name="app_icon">应用图标</string>
@@ -203,9 +203,9 @@
     <!-- 智能路由相关字符串 -->
     <string name="smart_routing_label">智能路由模式</string>
     <string name="smart_routing_mode_off">关闭</string>
-    <string name="smart_routing_mode_china_direct">国内直连（国内IP走物理网络，境外走ZT）</string>
-    <string name="smart_routing_mode_gfw_list">GFW列表（被封锁域名走ZT）</string>
-    <string name="smart_routing_mode_combined">组合模式（GFW走ZT＋国内直连）</string>
+    <string name="smart_routing_mode_china_direct">国内直连（尽力：境外走ZT）</string>
+    <string name="smart_routing_mode_gfw_list">GFW列表（基于DNS，尽力分流）</string>
+    <string name="smart_routing_mode_combined">组合模式（基于DNS/IP，尽力分流）</string>
     <string name="smart_routing_data_status">数据状态：</string>
     <string name="smart_routing_data_ready">已就绪</string>
     <string name="smart_routing_data_downloading">下载中…</string>
