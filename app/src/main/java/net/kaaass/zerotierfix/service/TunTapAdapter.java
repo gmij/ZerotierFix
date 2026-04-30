@@ -64,15 +64,23 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
     /**
      * 已记录 [CONN] 日志的连接端点集合（destIP:port），用于每条连接只记录一次日志。
-     * TunTapAdapter 每次 VPN 连接都是新实例，无需在 stop 时清理。
+     * 网络切换时通过 {@link #clearConnLog()} 清空，重新记录新的连接。
      */
     private final Set<String> connLoggedSet =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
-    private static final int MAX_CONN_LOG_ENTRIES = 2000;
+    private static final int MAX_CONN_LOG_ENTRIES = 5000;
 
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
         this.ztService = zeroTierOneService;
         this.networkId = j;
+    }
+
+    /**
+     * 清除已记录的连接日志集合。
+     * 在网络切换时调用，使得新网络上的连接能被重新记录。
+     */
+    public void clearConnLog() {
+        connLoggedSet.clear();
     }
 
     /**
@@ -285,8 +293,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         var sourceIP = IPPacketUtils.getSourceIP(packetData);
         var virtualNetworkConfig = this.ztService.getVirtualNetworkConfig(this.networkId);
 
-        // 添加详细日志：记录数据包源目的地址
-        LogUtil.d(TAG, "处理IPv4数据包: 源IP=" + sourceIP + ", 目的IP=" + destIP + ", 数据包大小=" + packetData.length);
+        DebugLog.d(TAG, "处理IPv4数据包: 源IP=" + sourceIP + ", 目的IP=" + destIP + ", 数据包大小=" + packetData.length);
 
         if (virtualNetworkConfig == null) {
             LogUtil.e(TAG, "TunTapAdapter has no network config yet");
@@ -310,7 +317,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST) {
                 Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
                 if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
-                    LogUtil.d(TAG, "智能路由(GFW): 目的IP=" + destIP + " 不在GFW列表，跳过ZT转发");
+                    DebugLog.d(TAG, "智能路由(GFW): 目的IP=" + destIP + " 不在GFW列表，跳过ZT转发");
                     return;
                 }
             }
@@ -325,11 +332,11 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                     Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
                     if (!gfwIps.contains(destIP)) {
                         // 中国IP 且 非GFW域名 → 不应进入 ZT，丢弃（物理网络直连兜底）
-                        LogUtil.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是非GFW中国IP，跳过ZT转发");
+                        DebugLog.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是非GFW中国IP，跳过ZT转发");
                         return;
                     }
                     // 中国IP 但属于 GFW 域名（CDN 情况）→ 继续走 ZT
-                    LogUtil.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是GFW中国CDN IP，走ZT转发");
+                    DebugLog.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是GFW中国CDN IP，走ZT转发");
                 }
             }
         }
@@ -345,7 +352,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 LogUtil.e(TAG, "Error when calling multicastSubscribe: " + result);
             }
             isMulticast = true;
-            LogUtil.d(TAG, "IPv4多播数据包: 目的IP=" + destIP);
+            DebugLog.d(TAG, "IPv4多播数据包: 目的IP=" + destIP);
         } else {
             isMulticast = false;
         }
@@ -356,8 +363,8 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             gateway = route.getGateway();
         }
 
-        // 添加详细日志：记录路由决策过程
-        LogUtil.d(TAG, "路由决策: 目的IP=" + destIP + ", 选择路由=" + (route != null ? route.toString() : "无") 
+        // 路由决策
+        DebugLog.d(TAG, "路由决策: 目的IP=" + destIP + ", 选择路由=" + (route != null ? route.toString() : "无") 
               + ", 网关=" + (gateway != null ? gateway.toString() : "无"));
 
         // 查找当前节点的 v4 地址
@@ -378,7 +385,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         var destRoute = InetAddressUtils.addressToRouteNo0Route(destIP, cidr);
         var sourceRoute = InetAddressUtils.addressToRouteNo0Route(sourceIP, cidr);
         if (gateway != null && !Objects.equals(destRoute, sourceRoute)) {
-            LogUtil.d(TAG, "使用网关: 原始目的IP=" + destIP + " 修改为网关IP=" + gateway);
+            DebugLog.d(TAG, "使用网关: 原始目的IP=" + destIP + " 修改为网关IP=" + gateway);
             destIP = gateway;
         }
         if (localV4Address == null) {
@@ -386,8 +393,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             return;
         }
 
-        // 添加详细日志：记录本地地址信息
-        LogUtil.d(TAG, "本地IPv4地址: " + localV4Address + "/" + cidr);
+        DebugLog.d(TAG, "本地IPv4地址: " + localV4Address + "/" + cidr);
 
         long localMac = virtualNetworkConfig.getMac();
         long[] nextDeadline = new long[1];
@@ -399,8 +405,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 destMac = this.arpTable.getMacForAddress(destIP);
             }
             
-            // 添加详细日志：记录MAC地址和目的地
-            LogUtil.d(TAG, "发送IPv4数据包: 本地MAC=" + StringUtils.macAddressToString(localMac) + 
+            DebugLog.d(TAG, "发送IPv4数据包: 本地MAC=" + StringUtils.macAddressToString(localMac) + 
                   ", 目标MAC=" + StringUtils.macAddressToString(destMac) + 
                   ", 目的IP=" + destIP);
                   
@@ -409,11 +414,11 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 LogUtil.e(TAG, "Error calling processVirtualNetworkFrame: " + result.toString());
                 return;
             }
-            LogUtil.d(TAG, "数据包已发送至ZeroTier: 目的IP=" + destIP);
+            DebugLog.d(TAG, "数据包已发送至ZeroTier: 目的IP=" + destIP);
             this.ztService.setNextBackgroundTaskDeadline(nextDeadline[0]);
         } else {
             // 目标 MAC 未知，进行 ARP 查询
-            LogUtil.d(TAG, "Unknown dest MAC address.  Need to look it up. " + destIP);
+            DebugLog.d(TAG, "Unknown dest MAC address.  Need to look it up. " + destIP);
             destMac = InetAddressUtils.BROADCAST_MAC_ADDRESS;
             packetData = this.arpTable.getRequestPacket(localMac, localV4Address, destIP);
             var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, ARP_PACKET, 0, packetData, nextDeadline);
@@ -421,7 +426,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 LogUtil.e(TAG, "Error sending ARP packet: " + result.toString());
                 return;
             }
-            LogUtil.d(TAG, "ARP Request Sent!");
+            DebugLog.d(TAG, "ARP Request Sent!");
             this.ztService.setNextBackgroundTaskDeadline(nextDeadline[0]);
         }
     }
@@ -431,8 +436,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         var sourceIP = IPPacketUtils.getSourceIP(packetData);
         var virtualNetworkConfig = this.ztService.getVirtualNetworkConfig(this.networkId);
 
-        // 添加详细日志：记录IPv6数据包源目的地址
-        LogUtil.d(TAG, "处理IPv6数据包: 源IP=" + sourceIP + ", 目的IP=" + destIP + ", 数据包大小=" + packetData.length);
+        DebugLog.d(TAG, "处理IPv6数据包: 源IP=" + sourceIP + ", 目的IP=" + destIP + ", 数据包大小=" + packetData.length);
 
         if (virtualNetworkConfig == null) {
             LogUtil.e(TAG, "TunTapAdapter has no network config yet");
@@ -452,13 +456,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             if (result != ResultCode.RESULT_OK) {
                 LogUtil.e(TAG, "Error when calling multicastSubscribe: " + result);
             }
-            LogUtil.d(TAG, "IPv6多播数据包: 目的IP=" + destIP);
+            DebugLog.d(TAG, "IPv6多播数据包: 目的IP=" + destIP);
         }
         var route = routeForDestination(destIP);
         var gateway = route != null ? route.getGateway() : null;
 
-        // 添加详细日志：记录IPv6路由决策过程
-        LogUtil.d(TAG, "IPv6路由决策: 目的IP=" + destIP + ", 选择路由=" + (route != null ? route.toString() : "无")
+        // IPv6路由决策
+        DebugLog.d(TAG, "IPv6路由决策: 目的IP=" + destIP + ", 选择路由=" + (route != null ? route.toString() : "无")
                 + ", 网关=" + (gateway != null ? gateway.toString() : "无"));
 
         // 查找当前节点的 v6 地址
@@ -479,7 +483,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         var destRoute = InetAddressUtils.addressToRouteNo0Route(destIP, cidr);
         var sourceRoute = InetAddressUtils.addressToRouteNo0Route(sourceIP, cidr);
         if (gateway != null && !Objects.equals(destRoute, sourceRoute)) {
-            LogUtil.d(TAG, "使用IPv6网关: 原始目的IP=" + destIP + " 修改为网关IP=" + gateway);
+            DebugLog.d(TAG, "使用IPv6网关: 原始目的IP=" + destIP + " 修改为网关IP=" + gateway);
             destIP = gateway;
         }
         if (localV6Address == null) {
@@ -487,8 +491,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             return;
         }
 
-        // 添加详细日志：记录本地IPv6地址信息
-        LogUtil.d(TAG, "本地IPv6地址: " + localV6Address + "/" + cidr);
+        DebugLog.d(TAG, "本地IPv6地址: " + localV6Address + "/" + cidr);
 
         long localMac = virtualNetworkConfig.getMac();
         long[] nextDeadline = new long[1];
@@ -500,24 +503,24 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             // 收到本地 NS 报文，根据 NDP 表记录确定是否广播查询
             if (this.ndpTable.hasMacForAddress(destIP)) {
                 destMac = this.ndpTable.getMacForAddress(destIP);
-                LogUtil.d(TAG, "NS包: 目的IP=" + destIP + "的MAC已知=" + StringUtils.macAddressToString(destMac));
+                DebugLog.d(TAG, "NS包: 目的IP=" + destIP + "的MAC已知=" + StringUtils.macAddressToString(destMac));
             } else {
                 destMac = InetAddressUtils.ipv6ToMulticastAddress(destIP);
-                LogUtil.d(TAG, "NS包: 目的IP=" + destIP + "的MAC未知, 使用多播地址=" + StringUtils.macAddressToString(destMac));
+                DebugLog.d(TAG, "NS包: 目的IP=" + destIP + "的MAC未知, 使用多播地址=" + StringUtils.macAddressToString(destMac));
             }
         } else if (this.isIPv6Multicast(destIP)) {
             // 多播报文
             destMac = multicastAddressToMAC(destIP);
-            LogUtil.d(TAG, "IPv6多播: 目的IP=" + destIP + ", 多播MAC=" + StringUtils.macAddressToString(destMac));
+            DebugLog.d(TAG, "IPv6多播: 目的IP=" + destIP + ", 多播MAC=" + StringUtils.macAddressToString(destMac));
         } else if (this.isNeighborAdvertisement(packetData)) {
             // 收到本地 NA 报文
             if (this.ndpTable.hasMacForAddress(destIP)) {
                 destMac = this.ndpTable.getMacForAddress(destIP);
-                LogUtil.d(TAG, "NA包: 目的IP=" + destIP + "的MAC已知=" + StringUtils.macAddressToString(destMac));
+                DebugLog.d(TAG, "NA包: 目的IP=" + destIP + "的MAC已知=" + StringUtils.macAddressToString(destMac));
             } else {
                 // 目标 MAC 未知，不发送数据包
                 destMac = 0L;
-                LogUtil.d(TAG, "NA包: 目的IP=" + destIP + "的MAC未知, 不发送数据包");
+                DebugLog.d(TAG, "NA包: 目的IP=" + destIP + "的MAC未知, 不发送数据包");
             }
             sendNSPacket = true;
         } else {
@@ -525,11 +528,11 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             if (this.ndpTable.hasMacForAddress(destIP)) {
                 // 目标地址 MAC 已知
                 destMac = this.ndpTable.getMacForAddress(destIP);
-                LogUtil.d(TAG, "普通IPv6包: 目的IP=" + destIP + "的MAC已知=" + StringUtils.macAddressToString(destMac));
+                DebugLog.d(TAG, "普通IPv6包: 目的IP=" + destIP + "的MAC已知=" + StringUtils.macAddressToString(destMac));
             } else {
                 destMac = 0L;
                 sendNSPacket = true;
-                LogUtil.d(TAG, "普通IPv6包: 目的IP=" + destIP + "的MAC未知, 将发送NS请求");
+                DebugLog.d(TAG, "普通IPv6包: 目的IP=" + destIP + "的MAC未知, 将发送NS请求");
             }
         }
         // 发送数据包
@@ -538,7 +541,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             if (result != ResultCode.RESULT_OK) {
                 LogUtil.e(TAG, "Error calling processVirtualNetworkFrame: " + result.toString());
             } else {
-                LogUtil.d(TAG, "IPv6数据包已发送至ZeroTier: 本地MAC=" + StringUtils.macAddressToString(localMac) +
+                DebugLog.d(TAG, "IPv6数据包已发送至ZeroTier: 本地MAC=" + StringUtils.macAddressToString(localMac) +
                         ", 目标MAC=" + StringUtils.macAddressToString(destMac));
                 this.ztService.setNextBackgroundTaskDeadline(nextDeadline[0]);
             }
@@ -547,15 +550,15 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         if (sendNSPacket) {
             if (destMac == 0L) {
                 destMac = InetAddressUtils.ipv6ToMulticastAddress(destIP);
-                LogUtil.d(TAG, "NS请求使用多播地址: " + StringUtils.macAddressToString(destMac));
+                DebugLog.d(TAG, "NS请求使用多播地址: " + StringUtils.macAddressToString(destMac));
             }
-            LogUtil.d(TAG, "发送邻居请求(NS): 源IP=" + sourceIP + ", 目的IP=" + destIP);
+            DebugLog.d(TAG, "发送邻居请求(NS): 源IP=" + sourceIP + ", 目的IP=" + destIP);
             packetData = this.ndpTable.getNeighborSolicitationPacket(sourceIP, destIP, localMac);
             var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, IPV6_PACKET, 0, packetData, nextDeadline);
             if (result != ResultCode.RESULT_OK) {
                 LogUtil.e(TAG, "发送NS包失败: " + result.toString());
             } else {
-                LogUtil.d(TAG, "NS请求已发送至ZeroTier");
+                DebugLog.d(TAG, "NS请求已发送至ZeroTier");
                 this.ztService.setNextBackgroundTaskDeadline(nextDeadline[0]);
             }
         }
@@ -604,7 +607,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     public void onVirtualNetworkFrame(long networkId, long srcMac, long destMac, long etherType,
                                       long vlanId, byte[] frameData) {
 
-        LogUtil.d(TAG, "收到虚拟网络帧: " +
+        DebugLog.d(TAG, "收到虚拟网络帧: " +
                 "网络ID=" + StringUtils.networkIdToString(networkId) +
                 ", 源MAC=" + StringUtils.macAddressToString(srcMac) +
                 ", 目标MAC=" + StringUtils.macAddressToString(destMac) +
@@ -622,7 +625,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
         if (etherType == ARP_PACKET) {
             // 收到 ARP 包。更新 ARP 表，若需要则进行应答
-            LogUtil.d(TAG, "收到ARP数据包");
+            DebugLog.d(TAG, "收到ARP数据包");
             var arpReply = this.arpTable.processARPPacket(frameData);
             if (arpReply != null && arpReply.getDestMac() != 0 && arpReply.getDestAddress() != null) {
                 // 获取本地 V4 地址
@@ -639,7 +642,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                     var nextDeadline = new long[1];
                     var packetData = this.arpTable.getReplyPacket(networkConfig.getMac(),
                             localV4Address, arpReply.getDestMac(), arpReply.getDestAddress());
-                    LogUtil.d(TAG, "发送ARP应答: 本地地址=" + localV4Address +
+                    DebugLog.d(TAG, "发送ARP应答: 本地地址=" + localV4Address +
                             ", 目标地址=" + arpReply.getDestAddress() +
                             ", 目标MAC=" + StringUtils.macAddressToString(arpReply.getDestMac()));
                     var result = this.node
@@ -650,7 +653,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                         LogUtil.e(TAG, "发送ARP应答失败: " + result.toString());
                         return;
                     }
-                    LogUtil.d(TAG, "ARP应答已发送!");
+                    DebugLog.d(TAG, "ARP应答已发送!");
                     this.ztService.setNextBackgroundTaskDeadline(nextDeadline[0]);
                 }
             }
@@ -659,7 +662,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             try {
                 var sourceIP = IPPacketUtils.getSourceIP(frameData);
                 var destIP = IPPacketUtils.getDestIP(frameData);
-                LogUtil.d(TAG, "收到IPv4数据包: 源IP=" + sourceIP +
+                DebugLog.d(TAG, "收到IPv4数据包: 源IP=" + sourceIP +
                         ", 目标IP=" + destIP +
                         ", 大小=" + frameData.length + "字节");
 
@@ -671,12 +674,14 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                         }
                     } else {
                         this.arpTable.setAddress(sourceIP, srcMac);
-                        LogUtil.d(TAG, "更新ARP表: IP=" + sourceIP + ", MAC=" + StringUtils.macAddressToString(srcMac));
+                        DebugLog.d(TAG, "更新ARP表: IP=" + sourceIP + ", MAC=" + StringUtils.macAddressToString(srcMac));
                     }
                 }
 
-                // DNS 嗅探：解析 ZT 返回的 DNS 响应，填充 GFW IP 集合
-                if (smartRoutingMode != SmartRoutingManager.MODE_OFF && smartRoutingManager != null) {
+                // DNS 嗅探：解析 ZT 返回的 DNS 响应，填充 IP→域名 映射和 GFW IP 集合。
+                // 即使在全局路由模式（smartRoutingMode=OFF）下也需要解析，
+                // 以便 [CONN] 日志能显示域名而非纯 IP。
+                if (smartRoutingManager != null) {
                     java.util.List<DnsPacketParser.DnsRecord> records =
                             DnsPacketParser.parseFromIpPacket(frameData);
                     for (DnsPacketParser.DnsRecord record : records) {
@@ -685,7 +690,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 }
 
                 this.out.write(frameData);
-                LogUtil.d(TAG, "IPv4数据包已写入本地TUN: 大小=" + frameData.length);
+                DebugLog.d(TAG, "IPv4数据包已写入本地TUN: 大小=" + frameData.length);
             } catch (Exception e) {
                 LogUtil.e(TAG, "向VPN套接字写入数据失败: " + e.getMessage(), e);
             }
@@ -694,7 +699,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             try {
                 var sourceIP = IPPacketUtils.getSourceIP(frameData);
                 var destIP = IPPacketUtils.getDestIP(frameData);
-                LogUtil.d(TAG, "收到IPv6数据包: 源IP=" + sourceIP +
+                DebugLog.d(TAG, "收到IPv6数据包: 源IP=" + sourceIP +
                         ", 目标IP=" + destIP +
                         ", 大小=" + frameData.length + "字节");
 
@@ -706,18 +711,18 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                         }
                     } else {
                         this.ndpTable.setAddress(sourceIP, srcMac);
-                        LogUtil.d(TAG, "更新NDP表: IP=" + sourceIP + ", MAC=" + StringUtils.macAddressToString(srcMac));
+                        DebugLog.d(TAG, "更新NDP表: IP=" + sourceIP + ", MAC=" + StringUtils.macAddressToString(srcMac));
                     }
                 }
                 this.out.write(frameData);
-                LogUtil.d(TAG, "IPv6数据包已写入本地TUN: 大小=" + frameData.length);
+                DebugLog.d(TAG, "IPv6数据包已写入本地TUN: 大小=" + frameData.length);
             } catch (Exception e) {
                 LogUtil.e(TAG, "向VPN套接字写入数据失败: " + e.getMessage(), e);
             }
         } else if (frameData.length >= 14) {
-            LogUtil.d(TAG, "收到未知类型数据包: 0x" + String.format("%02X%02X", frameData[12], frameData[13]));
+            DebugLog.d(TAG, "收到未知类型数据包: 0x" + String.format("%02X%02X", frameData[12], frameData[13]));
         } else {
-            LogUtil.d(TAG, "收到未知数据包. 包长度: " + frameData.length);
+            DebugLog.d(TAG, "收到未知数据包. 包长度: " + frameData.length);
         }
     }
 
