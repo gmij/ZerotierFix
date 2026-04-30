@@ -1175,9 +1175,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 }
 
                 @Override
-                public void onCapabilitiesChanged(android.net.Network network,
-                                                  android.net.NetworkCapabilities capabilities) {
-                    // IP 地址变化（如 4G/5G 重新分配 IP）也会触发此回调
+                public void onLinkPropertiesChanged(android.net.Network network,
+                                                    android.net.LinkProperties linkProperties) {
+                    // 链路属性变化（IP 地址、DNS 等）才触发重配，
+                    // 避免信号强度/RTT 等非路由变化引发频繁的 VPN 重建。
+                    LogUtil.i(TAG, "网络变化: 链路属性变化 (" + network + ")");
                     onNetworkChanged();
                 }
             };

@@ -497,11 +497,19 @@ public class LogManager {
             safelyCallCallback(callback, "日志服务未启动");
             return;
         }
-        if (isTaskRunning.get()) return;
+        final Context appContext = context.getApplicationContext();
+        if (isTaskRunning.get()) {
+            // 已有任务在运行：直接回调当前缓冲区快照，避免 UI 卡在 loading 状态
+            safelyCallCallback(callback, getBusinessLogs(appContext));
+            return;
+        }
         try {
-            final Context appContext = context.getApplicationContext();
             executorService.execute(() -> {
-                if (!isTaskRunning.compareAndSet(false, true)) return;
+                if (!isTaskRunning.compareAndSet(false, true)) {
+                    // CAS 竞争失败，同样直接返回当前快照
+                    safelyCallCallback(callback, getBusinessLogs(appContext));
+                    return;
+                }
                 try {
                     if (!isShutdown) {
                         safelyCallCallback(callback, getBusinessLogs(appContext));
