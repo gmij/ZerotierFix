@@ -11,6 +11,8 @@ import android.net.ConnectivityManager;
 import android.net.VpnService;
 import android.os.Binder;
 import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.preference.PreferenceManager;
@@ -141,10 +143,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private Thread udpThread;
     /** 网络变化回调，用于在 WiFi/4G 切换时重新配置 VPN 路由 */
     private ConnectivityManager.NetworkCallback networkCallback;
+    /** 用于异步 debounce 网络变化事件的后台线程和 Handler */
+    private HandlerThread networkChangeThread;
+    private Handler networkChangeHandler;
+    /** debounce 延迟后执行 VPN 重建的 Runnable */
+    private final Runnable networkChangeRunnable = this::doNetworkChangedUpdate;
     /** 防止网络变化事件过于频繁触发重配的最小间隔（毫秒） */
     private static final long NETWORK_CHANGE_DEBOUNCE_MS = 3000;
-    /** 上次因网络变化而触发重配的时间戳 */
-    private volatile long lastNetworkChangeTime = 0;
     private Thread v4MulticastScanner = new Thread() {
         /* class com.zerotier.one.service.ZeroTierOneService.AnonymousClass1 */
         List<String> subscriptions = new ArrayList<>();
@@ -1157,6 +1162,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             // API 24 以下不支持 registerDefaultNetworkCallback
             return;
         }
+        // 启动后台 HandlerThread，用于异步执行 VPN 重建，避免阻塞系统回调线程
+        if (networkChangeThread == null) {
+            networkChangeThread = new HandlerThread("ZT-NetworkChange");
+            networkChangeThread.start();
+            networkChangeHandler = new Handler(networkChangeThread.getLooper());
+        }
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
             if (cm == null) return;
@@ -1204,20 +1215,32 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.d(TAG, "取消网络回调时出错: " + e.getMessage());
         }
         this.networkCallback = null;
+        // 停止 HandlerThread（取消所有待执行的重建任务）
+        if (networkChangeHandler != null) {
+            networkChangeHandler.removeCallbacks(networkChangeRunnable);
+            networkChangeHandler = null;
+        }
+        if (networkChangeThread != null) {
+            networkChangeThread.quit();
+            networkChangeThread = null;
+        }
     }
 
     /**
-     * 网络环境发生变化时的处理逻辑。
-     * 使用 debounce 机制避免频繁触发（网络切换时可能短时间内收到多个回调）。
-     * 触发 VPN 隧道重建，使得新的本地子网排除列表生效。
+     * 网络环境发生变化时，将重建任务 debounce 提交到后台 HandlerThread。
+     * 连续多次触发时，旧的 pending 任务会被取消，只执行最后一次。
+     * 系统回调线程立即返回，不会被 VPN 重建阻塞。
      */
-    private synchronized void onNetworkChanged() {
-        long now = System.currentTimeMillis();
-        if (now - lastNetworkChangeTime < NETWORK_CHANGE_DEBOUNCE_MS) {
-            return; // debounce：过于频繁，跳过
-        }
-        lastNetworkChangeTime = now;
+    private void onNetworkChanged() {
+        if (networkChangeHandler == null) return;
+        networkChangeHandler.removeCallbacks(networkChangeRunnable);
+        networkChangeHandler.postDelayed(networkChangeRunnable, NETWORK_CHANGE_DEBOUNCE_MS);
+    }
 
+    /**
+     * 实际执行 VPN 路由重建的逻辑，由 {@link #networkChangeRunnable} 在后台线程调用。
+     */
+    private void doNetworkChangedUpdate() {
         // 清除连接日志缓存，以便网络切换后重新记录
         if (this.tunTapAdapter != null) {
             this.tunTapAdapter.clearConnLog();
