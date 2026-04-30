@@ -329,13 +329,10 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             if (smartRoutingMode == SmartRoutingManager.MODE_COMBINED) {
                 if (smartRoutingManager.isChineseIp(destIP)) {
                     Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
-                    if (!gfwIps.contains(destIP)) {
-                        DebugLog.d(TAG, "智能路由(组合): 目的IP=" + destIP
-                                + " 是非GFW中国IP但已进入TUN，继续转发以避免黑洞");
-                    } else {
-                        DebugLog.d(TAG, "智能路由(组合): 目的IP=" + destIP
-                                + " 是GFW中国CDN IP，走ZT转发");
-                    }
+                    boolean isGfwIp = gfwIps.contains(destIP);
+                    DebugLog.d(TAG, "智能路由(组合): 目的IP=" + destIP
+                            + (isGfwIp ? " 是GFW中国CDN IP，走ZT转发"
+                            : " 是非GFW中国IP但已进入TUN，继续转发以避免黑洞"));
                 }
             }
         }
