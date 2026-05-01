@@ -1086,7 +1086,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 这样消除了 TUN 接收线程中 Thread.sleep(10) 造成的 10ms 轮询延迟，
         // 从而避免 TCP ACK 被延迟，解决单连接下载速度被卡在 ~100KB/s 的问题。
         try {
-            int flags = Os.fcntl(this.vpnSocket.getFileDescriptor(), OsConstants.F_GETFL);
+            int flags = Os.fcntl(this.vpnSocket.getFileDescriptor(), OsConstants.F_GETFL, 0);
             Os.fcntl(this.vpnSocket.getFileDescriptor(), OsConstants.F_SETFL,
                     flags & ~OsConstants.O_NONBLOCK);
             LogUtil.d(TAG, "TUN fd set to blocking mode");
