@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
+import android.net.IpPrefix;
 import android.net.VpnService;
 import android.os.Binder;
 import android.os.Build;
@@ -930,7 +931,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (shouldAddGlobalRoutes) {
             try {
                 configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses,
-                        smartRoutingMode, isPerAppRouting);
+                        isPerAppRouting);
                 
                 // 大幅增强对本地连接的保护，避免VPN路由循环
                 // 1. 保护常用DNS查询连接
@@ -1070,10 +1071,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.tunTapAdapter.setVpnSocket(this.vpnSocket);
         this.tunTapAdapter.setFileStreams(this.in, this.out);
 
-        // 配置智能路由
-        // 全局路由模式（isRouteViaZeroTier=true, isPerAppRouting=false）：禁用包过滤（MODE_OFF），
-        // 避免 COMBINED 过滤器丢弃中国 IP 导致中国网站无法访问。
-        // Per-app 模式：perAppRoutingActive=true 已跳过所有过滤器，effectiveMode 实际无影响。
+        // 配置智能路由上下文。
+        // 全局路由模式（isRouteViaZeroTier=true, isPerAppRouting=false）：连接日志按全局路由展示。
+        // Per-app 模式：perAppRoutingActive=true，仅选定应用进入 TUN。
         int effectiveSmartRoutingMode = (isRouteViaZeroTier && !isPerAppRouting)
                 ? SmartRoutingManager.MODE_OFF : smartRoutingMode;
         SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
@@ -1459,17 +1459,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /**
      * 配置直接通过ZeroTier的IPv4路由（不使用代理）。
      *
-     * <p>统一使用 0.0.0.0/0 全局路由。之前的 COMBINED/CHINA_DIRECT 模式曾尝试添加
-     * ~14000 条非中国 CIDR 路由作为补集，但这会超出 Android VPN Builder/Binder 限制，
-     * 导致 VPN 建立失败。现在无论何种模式，均使用单条全局路由：
+     * <p>全局/Per-app 路由都以系统 VPN 路由表为准，避免在 TUN 收包后丢弃业务流量。
+     * 本地子网（WiFi/蓝牙 PAN/USB 共享等）需要从 VPN 中排除，使局域网访问仍走真实接口：
      * <ul>
-     *   <li><b>isPerAppRouting=true</b>：仅指定应用流量进入 VPN（由 addAllowedApplication 限定）</li>
-     *   <li><b>全局路由</b>：所有应用流量（除本应用外）通过 ZeroTier；TunTapAdapter 不再进行包过滤</li>
+     *   <li>Android 13+：添加 0.0.0.0/0 后使用 {@link VpnService.Builder#excludeRoute(IpPrefix)} 排除本地子网</li>
+     *   <li>Android 12 及以下：使用 CIDR 路由分裂生成排除本地子网后的全局路由补集</li>
      * </ul>
      */
     private void configureDirectGlobalRouting(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig,
-                                             InetSocketAddress[] assignedAddresses,
-                                             int smartRoutingMode, boolean isPerAppRouting) throws Exception {
+                                              InetSocketAddress[] assignedAddresses,
+                                              boolean isPerAppRouting) throws Exception {
         // 获取ZeroTier网络中的网关
         InetAddress zerotierGateway = null;
         
@@ -1497,25 +1496,43 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
 
         // 检测本机活跃的本地网络子网（蓝牙PAN bt-pan、WiFi局域网 wlan0、USB共享 usb0 等），
-        // 使用 CIDR 路由分裂将这些子网排除在 VPN 之外，避免本地连接被意外路由至 TUN。
-        // per-app 模式：addAllowedApplication 已限定哪些应用走 VPN，排除本地子网后
-        //             这些应用访问局域网设备仍走真实接口。
-        // 全局路由模式：所有应用（除本应用外）的公网流量走 ZT，本地子网流量仍走真实接口。
+        // 将这些子网排除在 VPN 之外，避免本地连接被意外路由至 TUN。
         List<long[]> localSubnets = detectLocalSubnetsToExclude();
-        List<long[]> vpnRoutes = localSubnets.isEmpty()
-                ? Collections.singletonList(new long[]{0L, 0L})
-                : computeGlobalRoutesExcluding(localSubnets);
-        if (!localSubnets.isEmpty()) {
-            LogUtil.d(TAG, "路由分裂：排除 " + localSubnets.size() + " 个本地子网，生成 "
-                    + vpnRoutes.size() + " 条VPN路由");
-        }
-        for (long[] r : vpnRoutes) {
-            InetAddress addr = longToIpv4Addr(r[0]);
-            int prefix = (int) r[1];
-            builder.addRoute(addr, prefix);
-            Route vpnRoute = new Route(addr, prefix);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            InetAddress defaultRoute = InetAddress.getByName("0.0.0.0");
+            builder.addRoute(defaultRoute, 0);
+            Route vpnRoute = new Route(defaultRoute, 0);
             if (zerotierGateway != null) vpnRoute.setGateway(zerotierGateway);
             this.tunTapAdapter.addRouteAndNetwork(vpnRoute, networkId);
+
+            for (long[] subnet : localSubnets) {
+                InetAddress addr = longToIpv4Addr(subnet[0]);
+                int prefix = (int) subnet[1];
+                // excludeRoute is an Android 13+ API; the TIRAMISU guard above is required.
+                // Older devices use the CIDR split fallback below to preserve the same behavior.
+                builder.excludeRoute(new IpPrefix(addr, prefix));
+            }
+            if (!localSubnets.isEmpty()) {
+                LogUtil.d(TAG, "Android 13+ 路由排除：添加 0.0.0.0/0，并通过 excludeRoute 排除 "
+                        + localSubnets.size() + " 个本地子网");
+            }
+        } else {
+            List<long[]> vpnRoutes = localSubnets.isEmpty()
+                    ? Collections.singletonList(new long[]{0L, 0L})
+                    : computeGlobalRoutesExcluding(localSubnets);
+            if (!localSubnets.isEmpty()) {
+                LogUtil.d(TAG, "路由分裂：排除 " + localSubnets.size() + " 个本地子网，生成 "
+                        + vpnRoutes.size() + " 条VPN路由");
+            }
+            for (long[] r : vpnRoutes) {
+                InetAddress addr = longToIpv4Addr(r[0]);
+                int prefix = (int) r[1];
+                builder.addRoute(addr, prefix);
+                Route vpnRoute = new Route(addr, prefix);
+                if (zerotierGateway != null) vpnRoute.setGateway(zerotierGateway);
+                this.tunTapAdapter.addRouteAndNetwork(vpnRoute, networkId);
+            }
         }
         LogUtil.d(TAG, isPerAppRouting
                 ? "Per-app路由模式：添加全局路由（排除本地子网，仅指定应用生效）"

@@ -28,8 +28,8 @@ import java.util.concurrent.Executors;
  * <p>
  * 负责：
  * 1. 在后台下载并缓存数据库文件（chnroutes.txt / gfwlist.txt）
- * 2. 提供 CHINA_DIRECT 模式：返回中国 IP 的 CIDR 列表，用于路由排除
- * 3. 提供 GFW_LIST 模式：维护 GFW 域名集合 + DNS 嗅探 IP 映射
+ * 2. 提供 CHINA_DIRECT/COMBINED 所需的中国 IP 与非中国 IP CIDR 数据
+ * 3. 提供 GFW_LIST/COMBINED 所需的 GFW 域名集合 + DNS 嗅探 IP 映射
  *
  * <b>数据文件默认下载来源：</b>
  * <ul>
@@ -45,23 +45,20 @@ public class SmartRoutingManager {
     public static final int MODE_OFF = 0;
 
     /**
-     * 国内直连模式：中国 IP 走物理网络，境外 IP 走 ZeroTier
-     * 需配合 routeViaZeroTier=true 使用
+     * 国内直连模式：通过系统 VPN 路由表尽量让中国 IP 走物理网络、非中国 IP 走 ZeroTier。
+     * 受 Android VPN 路由数量限制，具体路由策略由服务层选择，TUN 内不再丢弃业务包。
      */
     public static final int MODE_CHINA_DIRECT = 1;
 
     /**
-     * GFW 列表模式：GFW 封锁的域名走 ZeroTier，其余直连
-     * 需配合 routeViaZeroTier=false 使用；
-     * 已知 GFW IP 将作为显式路由添加到 VPN 路由表
+     * GFW 列表模式：基于 DNS 嗅探发现 GFW 域名解析出的 IP，并作为显式路由添加到 VPN 路由表。
+     * 该模式受 DNS 解析时序与缓存影响，属于增强分流，不在 TUN 内通过丢包实现直连。
      */
     public static final int MODE_GFW_LIST = 2;
 
     /**
-     * 组合模式：GFW 封锁的域名走 ZeroTier，中国 IP 强制直连，其余直连
-     * 需配合 routeViaZeroTier=false 使用；
-     * 同时使用 GFW 域名列表（DNS 嗅探）和 chnroutes 中国 IP 列表。
-     * 优先级：中国 IP 直连 &gt; GFW 域名走 ZT &gt; 其余直连
+     * 组合模式：同时使用 GFW 域名列表（DNS 嗅探）和 chnroutes 中国 IP 列表做增强分流。
+     * 域名/IP 映射受 DNS 时序影响；已经进入 TUN 的包会继续转发到 ZT，避免黑洞。
      */
     public static final int MODE_COMBINED = 3;
 

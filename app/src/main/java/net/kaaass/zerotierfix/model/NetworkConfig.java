@@ -48,7 +48,7 @@ public class NetworkConfig {
 
     private int dnsMode;
 
-    /** 智能路由模式：0=关闭, 1=国内直连, 2=GFW 列表 */
+    /** 智能路由模式：0=关闭, 1=国内直连, 2=GFW 列表, 3=组合模式 */
     private int smartRoutingMode;
 
     @Deprecated

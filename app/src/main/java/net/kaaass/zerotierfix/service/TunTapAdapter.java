@@ -308,35 +308,31 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
         // 代理功能已移除
 
-        // ── 智能路由过滤（per-app 模式下跳过：TUN 中只有指定应用的流量，无条件走 ZT）──
+        // ── 智能路由诊断 ──
+        // 分流应由 Android VPN 路由表决定。包已经进入 TUN 后不能通过丢弃实现"直连"，
+        // 否则会造成应用侧黑洞；这里只记录异常命中，仍继续转发到 ZT。
         if (!perAppRoutingActive && !isIPv4Multicast(destIP) && smartRoutingManager != null) {
 
             // ── GFW 列表模式 ──
             // 路由表中没有全局路由，仅有已知 GFW IP /32 显式路由会进入 TUN。
-            // 额外检查：防止极少数情况下非 GFW 包误入（集合为空时不过滤，避免初始阶段黑洞）。
+            // 如果非 GFW IP 意外进入 TUN，仅记录诊断日志，避免丢包黑洞。
             if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST) {
                 Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
                 if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
-                    DebugLog.d(TAG, "智能路由(GFW): 目的IP=" + destIP + " 不在GFW列表，跳过ZT转发");
-                    return;
+                    DebugLog.d(TAG, "智能路由(GFW): 目的IP=" + destIP
+                            + " 不在GFW列表但已进入TUN，继续转发以避免黑洞");
                 }
             }
 
             // ── 组合模式 ──
-            // 路由表中包含所有非中国 CIDR，GFW 域名的中国 CDN IP 作为 /32 显式路由。
-            // 规则：中国IP 且 不在 GFW 集合 → 丢弃（不应出现在路由表中，但作为安全网）
-            //       中国IP 且 在 GFW 集合  → 允许（GFW 域名的中国 CDN，仍需走 ZT）
-            //       非中国IP               → 允许（非中国 CIDR 路由正常命中）
+            // 路由表负责控制哪些 IP 进入 TUN；中国 IP 意外进入时只记录，不丢弃。
             if (smartRoutingMode == SmartRoutingManager.MODE_COMBINED) {
                 if (smartRoutingManager.isChineseIp(destIP)) {
                     Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
-                    if (!gfwIps.contains(destIP)) {
-                        // 中国IP 且 非GFW域名 → 不应进入 ZT，丢弃（物理网络直连兜底）
-                        DebugLog.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是非GFW中国IP，跳过ZT转发");
-                        return;
-                    }
-                    // 中国IP 但属于 GFW 域名（CDN 情况）→ 继续走 ZT
-                    DebugLog.d(TAG, "智能路由(组合): 目的IP=" + destIP + " 是GFW中国CDN IP，走ZT转发");
+                    boolean isGfwIp = gfwIps.contains(destIP);
+                    DebugLog.d(TAG, "智能路由(组合): 目的IP=" + destIP
+                            + (isGfwIp ? " 是GFW中国CDN IP，走ZT转发"
+                            : " 是非GFW中国IP但已进入TUN，继续转发以避免黑洞"));
                 }
             }
         }

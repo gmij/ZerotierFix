@@ -203,7 +203,7 @@
     <string name="remove_app">Remove App</string>
     <string name="no_apps_selected">No apps selected. Tap "Add Apps" to select applications.</string>
     <string name="global_routing_description">Global routing mode: All traffic goes through ZeroTier</string>
-    <string name="per_app_routing_description">Per-app routing mode: Only selected apps go through ZeroTier</string>
+    <string name="per_app_routing_description">Per-app routing: only selected apps use ZeroTier; local subnets stay on the physical network when possible</string>
     <string name="show_system_apps">Show System Apps</string>
     <string name="selected_apps_count">Selected: %d apps</string>
     <string name="app_icon">App Icon</string>
@@ -220,9 +220,9 @@
     <!-- Smart routing strings -->
     <string name="smart_routing_label">Smart Routing Mode</string>
     <string name="smart_routing_mode_off">Off</string>
-    <string name="smart_routing_mode_china_direct">China Direct (domestic IPs bypass ZT)</string>
-    <string name="smart_routing_mode_gfw_list">GFW List (blocked domains via ZT)</string>
-    <string name="smart_routing_mode_combined">Combined (GFW via ZT + China Direct)</string>
+    <string name="smart_routing_mode_china_direct">China Direct (best-effort: non-China via ZT)</string>
+    <string name="smart_routing_mode_gfw_list">GFW List (DNS-based, best-effort)</string>
+    <string name="smart_routing_mode_combined">Combined (DNS/IP based, best-effort)</string>
     <string name="smart_routing_data_status">Data status: </string>
     <string name="smart_routing_data_ready">Ready</string>
     <string name="smart_routing_data_downloading">Downloading…</string>

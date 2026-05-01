@@ -11,20 +11,17 @@ public enum SmartRoutingMode {
     OFF(SmartRoutingManager.MODE_OFF),
 
     /**
-     * 国内直连模式：中国 IP 走物理网络，境外 IP 走 ZeroTier
-     * 需配合"全部路由走 ZeroTier"开启使用
+     * 国内直连模式：尽量通过系统路由表让中国 IP 走物理网络、非中国 IP 走 ZeroTier
      */
     CHINA_DIRECT(SmartRoutingManager.MODE_CHINA_DIRECT),
 
     /**
-     * GFW 列表模式：GFW 封锁的域名走 ZeroTier，其余直连
-     * 无需开启全部路由；已知 GFW IP 作为显式路由通过 ZT
+     * GFW 列表模式：基于 DNS 嗅探将已知 GFW IP 作为显式路由通过 ZT
      */
     GFW_LIST(SmartRoutingManager.MODE_GFW_LIST),
 
     /**
-     * 组合模式：GFW 封锁的域名走 ZeroTier，中国 IP 强制直连，其余直连
-     * 同时使用 GFW 域名列表（DNS 嗅探）和 chnroutes 中国 IP 列表
+     * 组合模式：结合 GFW DNS 嗅探与中国 IP 列表做增强分流；受 DNS 时序影响
      */
     COMBINED(SmartRoutingManager.MODE_COMBINED);
 
