@@ -78,6 +78,10 @@ import org.greenrobot.eventbus.EventBus;
 import org.greenrobot.eventbus.Subscribe;
 import org.greenrobot.eventbus.ThreadMode;
 
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.OsConstants;
+
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.net.DatagramSocket;
@@ -585,11 +589,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.d(TAG, "This Node Address: " + com.zerotier.sdk.util.StringUtils.addressToString(this.node.address()));
         while (!Thread.interrupted()) {
             try {
-                // 在后台任务截止期前循环进行后台任务
-                var taskDeadline = this.nextBackgroundTaskDeadline;
                 long currentTime = System.currentTimeMillis();
-                int cmp = Long.compare(taskDeadline, currentTime);
-                if (cmp <= 0) {
+                long taskDeadline;
+                synchronized (this) {
+                    taskDeadline = this.nextBackgroundTaskDeadline;
+                }
+                long sleepMs;
+                if (Long.compare(taskDeadline, currentTime) <= 0) {
+                    // 后台任务截止时间已到，执行后台任务
                     long[] newDeadline = {0};
                     var taskResult = this.node.processBackgroundTasks(currentTime, newDeadline);
                     synchronized (this) {
@@ -599,8 +606,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         LogUtil.e(TAG, "Error on processBackgroundTasks: " + taskResult.toString());
                         shutdown();
                     }
+                    // 按 ZeroTier 指定的下一个截止时间睡眠，而非固定 100ms
+                    sleepMs = newDeadline[0] - System.currentTimeMillis();
+                } else {
+                    sleepMs = taskDeadline - currentTime;
                 }
-                Thread.sleep(cmp > 0 ? taskDeadline - currentTime : 100);
+                // 限制最长睡眠时间，避免在更新截止时间时无法及时响应
+                if (sleepMs > 5000) sleepMs = 5000;
+                if (sleepMs > 0) {
+                    Thread.sleep(sleepMs);
+                }
             } catch (InterruptedException ignored) {
                 break;
             } catch (Exception e) {
@@ -1065,6 +1080,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (this.vpnSocket == null) {
             this.eventBus.post(new VPNErrorEvent(getString(R.string.toast_vpn_application_not_prepared)));
             return false;
+        }
+        // 将 TUN 文件描述符设置为阻塞模式，使读线程在无数据时阻塞而非轮询。
+        // 这样消除了 TUN 接收线程中 Thread.sleep(10) 造成的 10ms 轮询延迟，
+        // 从而避免 TCP ACK 被延迟，解决单连接下载速度被卡在 ~100KB/s 的问题。
+        try {
+            int flags = Os.fcntl(this.vpnSocket.getFileDescriptor(), OsConstants.F_GETFL);
+            Os.fcntl(this.vpnSocket.getFileDescriptor(), OsConstants.F_SETFL,
+                    flags & ~OsConstants.O_NONBLOCK);
+            LogUtil.d(TAG, "TUN fd set to blocking mode");
+        } catch (ErrnoException e) {
+            LogUtil.e(TAG, "Failed to set TUN fd to blocking mode: " + e.getMessage());
         }
         this.in = new FileInputStream(this.vpnSocket.getFileDescriptor());
         this.out = new FileOutputStream(this.vpnSocket.getFileDescriptor());

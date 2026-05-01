@@ -75,15 +75,8 @@ public class UdpCom implements PacketSender, Runnable {
                             
                             if (processWirePacket != ResultCode.RESULT_OK) {
                                 Log.e(TAG, "processWirePacket returned: " + processWirePacket.toString());
-                                // 不要直接调用 shutdown，通过服务来处理
-                                if (this.ztService != null) {
-                                    this.ztService.setNextBackgroundTaskDeadline(jArr[0]);
-                                    // 移除对不存在常量的引用，只在严重错误时关闭服务
-                                    if (processWirePacket != ResultCode.RESULT_OK) {
-                                        this.ztService.shutdown();
-                                    }
-                                }
-                            } else if (this.ztService != null) {
+                            }
+                            if (this.ztService != null) {
                                 this.ztService.setNextBackgroundTaskDeadline(jArr[0]);
                             }
                         } else {

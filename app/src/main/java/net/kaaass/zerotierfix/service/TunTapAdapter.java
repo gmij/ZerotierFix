@@ -249,7 +249,6 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                     buffer.order(ByteOrder.LITTLE_ENDIAN);
                     while (!isInterrupted()) {
                         try {
-                            boolean noDataBeenRead = true;
                             int readCount = TunTapAdapter.this.in.read(buffer.array());
                             if (readCount > 0) {
                                 DebugLog.d(TunTapAdapter.TAG, "Sending packet to ZeroTier. " + readCount + " bytes.");
@@ -264,16 +263,16 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                                     LogUtil.e(TunTapAdapter.TAG, "Unknown IP version");
                                 }
                                 buffer.clear();
-                                noDataBeenRead = false;
-                            }
-                            if (noDataBeenRead) {
-                                Thread.sleep(10);
                             }
                         } catch (IOException e) {
+                            // TUN fd 已关闭（interrupt() 调用时），正常退出
+                            if (isInterrupted()) {
+                                break;
+                            }
                             LogUtil.e(TunTapAdapter.TAG, "Error in TUN Receive: " + e.getMessage(), e);
                         }
                     }
-                } catch (InterruptedException ignored) {
+                } catch (Exception ignored) {
                 }
                 LogUtil.d(TunTapAdapter.TAG, "TUN Receive Thread ended");
                 // 关闭 ARP、NDP 表
