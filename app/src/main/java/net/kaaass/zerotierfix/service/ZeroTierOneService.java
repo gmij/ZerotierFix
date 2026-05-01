@@ -9,6 +9,8 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.IpPrefix;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
 import android.net.VpnService;
 import android.os.Binder;
 import android.os.Build;
@@ -151,6 +153,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private final Runnable networkChangeRunnable = this::doNetworkChangedUpdate;
     /** 防止网络变化事件过于频繁触发重配的最小间隔（毫秒） */
     private static final long NETWORK_CHANGE_DEBOUNCE_MS = 3000;
+    /**
+     * 上次触发重建时的链路地址快照。
+     * 仅当链路地址发生变化（如 IP 切换）时才重配 VPN；
+     * DNS 更新、MTU 变化等不改变地址的事件将被忽略，避免启动时的误报。
+     */
+    private List<LinkAddress> lastLinkAddresses = null;
     private Thread v4MulticastScanner = new Thread() {
         /* class com.zerotier.one.service.ZeroTierOneService.AnonymousClass1 */
         List<String> subscriptions = new ArrayList<>();
@@ -1189,21 +1197,32 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 @Override
                 public void onAvailable(android.net.Network network) {
                     LogUtil.i(TAG, "网络变化: 新网络可用 (" + network + ")");
+                    // 新网络出现时重置地址快照，确保后续 onLinkPropertiesChanged 能正常比较
+                    lastLinkAddresses = null;
                     onNetworkChanged();
                 }
 
                 @Override
                 public void onLost(android.net.Network network) {
                     LogUtil.i(TAG, "网络变化: 网络丢失 (" + network + ")");
+                    lastLinkAddresses = null;
                     onNetworkChanged();
                 }
 
                 @Override
                 public void onLinkPropertiesChanged(android.net.Network network,
-                                                    android.net.LinkProperties linkProperties) {
-                    // 链路属性变化（IP 地址、DNS 等）才触发重配，
-                    // 避免信号强度/RTT 等非路由变化引发频繁的 VPN 重建。
-                    LogUtil.i(TAG, "网络变化: 链路属性变化 (" + network + ")");
+                                                    LinkProperties linkProperties) {
+                    // 只有链路地址（IP 地址/前缀）发生变化时才重配 VPN。
+                    // DNS 更新、MTU 变化、DHCP 续租等不改变地址的事件将被忽略，
+                    // 避免 VPN 启动时因 Android 系统多次下发配置而产生误报日志和无效重建。
+                    List<LinkAddress> newAddresses = linkProperties.getLinkAddresses();
+                    if (lastLinkAddresses != null
+                            && new java.util.HashSet<>(newAddresses).equals(new java.util.HashSet<>(lastLinkAddresses))) {
+                        LogUtil.d(TAG, "网络变化: 链路属性变化（地址未变，跳过重配）(" + network + ")");
+                        return;
+                    }
+                    lastLinkAddresses = newAddresses;
+                    LogUtil.i(TAG, "网络变化: 链路地址变化 (" + network + ")");
                     onNetworkChanged();
                 }
             };
@@ -1228,6 +1247,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.d(TAG, "取消网络回调时出错: " + e.getMessage());
         }
         this.networkCallback = null;
+        this.lastLinkAddresses = null;
         // 停止 HandlerThread（取消所有待执行的重建任务）
         if (networkChangeHandler != null) {
             networkChangeHandler.removeCallbacks(networkChangeRunnable);
