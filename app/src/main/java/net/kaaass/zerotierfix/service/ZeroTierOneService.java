@@ -158,7 +158,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 仅当链路地址发生变化（如 IP 切换）时才重配 VPN；
      * DNS 更新、MTU 变化等不改变地址的事件将被忽略，避免启动时的误报。
      */
-    private List<LinkAddress> lastLinkAddresses = null;
+    private Set<LinkAddress> lastLinkAddresses = null;
     private Thread v4MulticastScanner = new Thread() {
         /* class com.zerotier.one.service.ZeroTierOneService.AnonymousClass1 */
         List<String> subscriptions = new ArrayList<>();
@@ -1215,9 +1215,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     // 只有链路地址（IP 地址/前缀）发生变化时才重配 VPN。
                     // DNS 更新、MTU 变化、DHCP 续租等不改变地址的事件将被忽略，
                     // 避免 VPN 启动时因 Android 系统多次下发配置而产生误报日志和无效重建。
-                    List<LinkAddress> newAddresses = linkProperties.getLinkAddresses();
-                    if (lastLinkAddresses != null
-                            && new java.util.HashSet<>(newAddresses).equals(new java.util.HashSet<>(lastLinkAddresses))) {
+                    Set<LinkAddress> newAddresses = new HashSet<>(linkProperties.getLinkAddresses());
+                    if (newAddresses.equals(lastLinkAddresses)) {
                         LogUtil.d(TAG, "网络变化: 链路属性变化（地址未变，跳过重配）(" + network + ")");
                         return;
                     }
