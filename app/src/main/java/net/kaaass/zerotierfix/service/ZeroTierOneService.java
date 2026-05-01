@@ -17,9 +17,6 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.preference.PreferenceManager;
-import android.system.ErrnoException;
-import android.system.Os;
-import android.system.OsConstants;
 import android.widget.Toast;
 
 import androidx.core.app.NotificationCompat;
@@ -1081,17 +1078,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (this.vpnSocket == null) {
             this.eventBus.post(new VPNErrorEvent(getString(R.string.toast_vpn_application_not_prepared)));
             return false;
-        }
-        // 将 TUN 文件描述符设置为阻塞模式，使读线程在无数据时阻塞而非轮询。
-        // 这样消除了 TUN 接收线程中 Thread.sleep(10) 造成的 10ms 轮询延迟，
-        // 从而避免 TCP ACK 被延迟，解决单连接下载速度被卡在 ~100KB/s 的问题。
-        try {
-            int flags = Os.fcntl(this.vpnSocket.getFileDescriptor(), OsConstants.F_GETFL, 0);
-            Os.fcntl(this.vpnSocket.getFileDescriptor(), OsConstants.F_SETFL,
-                    flags & ~OsConstants.O_NONBLOCK);
-            LogUtil.d(TAG, "TUN fd set to blocking mode");
-        } catch (ErrnoException e) {
-            LogUtil.e(TAG, "Failed to set TUN fd to blocking mode; single-connection download speed may be limited to ~100KB/s: " + e.getMessage());
         }
         this.in = new FileInputStream(this.vpnSocket.getFileDescriptor());
         this.out = new FileOutputStream(this.vpnSocket.getFileDescriptor());
