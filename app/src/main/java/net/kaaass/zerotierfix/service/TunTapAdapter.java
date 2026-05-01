@@ -265,21 +265,23 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                                 buffer.clear();
                             }
                         } catch (IOException e) {
-                            // TUN fd 已关闭（interrupt() 调用时），正常退出
+                            // TUN fd 已关闭或发生 I/O 错误。
+                            // 若线程已被标记中断（通常是 interrupt() 先关闭 fd 再设标志），则正常退出；
+                            // 否则记录错误并继续等待下一个数据包。
                             if (isInterrupted()) {
                                 break;
                             }
                             LogUtil.e(TunTapAdapter.TAG, "Error in TUN Receive: " + e.getMessage(), e);
                         }
                     }
-                } catch (Exception ignored) {
+                } finally {
+                    LogUtil.d(TunTapAdapter.TAG, "TUN Receive Thread ended");
+                    // 关闭 ARP、NDP 表
+                    TunTapAdapter.this.ndpTable.stop();
+                    TunTapAdapter.this.ndpTable = null;
+                    TunTapAdapter.this.arpTable.stop();
+                    TunTapAdapter.this.arpTable = null;
                 }
-                LogUtil.d(TunTapAdapter.TAG, "TUN Receive Thread ended");
-                // 关闭 ARP、NDP 表
-                TunTapAdapter.this.ndpTable.stop();
-                TunTapAdapter.this.ndpTable = null;
-                TunTapAdapter.this.arpTable.stop();
-                TunTapAdapter.this.arpTable = null;
             }
         };
         this.receiveThread.start();

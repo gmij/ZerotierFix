@@ -17,6 +17,9 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.preference.PreferenceManager;
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.OsConstants;
 import android.widget.Toast;
 
 import androidx.core.app.NotificationCompat;
@@ -77,10 +80,6 @@ import net.kaaass.zerotierfix.util.smartroute.SmartRoutingManager;
 import org.greenrobot.eventbus.EventBus;
 import org.greenrobot.eventbus.Subscribe;
 import org.greenrobot.eventbus.ThreadMode;
-
-import android.system.ErrnoException;
-import android.system.Os;
-import android.system.OsConstants;
 
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -606,7 +605,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         LogUtil.e(TAG, "Error on processBackgroundTasks: " + taskResult.toString());
                         shutdown();
                     }
-                    // 按 ZeroTier 指定的下一个截止时间睡眠，而非固定 100ms
+                    // 按 ZeroTier 指定的下一个截止时间睡眠。
+                    // 此处重新取时刻以计入 processBackgroundTasks 本身的耗时；
+                    // 若 sleepMs 为负（任务执行期间已超过截止时间），下方 if (sleepMs > 0) 会跳过睡眠。
                     sleepMs = newDeadline[0] - System.currentTimeMillis();
                 } else {
                     sleepMs = taskDeadline - currentTime;
@@ -1090,7 +1091,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     flags & ~OsConstants.O_NONBLOCK);
             LogUtil.d(TAG, "TUN fd set to blocking mode");
         } catch (ErrnoException e) {
-            LogUtil.e(TAG, "Failed to set TUN fd to blocking mode: " + e.getMessage());
+            LogUtil.e(TAG, "Failed to set TUN fd to blocking mode; single-connection download speed may be limited to ~100KB/s: " + e.getMessage());
         }
         this.in = new FileInputStream(this.vpnSocket.getFileDescriptor());
         this.out = new FileOutputStream(this.vpnSocket.getFileDescriptor());
