@@ -92,17 +92,18 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private volatile int cachedV6Cidr;
 
     /**
-     * 目标 MAC 快速路径缓存：originalDestIP → finalDestMac（网关解析后的实际 MAC）。
+     * 目标 MAC 快速路径缓存：rawDestIPv4（int）→ finalDestMac（网关解析后的实际 MAC）。
      *
      * <p>第一个发往某目标 IP 的数据包会经过完整的路由查找、ARP 查找和连接日志流程；
-     * 成功发送后将 (originalDestIP → destMac) 存入此 Map。
+     * 成功发送后将 (rawDestIPv4 → destMac) 存入此 Map。
      * 后续所有发往同一目标 IP 的数据包直接使用缓存的 MAC 调用 processVirtualNetworkFrame，
      * 跳过路由查找、ARP 查找、智能路由诊断和连接日志等所有开销，
      * 消除视频/直播高频数据包路径上的每包 synchronized 锁争用和多次 HashMap 查找。
      *
-     * <p>在 {@link #clearRouteMap()} 时随其他缓存一起清除，确保路由变更后重新走完整流程。
+     * <p>键为原始 IPv4 地址的 int 形式（bytes 16-19 packed），避免 InetAddress 对象分配。
+     * 在 {@link #clearRouteMap()} 时随其他缓存一起清除，确保路由变更后重新走完整流程。
      */
-    private final ConcurrentHashMap<InetAddress, Long> destMacFastPath = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, Long> destMacFastPath = new ConcurrentHashMap<>();
 
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
         this.ztService = zeroTierOneService;
@@ -345,6 +346,28 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     }
 
     private void handleIPv4Packet(byte[] packetData) {
+        // ── 超快路径：无 InetAddress 分配 ──
+        // 直接从原始字节提取目的 IPv4（偏移 16–19），避免在每个数据包上都分配
+        // InetAddress / byte[] 对象，彻底消除视频/直播高频数据包路径上的 GC 压力。
+        // 多播地址 224.0.0.0/4 → 高 4 位 == 0xE，跳过直接路径，走下面的慢路径。
+        int rawDestIP = IPPacketUtils.getDestIPv4AsInt(packetData);
+        if (rawDestIP != 0 && (rawDestIP >>> 28) != 0xE && cachedNetworkConfig != null) {
+            Long fastMac = destMacFastPath.get(rawDestIP);
+            if (fastMac != null) {
+                long[] fastDeadline = new long[1];
+                var fastResult = this.node.processVirtualNetworkFrame(
+                        System.currentTimeMillis(), this.networkId,
+                        cachedLocalMac, fastMac, IPV4_PACKET, 0, packetData, fastDeadline);
+                if (fastResult == ResultCode.RESULT_OK) {
+                    this.ztService.setNextBackgroundTaskDeadline(fastDeadline[0]);
+                    return;
+                }
+                // processVirtualNetworkFrame 失败（ZT 节点未就绪等），移除缓存后走完整流程重试
+                destMacFastPath.remove(rawDestIP);
+            }
+        }
+
+        // ── 慢路径（首包或缓存失效） ──
         boolean isMulticast;
         long destMac;
         var destIP = IPPacketUtils.getDestIP(packetData);
@@ -387,28 +410,6 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         } else if (sourceIP == null) {
             LogUtil.e(TAG, "sourceAddress is null");
             return;
-        }
-
-        // ── 快速路径（连接已建立） ──
-        // 第一个数据包经过完整的路由查找、ARP 解析和连接日志后，会将
-        // (originalDestIP → finalDestMac) 存入 destMacFastPath。
-        // 后续所有发往同一目标 IP 的数据包直接跳到 processVirtualNetworkFrame，
-        // 跳过智能路由诊断、连接日志、routeForDestination（synchronized 锁 + 线性扫描）
-        // 以及 ARP 双查找，彻底消除视频/直播高频数据包路径上的每包开销。
-        if (!isIPv4Multicast(destIP)) {
-            Long fastMac = destMacFastPath.get(destIP);
-            if (fastMac != null) {
-                long[] fastDeadline = new long[1];
-                var fastResult = this.node.processVirtualNetworkFrame(
-                        System.currentTimeMillis(), this.networkId,
-                        cachedLocalMac, fastMac, IPV4_PACKET, 0, packetData, fastDeadline);
-                if (fastResult == ResultCode.RESULT_OK) {
-                    this.ztService.setNextBackgroundTaskDeadline(fastDeadline[0]);
-                    return;
-                }
-                // processVirtualNetworkFrame 失败（ZT 节点未就绪等），移除缓存后走完整流程重试
-                destMacFastPath.remove(destIP);
-            }
         }
 
         DebugLog.d(TAG, "处理IPv4数据包: 源IP=" + sourceIP + ", 目的IP=" + destIP + ", 数据包大小=" + packetData.length);
@@ -475,9 +476,6 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         InetAddress localV4Address = cachedLocalV4Address;
         int cidr = cachedV4Cidr;
 
-        // 保存原始目标 IP，供 destMacFastPath 缓存使用（gateway 赋值可能替换 destIP）
-        final InetAddress origDestIP = destIP;
-
         var destRoute = InetAddressUtils.addressToRouteNo0Route(destIP, cidr);
         var sourceRoute = InetAddressUtils.addressToRouteNo0Route(sourceIP, cidr);
         if (gateway != null && !Objects.equals(destRoute, sourceRoute)) {
@@ -510,10 +508,10 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             this.ztService.setNextBackgroundTaskDeadline(nextDeadline[0]);
 
             // ── 填充快速路径缓存 ──
-            // 首包成功发送后，将 originalDestIP → finalDestMac 存入缓存，
+            // 首包成功发送后，将 rawDestIP → finalDestMac 存入缓存，
             // 后续包直接走快速路径，跳过路由查找、ARP 查找和连接日志。
             if (!isMulticast) {
-                destMacFastPath.put(origDestIP, destMac);
+                destMacFastPath.put(rawDestIP, destMac);
             }
         } else {
             // 目标 MAC 未知，进行 ARP 查询
@@ -741,26 +739,33 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             DebugLog.d(TAG, "收到ARP数据包");
             var arpReply = this.arpTable.processARPPacket(frameData);
             if (arpReply != null && arpReply.getDestMac() != 0 && arpReply.getDestAddress() != null) {
-                // 获取本地 V4 地址
-                var networkConfig = this.node.networkConfig(networkId);
-                InetAddress localV4Address = null;
-                for (var address : networkConfig.getAssignedAddresses()) {
-                    if (address.getAddress() instanceof Inet4Address) {
-                        localV4Address = address.getAddress();
-                        break;
+                // 优先使用缓存的本地地址和 MAC，避免在每次 ARP 应答时调用
+                // this.node.networkConfig() JNI，防止在直播等高频场景下的延迟抖动。
+                // 首次启动缓存未就绪时，回退到 JNI 获取配置（极少发生）。
+                InetAddress localV4Address = this.cachedLocalV4Address;
+                long localMac = this.cachedLocalMac;
+                if (localV4Address == null || localMac == 0) {
+                    var networkConfig = this.node.networkConfig(networkId);
+                    if (networkConfig != null) {
+                        localMac = networkConfig.getMac();
+                        for (var address : networkConfig.getAssignedAddresses()) {
+                            if (address.getAddress() instanceof Inet4Address) {
+                                localV4Address = address.getAddress();
+                                break;
+                            }
+                        }
                     }
                 }
-                // 构造并返回 ARP 应答
-                if (localV4Address != null) {
+                if (localV4Address != null && localMac != 0) {
                     var nextDeadline = new long[1];
-                    var packetData = this.arpTable.getReplyPacket(networkConfig.getMac(),
+                    var packetData = this.arpTable.getReplyPacket(localMac,
                             localV4Address, arpReply.getDestMac(), arpReply.getDestAddress());
                     DebugLog.d(TAG, "发送ARP应答: 本地地址=" + localV4Address +
                             ", 目标地址=" + arpReply.getDestAddress() +
                             ", 目标MAC=" + StringUtils.macAddressToString(arpReply.getDestMac()));
                     var result = this.node
                             .processVirtualNetworkFrame(System.currentTimeMillis(), networkId,
-                                    networkConfig.getMac(), srcMac, ARP_PACKET, 0,
+                                    localMac, srcMac, ARP_PACKET, 0,
                                     packetData, nextDeadline);
                     if (result != ResultCode.RESULT_OK) {
                         LogUtil.e(TAG, "发送ARP应答失败: " + result.toString());
