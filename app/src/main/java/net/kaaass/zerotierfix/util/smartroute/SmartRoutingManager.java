@@ -71,26 +71,6 @@ public class SmartRoutingManager {
     private static final String CHNROUTES_URL_FALLBACK =
             "https://cdn.jsdelivr.net/gh/misakaio/chnroutes2@master/chnroutes.txt";
 
-    /**
-     * 静态补充的腾讯云 IP 段——所有公开 chnroutes 数据源均缺少这些段，但它们被微信、
-     * 视频号等应用的 CDN 调度/直播推流基础设施广泛使用：
-     * <ul>
-     *   <li>{@code 43.128.0.0/13} – 腾讯云港新节点（视频号直播 CDN 调度服务器）</li>
-     *   <li>{@code 43.152.0.0/13} – 腾讯云上海节点</li>
-     *   <li>{@code 162.62.0.0/16} – 腾讯云国内节点</li>
-     *   <li>{@code 101.33.0.0/17} – 腾讯云广州/北京节点（低 128 半段）</li>
-     *   <li>{@code 119.28.0.0/16} – 旧腾讯云节点（仍被部分服务使用）</li>
-     * </ul>
-     * 在 parseChnroutes() 解析完文件后追加，确保无论下载哪个版本均生效。
-     */
-    private static final String[] SUPPLEMENTAL_CHINA_CIDRS = {
-        "43.128.0.0/13",   // 腾讯云港新节点（视频号直播CDN调度）
-        "43.152.0.0/13",   // 腾讯云上海节点
-        "162.62.0.0/16",   // 腾讯云国内节点
-        "101.33.0.0/17",   // 腾讯云广州/北京节点（0–127 低半段，高半段 128–255 已在 chnroutes 中）
-        "119.28.0.0/16",   // 旧腾讯云节点
-    };
-
     private static final String GFWLIST_URL =
             "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt";
     private static final String GFWLIST_URL_FALLBACK =
@@ -368,15 +348,24 @@ public class SmartRoutingManager {
             LogUtil.e(TAG, "读取 chnroutes 文件失败: " + e.getMessage());
             return;
         }
-        // 追加静态补充的腾讯云 IP 段：所有公开数据源均缺少这些段，但微信视频号直播 CDN 依赖它们。
-        // 无论下载哪个版本的 chnroutes，这些段始终存在，确保直播流量直连而非经 ZT 境外节点中转。
+        // 追加 assets/chnroutes_supplement.txt 中的补充 IP 段：
+        // 所有公开数据源均缺少这些段，但微信视频号直播 CDN 依赖它们。
+        // 该文件随 APK 打包发布，无需网络更新，确保直播流量直连而非经 ZT 境外节点中转。
         int supplementalAdded = 0;
-        for (String cidr : SUPPLEMENTAL_CHINA_CIDRS) {
-            CidrBlock block = CidrBlock.parse(cidr);
-            if (block != null) {
-                blocks.add(block);
-                supplementalAdded++;
+        try (InputStream supplementIn = context.getAssets().open(Constants.FILE_CHNROUTES_SUPPLEMENT);
+             BufferedReader supplementReader = new BufferedReader(new java.io.InputStreamReader(supplementIn))) {
+            String line;
+            while ((line = supplementReader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                CidrBlock block = CidrBlock.parse(line);
+                if (block != null) {
+                    blocks.add(block);
+                    supplementalAdded++;
+                }
             }
+        } catch (IOException e) {
+            LogUtil.w(TAG, "读取 chnroutes_supplement.txt 失败: " + e.getMessage());
         }
         Collections.sort(blocks);
         this.chinaCidrs = Collections.unmodifiableList(blocks);

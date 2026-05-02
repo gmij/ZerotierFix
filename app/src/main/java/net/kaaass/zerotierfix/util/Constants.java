@@ -63,4 +63,6 @@ public class Constants {
     // 智能路由相关文件名
     public static final String FILE_CHNROUTES = "chnroutes.txt";
     public static final String FILE_GFWLIST   = "gfwlist.txt";
+    /** 补充 China IP 段，与主 chnroutes 文件合并使用（不通过网络更新，随 APK 打包发布） */
+    public static final String FILE_CHNROUTES_SUPPLEMENT = "chnroutes_supplement.txt";
 }
