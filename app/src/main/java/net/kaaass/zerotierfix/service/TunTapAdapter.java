@@ -530,6 +530,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         }
     }
 
+    private void handleIPv6Packet(byte[] packetData) {
         var destIP = IPPacketUtils.getDestIP(packetData);
         var sourceIP = IPPacketUtils.getSourceIP(packetData);
 
