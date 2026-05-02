@@ -1423,14 +1423,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         switch (dnsMode) {
             case NETWORK_DNS:
                 if (virtualNetworkConfig.getDns() == null) {
-                    if (isRouteViaZeroTier) {
-                        if (isChinaDirectMode) {
-                            LogUtil.d(TAG, "CHINA_DIRECT 模式：添加国内 DNS 服务器");
-                            addDomesticDNSServers(builder);
-                        } else {
-                            LogUtil.d(TAG, "全局路由模式：添加可信DNS服务器");
-                            addTrustedDNSServers(builder);
-                        }
+                    // VPN 激活（全局路由或 per-app）时始终添加国内 DNS，确保国内 CDN 解析到国内节点
+                    if (isChinaDirectMode) {
+                        LogUtil.d(TAG, "CHINA_DIRECT 模式：添加国内 DNS 服务器");
+                        addDomesticDNSServers(builder);
                     }
                     return;
                 }
@@ -1443,15 +1439,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         builder.addDnsServer(address);
                     }
                 }
-                // 全局路由模式下额外添加备用 DNS
-                if (isRouteViaZeroTier) {
-                    if (isChinaDirectMode) {
-                        LogUtil.d(TAG, "CHINA_DIRECT 模式：添加国内备用 DNS 服务器");
-                        addDomesticDNSServers(builder);
-                    } else {
-                        LogUtil.d(TAG, "全局路由模式：添加可信DNS服务器");
-                        addTrustedDNSServers(builder);
-                    }
+                // 全局/per-app 路由模式下额外添加国内备用 DNS
+                if (isChinaDirectMode) {
+                    LogUtil.d(TAG, "CHINA_DIRECT 模式：添加国内备用 DNS 服务器");
+                    addDomesticDNSServers(builder);
                 }
                 break;
                 
@@ -1471,38 +1462,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 break;
                 
             default:
-                if (isRouteViaZeroTier) {
-                    if (isChinaDirectMode) {
-                        LogUtil.d(TAG, "CHINA_DIRECT 模式（默认DNS）：添加国内 DNS 服务器");
-                        addDomesticDNSServers(builder);
-                    } else {
-                        LogUtil.d(TAG, "默认DNS模式：添加可信DNS服务器");
-                        addTrustedDNSServers(builder);
-                    }
+                // 全局/per-app 路由模式下始终使用国内 DNS
+                if (isChinaDirectMode) {
+                    LogUtil.d(TAG, "CHINA_DIRECT 模式（默认DNS）：添加国内 DNS 服务器");
+                    addDomesticDNSServers(builder);
                 }
                 break;
         }
     }
     
-    /**
-     * 添加可信的DNS服务器，避免DNS污染
-     * @param builder VPN构建器
-     */
-    private void addTrustedDNSServers(VpnService.Builder builder) {
-        try {
-            // 添加Cloudflare的DNS
-            builder.addDnsServer(InetAddress.getByName("1.1.1.1"));
-            builder.addDnsServer(InetAddress.getByName("1.0.0.1"));
-            
-            // 添加Google的DNS
-            builder.addDnsServer(InetAddress.getByName("8.8.8.8"));
-            builder.addDnsServer(InetAddress.getByName("8.8.4.4"));
-            
-            LogUtil.d(TAG, "已添加Cloudflare和Google可信DNS服务器");
-        } catch (Exception e) {
-            LogUtil.e(TAG, "添加可信DNS服务器失败: " + e.getMessage(), e);
-        }
-    }
 
     /**
      * 配置使用代理服务器的IPv4路由
