@@ -167,6 +167,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /** 防止网络变化事件过于频繁触发重配的最小间隔（毫秒） */
     private static final long NETWORK_CHANGE_DEBOUNCE_MS = 3000;
     /**
+     * 自学习直连 IP 触发 VPN 重建的 Runnable。
+     * 与 networkChangeRunnable 独立，避免互相取消。
+     */
+    private final Runnable learnedIpRebuildRunnable = () -> {
+        LogUtil.i(TAG, "自学习直连 IP 触发 VPN 路由重建（" + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000
+                + "s 防抖到期），重新配置 excludeRoute 使新发现的直播 CDN IP 走物理直连");
+        doNetworkChangedUpdate();
+    };
+    /** 自学习 IP 触发重建的防抖延迟（10 秒，确保批量 IP 一次重建） */
+    private static final long LEARNED_IP_REBUILD_DEBOUNCE_MS = 10_000;
+    /**
      * 上次触发重建时的链路地址快照。
      * 仅当链路地址发生变化（如 IP 切换）时才重配 VPN；
      * DNS 更新、MTU 变化等不改变地址的事件将被忽略，避免启动时的误报。
@@ -1144,6 +1155,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
         this.tunTapAdapter.setSmartRouting(smartRouter, effectiveSmartRoutingMode, isPerAppRouting);
 
+        // 注册自学习直连 IP 回调：DNS 嗅探发现直播 CDN 走 ZT 时，
+        // 用 10 秒防抖重建 VPN，让新 IP 立即走物理直连，实现"越用越好用"。
+        smartRouter.setOnNewLearnedIpListener(ip -> {
+            if (networkChangeHandler != null) {
+                networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
+                networkChangeHandler.postDelayed(learnedIpRebuildRunnable,
+                        LEARNED_IP_REBUILD_DEBOUNCE_MS);
+            }
+        });
+
         this.tunTapAdapter.startThreads();
 
         // 状态栏提示
@@ -1294,6 +1315,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 停止 HandlerThread（取消所有待执行的重建任务）
         if (networkChangeHandler != null) {
             networkChangeHandler.removeCallbacks(networkChangeRunnable);
+            networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
             networkChangeHandler = null;
         }
         if (networkChangeThread != null) {
