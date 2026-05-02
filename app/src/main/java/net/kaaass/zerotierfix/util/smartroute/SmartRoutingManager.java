@@ -131,7 +131,8 @@ public class SmartRoutingManager {
     public interface OnChnroutesReadyListener {
         void onChnroutesReady();
     }
-    private volatile OnChnroutesReadyListener onChnroutesReadyListener;
+    private final java.util.concurrent.atomic.AtomicReference<OnChnroutesReadyListener> onChnroutesReadyListenerRef =
+            new java.util.concurrent.atomic.AtomicReference<>();
 
     private SmartRoutingManager(Context context) {
         this.context = context;
@@ -209,7 +210,7 @@ public class SmartRoutingManager {
      * 注册 chnroutes 数据加载完成回调（用于在 CHINA_DIRECT 路由数据就绪后重建 VPN 路由）
      */
     public void setOnChnroutesReadyListener(OnChnroutesReadyListener listener) {
-        this.onChnroutesReadyListener = listener;
+        this.onChnroutesReadyListenerRef.set(listener);
     }
 
     /**
@@ -351,10 +352,9 @@ public class SmartRoutingManager {
                 CidrBlock.computeComplement(blocks));
         LogUtil.i(TAG, "已加载 " + blocks.size() + " 条中国 IP 路由，补集 "
                 + nonChinaCidrs.size() + " 条");
-        // 通知等待中的 CHINA_DIRECT VPN 路由重建
-        OnChnroutesReadyListener l = onChnroutesReadyListener;
+        // 通知等待中的 CHINA_DIRECT VPN 路由重建（getAndSet 原子读取并清除，消除竞态）
+        OnChnroutesReadyListener l = onChnroutesReadyListenerRef.getAndSet(null);
         if (l != null) {
-            onChnroutesReadyListener = null; // 单次触发
             l.onChnroutesReady();
         }
     }

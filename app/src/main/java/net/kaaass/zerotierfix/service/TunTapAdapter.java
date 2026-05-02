@@ -400,7 +400,6 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
         // ── 慢路径（首包或缓存失效） ──
         boolean isMulticast;
-        long destMac;
         var destIP = IPPacketUtils.getDestIP(packetData);
         var sourceIP = IPPacketUtils.getSourceIP(packetData);
 
@@ -506,7 +505,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         long[] nextDeadline = new long[1];
         // 单次 ARP 查找：getMacForAddress 在未命中时返回 -1；多播包直接进入分支（不依赖 ARP 表）。
         // 此处消除了原来 hasMacForAddress + getMacForAddress 的双重 HashMap 查找。
-        destMac = this.arpTable.getMacForAddress(destIP);
+        long destMac = this.arpTable.getMacForAddress(destIP);
         if (isMulticast || destMac != -1L) {
             // 已确定目标 MAC，直接发送
 
