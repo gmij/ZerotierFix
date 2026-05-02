@@ -180,12 +180,8 @@ public class SmartRoutingManager {
      */
     public boolean isChineseIp(InetAddress address) {
         if (address == null) return false;
-        byte[] bytes = address.getAddress();
-        if (bytes.length == 4) {
-            long ipLong = ((bytes[0] & 0xFFL) << 24) | ((bytes[1] & 0xFFL) << 16)
-                    | ((bytes[2] & 0xFFL) << 8) | (bytes[3] & 0xFFL);
-            if (learnedDirectIpSet.contains(ipLong)) return true;
-        }
+        long ipLong = toUint32(address);
+        if (ipLong != -1 && learnedDirectIpSet.contains(ipLong)) return true;
         return binaryContains(chinaCidrs, address);
     }
 
@@ -260,12 +256,6 @@ public class SmartRoutingManager {
         this.onNewLearnedIpListener = listener;
     }
 
-    /**
-     * 返回已自学习的直连 IP 数量（用于 UI 或日志展示）
-     */
-    public int getLearnedDirectIpCount() {
-        return learnedDirectIpSet.size();
-    }
 
     /**
      * 尝试将一个直播 CDN IP 加入自学习直连列表。
@@ -284,10 +274,8 @@ public class SmartRoutingManager {
      */
     public void learnDirectIp(InetAddress ip, String domain) {
         if (ip == null) return;
-        byte[] bytes = ip.getAddress();
-        if (bytes.length != 4) return; // 仅学习 IPv4
-        long ipLong = ((bytes[0] & 0xFFL) << 24) | ((bytes[1] & 0xFFL) << 16)
-                | ((bytes[2] & 0xFFL) << 8) | (bytes[3] & 0xFFL);
+        long ipLong = toUint32(ip);
+        if (ipLong == -1) return; // 仅学习 IPv4
         if (learnedDirectIpSet.contains(ipLong)) {
             LogUtil.d(TAG, "自学习直连 IP 已知: " + ip.getHostAddress() + " (domain=" + domain + ")");
             return;
@@ -329,14 +317,10 @@ public class SmartRoutingManager {
                 String ipStr = line.contains("/") ? line.substring(0, line.indexOf('/')) : line;
                 try {
                     InetAddress ip = InetAddress.getByName(ipStr);
-                    byte[] bytes = ip.getAddress();
-                    if (bytes.length == 4) {
-                        long ipLong = ((bytes[0] & 0xFFL) << 24) | ((bytes[1] & 0xFFL) << 16)
-                                | ((bytes[2] & 0xFFL) << 8) | (bytes[3] & 0xFFL);
-                        if (learnedDirectIpSet.add(ipLong)) {
-                            learnedDirectCidrs.add(new CidrBlock((int) ipLong, 32));
-                            loaded++;
-                        }
+                    long ipLong = toUint32(ip);
+                    if (ipLong != -1 && learnedDirectIpSet.add(ipLong)) {
+                        learnedDirectCidrs.add(new CidrBlock((int) ipLong, 32));
+                        loaded++;
                     }
                 } catch (Exception e) {
                     LogUtil.d(TAG, "跳过无效自学习 IP 行: " + line);
