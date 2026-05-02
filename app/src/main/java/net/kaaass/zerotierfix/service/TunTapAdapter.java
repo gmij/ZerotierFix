@@ -475,7 +475,8 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                             | ((addrBytes[2] & 0xFFL) << 8) | (addrBytes[3] & 0xFFL);
                     if (chinaDirectLeakWarned.add(ipLong)) {
                         LogUtil.w(LogUtil.CONN_TAG, "⚠ 国内IP " + destIP.getHostAddress()
-                                + " 进入TUN（应直连但OS路由未排除），走ZT转发，可能导致直播卡顿");
+                                + " 进入TUN（应直连但OS路由未排除），走ZT转发，可能导致直播卡顿"
+                                + "；请检查 chnroutes 数据是否已加载及 VPN 路由是否正确配置");
                     }
                 }
             }

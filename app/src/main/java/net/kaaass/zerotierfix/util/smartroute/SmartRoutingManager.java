@@ -438,9 +438,14 @@ public class SmartRoutingManager {
     private static boolean isLiveStreamingDomain(String domain) {
         if (domain == null) return false;
         String d = domain.toLowerCase();
-        return d.contains("weixin") || d.contains("video") || d.contains("live")
-                || d.contains("qpic") || d.contains("tencent") || d.contains("bilibili")
-                || d.contains("youku") || d.contains("iqiyi");
+        // 使用域名后缀匹配，避免误匹配（如 notweixin.example.com）
+        return d.endsWith(".weixin.qq.com") || d.endsWith(".weixin.com")
+                || d.endsWith(".video.qq.com") || d.endsWith(".live.qq.com")
+                || d.endsWith(".qpic.cn") || d.endsWith(".qpic.com")
+                || d.endsWith(".tencent.com") || d.endsWith(".tencentvideo.com")
+                || d.endsWith(".bilibili.com") || d.endsWith(".bilivideo.com")
+                || d.endsWith(".youku.com") || d.endsWith(".iqiyi.com")
+                || d.endsWith(".vlive.qq.com") || d.endsWith(".livep.qq.com");
     }
 
     /**
