@@ -233,11 +233,23 @@ public class SmartRoutingManager {
                 if (l != null) l.onNewGfwIp(record.ip);
             }
         } else if (isChineseIp(record.ip)) {
-            LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                    + " -> direct (CN)");
+            // 直播相关域名升级为 INFO 级，release 包也可见，用于确认国内 CDN 是否走直连
+            if (isLiveStreamingDomain(record.domain)) {
+                LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                        + " -> direct (CN)");
+            } else {
+                LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                        + " -> direct (CN)");
+            }
         } else {
-            LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                    + " -> ZT");
+            // 非中国 IP：直播相关域名升级为 INFO 级，便于发现 CDN 被误判走 ZT 的问题
+            if (isLiveStreamingDomain(record.domain)) {
+                LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                        + " -> ZT");
+            } else {
+                LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                        + " -> ZT");
+            }
         }
     }
 
@@ -418,6 +430,18 @@ public class SmartRoutingManager {
     }
 
     // ────────────────────────── 工具方法 ──────────────────────────
+
+    /**
+     * 判断域名是否属于直播相关服务（微信视频号、腾讯视频、B 站等），
+     * 用于将该类域名的 DNS 解析日志提升为 INFO 级，release 包也可见。
+     */
+    private static boolean isLiveStreamingDomain(String domain) {
+        if (domain == null) return false;
+        String d = domain.toLowerCase();
+        return d.contains("weixin") || d.contains("video") || d.contains("live")
+                || d.contains("qpic") || d.contains("tencent") || d.contains("bilibili")
+                || d.contains("youku") || d.contains("iqiyi");
+    }
 
     /**
      * 在已排序的 CIDR 列表中二分查找指定 IP 是否命中

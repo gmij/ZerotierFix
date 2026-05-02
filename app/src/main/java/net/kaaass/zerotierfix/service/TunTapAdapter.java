@@ -78,6 +78,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private static final int MAX_CONN_LOG_ENTRIES = 5000;
 
     /**
+     * 已发出 CHINA_DIRECT 路由漏洞告警的中国 IP 集合（每个 IP 仅告警一次）。
+     * 用 long 编码 IPv4（与 connLoggedSet 格式相同，端口固定为 0 确保无冲突）。
+     */
+    private final Set<Long> chinaDirectLeakWarned =
+            Collections.newSetFromMap(new ConcurrentHashMap<>());
+
+    /**
      * 缓存的 VirtualNetworkConfig，避免在每个数据包的处理热路径上都进行 synchronized 锁获取。
      * 在 {@link #clearRouteMap()} 时清空，由下一个数据包按需重新填充。
      */
@@ -118,6 +125,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
      */
     public void clearConnLog() {
         connLoggedSet.clear();
+        chinaDirectLeakWarned.clear();
     }
 
     /**
@@ -269,6 +277,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         this.cachedLocalV6Address = null;
         this.destMacFastPath.clear();
         this.connLoggedSet.clear();
+        this.chinaDirectLeakWarned.clear();
     }
 
     private boolean isIPv4Multicast(InetAddress inetAddress) {
@@ -453,6 +462,20 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                         DebugLog.d(TAG, "智能路由(组合): 目的IP=" + destIP
                                 + (isGfwIp ? " 是GFW中国CDN IP，走ZT转发"
                                 : " 是非GFW中国IP但已进入TUN，继续转发以避免黑洞"));
+                    }
+                }
+            }
+
+            // ── 国内直连模式：中国 IP 进入 TUN 说明 OS 路由排除未生效，记录一次性告警 ──
+            if (smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT
+                    && smartRoutingManager.isChineseIp(destIP)) {
+                byte[] addrBytes = destIP.getAddress();
+                if (addrBytes != null && addrBytes.length == 4) {
+                    long ipLong = ((addrBytes[0] & 0xFFL) << 24) | ((addrBytes[1] & 0xFFL) << 16)
+                            | ((addrBytes[2] & 0xFFL) << 8) | (addrBytes[3] & 0xFFL);
+                    if (chinaDirectLeakWarned.add(ipLong)) {
+                        LogUtil.w(LogUtil.CONN_TAG, "⚠ 国内IP " + destIP.getHostAddress()
+                                + " 进入TUN（应直连但OS路由未排除），走ZT转发，可能导致直播卡顿");
                     }
                 }
             }

@@ -1532,7 +1532,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 LogUtil.w(TAG, "添加国内 DNS 服务器失败 " + dns + ": " + e.getMessage());
             }
         }
-        LogUtil.d(TAG, "CHINA_DIRECT 模式：已添加国内 DNS 服务器（114DNS / AliDNS）");
+        LogUtil.i(TAG, "CHINA_DIRECT 模式：已添加国内 DNS 服务器（114DNS / AliDNS）");
     }
 
     /**
@@ -1593,6 +1593,35 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return;
         }
 
+        // 验证腾讯云补充 IP 段是否已正确加入中国 IP 列表（这些段是微信视频号直播的 CDN，
+        // 若缺失则直播流量会经 ZT 境外节点中转，导致明显卡顿）
+        String[] tencentCidrChecks = {
+                "43.128.0.0",  // 43.128.0.0/13
+                "43.152.0.0",  // 43.152.0.0/13
+                "162.62.0.0",  // 162.62.0.0/16
+                "101.33.0.0",  // 101.33.0.0/17
+                "119.28.0.0",  // 119.28.0.0/16
+        };
+        String[] tencentCidrLabels = {
+                "43.128.0.0/13", "43.152.0.0/13", "162.62.0.0/16",
+                "101.33.0.0/17", "119.28.0.0/16",
+        };
+        for (int i = 0; i < tencentCidrChecks.length; i++) {
+            try {
+                InetAddress sample = InetAddress.getByName(tencentCidrChecks[i]);
+                boolean inChina = router.isChineseIp(sample);
+                if (inChina) {
+                    LogUtil.i(LogUtil.ROUTE_TAG, "腾讯云 " + tencentCidrLabels[i]
+                            + " → IN_CHINA（已排除出 VPN）✓");
+                } else {
+                    LogUtil.w(LogUtil.ROUTE_TAG, "腾讯云 " + tencentCidrLabels[i]
+                            + " → NOT_IN_CHINA（未排除出 VPN，直播可能卡顿！）");
+                }
+            } catch (Exception e) {
+                LogUtil.w(LogUtil.ROUTE_TAG, "验证腾讯云 CIDR " + tencentCidrLabels[i] + " 失败: " + e.getMessage());
+            }
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             // Android 13+：0.0.0.0/0 + excludeRoute(中国IP) + excludeRoute(本地子网)
             builder.addRoute(InetAddress.getByName("0.0.0.0"), 0);
@@ -1638,9 +1667,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
             if (added >= MAX_ROUTES_LEGACY_ANDROID) {
                 LogUtil.w(TAG, "CHINA_DIRECT (Android 12-): 已达路由上限 " + MAX_ROUTES_LEGACY_ANDROID
-                        + " 条，部分非中国路由可能未加入 VPN 路由表");
+                        + " 条，共 " + nonChina.size() + " 条非中国路由，"
+                        + (nonChina.size() - MAX_ROUTES_LEGACY_ANDROID)
+                        + " 条未加入 VPN 路由表");
             }
-            LogUtil.d(TAG, "CHINA_DIRECT (Android 12-): 添加 " + added + " 条非中国路由");
+            LogUtil.i(TAG, "CHINA_DIRECT (Android 12-): 添加 " + added + "/" + nonChina.size() + " 条非中国路由");
         }
     }
 
