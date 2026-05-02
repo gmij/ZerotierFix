@@ -90,6 +90,58 @@ public class CidrBlock implements Comparable<CidrBlock> {
     }
 
     /**
+     * CIDR 聚合：将相邻、重叠或连续的 CIDR 合并为最小等价集合，不产生过度近似。
+     *
+     * <p>算法：
+     * <ol>
+     *   <li>将每个 CIDR 转换为 [start, end] 整数区间</li>
+     *   <li>按 start 排序后合并重叠/相邻区间</li>
+     *   <li>用 {@link #rangeToCidrs} 将每段合并后的区间转换回最优 CIDR 表示</li>
+     * </ol>
+     *
+     * <p>示例：{1.0.0.0/24, 1.0.1.0/24} → 两个区间相邻 → 合并为 1.0.0.0/23（1 条）。
+     * 对于中国 chnroutes 数据，典型可减少 30-50% 条目数，显著降低 VPN 路由 parcel 大小。
+     *
+     * @param cidrs 待聚合的 CIDR 列表（无需预排序，不要求不重叠）
+     * @return 等价覆盖的最小 CIDR 集合，按 startIp 排序
+     */
+    public static List<CidrBlock> aggregate(List<CidrBlock> cidrs) {
+        if (cidrs == null || cidrs.isEmpty()) return Collections.emptyList();
+
+        // 1. 转为 [start, end] 区间
+        List<long[]> ranges = new ArrayList<>(cidrs.size());
+        for (CidrBlock c : cidrs) {
+            ranges.add(new long[]{c.startIp & 0xFFFFFFFFL, c.endIp & 0xFFFFFFFFL});
+        }
+
+        // 2. 排序
+        ranges.sort((a, b) -> Long.compare(a[0], b[0]));
+
+        // 3. 合并相邻/重叠区间（条件：next.start <= cur.end + 1，注意 0xFFFFFFFF 溢出边界）
+        List<long[]> merged = new ArrayList<>();
+        long[] cur = new long[]{ranges.get(0)[0], ranges.get(0)[1]};
+        for (int i = 1; i < ranges.size(); i++) {
+            long[] next = ranges.get(i);
+            // cur[1] < 0xFFFFFFFFL 时正常比较；cur[1] == 0xFFFFFFFF 时已覆盖全部地址空间，无需再合并
+            boolean adjacent = cur[1] < 0xFFFFFFFFL && next[0] <= cur[1] + 1;
+            if (adjacent) {
+                if (next[1] > cur[1]) cur[1] = next[1];
+            } else {
+                merged.add(cur);
+                cur = new long[]{next[0], next[1]};
+            }
+        }
+        merged.add(cur);
+
+        // 4. 将每段区间转回最优 CIDR
+        List<CidrBlock> result = new ArrayList<>();
+        for (long[] range : merged) {
+            result.addAll(rangeToCidrs(range[0], range[1]));
+        }
+        return result;
+    }
+
+    /**
      * 计算补集：所有 IPv4 地址空间 (0.0.0.0/0) 减去给定的 CIDR 列表
      * 返回一组不重叠的 CIDR 块，代表非指定区域的地址空间
      */
