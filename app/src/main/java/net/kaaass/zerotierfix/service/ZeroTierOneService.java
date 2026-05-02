@@ -1488,6 +1488,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         LogUtil.e(TAG, "Exception parsing DNS server: " + e, e);
                     }
                 }
+                // 全局/per-app 路由模式下追加国内备用 DNS（与 NETWORK_DNS 分支保持一致）。
+                // 若自定义 DNS 是境外服务（如 8.8.8.8），CDN 域名会被解析到境外节点，
+                // 流量进入 ZT 隧道导致直播卡顿；追加国内 DNS 作为备用，确保国内 CDN 走直连。
+                if (isChinaDirectMode) {
+                    LogUtil.d(TAG, "CHINA_DIRECT 模式（自定义DNS）：追加国内备用 DNS 服务器");
+                    addDomesticDNSServers(builder);
+                }
                 break;
                 
             default:

@@ -270,8 +270,10 @@ public class SmartRoutingManager {
 
     private void loadOrDownloadChnroutes() {
         File file = new File(context.getFilesDir(), Constants.FILE_CHNROUTES);
-        boolean needsDownload = !file.exists() || file.length() < 100;
-        if (needsDownload) {
+        // 文件不存在、太小，或超过 7 天未更新时触发下载；确保腾讯新增 CDN 网段能被及时获取。
+        boolean needsDownload = !file.exists() || file.length() < 100
+                || (System.currentTimeMillis() - file.lastModified() > 7L * 24 * 60 * 60 * 1000);
+        if (needsDownload && (!file.exists() || file.length() < 100)) {
             // 先从 APK 内置 assets 复制种子文件（无需网络，立即可用）
             copyFromAssets(Constants.FILE_CHNROUTES, file);
         }
