@@ -913,6 +913,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             if (networkChangeHandler != null) {
                 networkChangeHandler.removeCallbacks(networkChangeRunnable);
                 networkChangeHandler.postDelayed(networkChangeRunnable, NETWORK_CHANGE_DEBOUNCE_MS);
+            } else {
+                LogUtil.w(TAG, "updateTunnelConfig: networkChangeHandler 未就绪，重试请求已丢弃");
             }
             return false;
         }
@@ -1759,6 +1761,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             // 序列化约 336 KB，安全余量充足。
             builder.addRoute(InetAddress.getByName("0.0.0.0"), 0);
             List<CidrBlock> sortedChinaCidrs = new ArrayList<>(router.getChinaCidrs());
+            // 按前缀长度升序排序：prefixLen 数值越小表示覆盖范围越大（/8 > /24），
+            // 升序排列后 /8 排在 /24 之前，优先 excludeRoute 覆盖最广的 CIDR，
+            // 在截断时确保最重要（覆盖最多 IP）的段被排除。
             sortedChinaCidrs.sort(Comparator.comparingInt(c -> c.prefixLen));
             int excluded = 0;
             for (CidrBlock cidr : sortedChinaCidrs) {
