@@ -44,6 +44,8 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private static final int IPV6_PACKET = 34525;
     private static final int TCP_PROTOCOL = 6;
     private static final int UDP_PROTOCOL = 17;
+    /** IPv4 多播地址范围 224.0.0.0/4 的高 4 位标识，用于原始 int 快速检测 */
+    private static final int IPV4_MULTICAST_HIGH_NIBBLE = 0xE;
 
     private final HashMap<Route, Long> routeMap = new HashMap<>();
     private final long networkId;
@@ -212,7 +214,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         int srcPort = ((packetData[ipHdrLen]     & 0xFF) << 8) | (packetData[ipHdrLen + 1] & 0xFF);
         int dstPort = ((packetData[ipHdrLen + 2] & 0xFF) << 8) | (packetData[ipHdrLen + 3] & 0xFF);
 
-        // 使用 long 编码（IPv4 地址占 bits 16-47，目标端口占 bits 0-15）作为集合键，
+        // 使用 long 编码（IPv4 地址占 bits 32-63，目标端口占 bits 0-15）作为集合键，
         // 避免在高频数据包路径上分配 String 对象，减少 GC 压力。
         byte[] addrBytes = origDestIP.getAddress();
         long ipLong = ((addrBytes[0] & 0xFFL) << 24) | ((addrBytes[1] & 0xFFL) << 16)
@@ -345,19 +347,48 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         this.receiveThread.start();
     }
 
+    /**
+     * 将 {@link VirtualNetworkConfig} 的地址/MAC 信息填充到各 cached* 字段，
+     * 避免在每个数据包的处理热路径上重复遍历 getAssignedAddresses()。
+     * 由 handleIPv4Packet 和 handleIPv6Packet 在缓存失效时共同调用。
+     */
+    private void populateNetworkConfigCache(VirtualNetworkConfig config) {
+        InetAddress v4 = null;
+        InetAddress v6 = null;
+        int v4Cidr = 0, v6Cidr = 0;
+        for (InetSocketAddress addr : config.getAssignedAddresses()) {
+            if (addr.getAddress() instanceof Inet4Address && v4 == null) {
+                v4 = addr.getAddress();
+                v4Cidr = addr.getPort();
+            } else if (addr.getAddress() instanceof Inet6Address && v6 == null) {
+                v6 = addr.getAddress();
+                v6Cidr = addr.getPort();
+            }
+        }
+        this.cachedLocalMac = config.getMac();
+        this.cachedLocalV4Address = v4;
+        this.cachedV4Cidr = v4Cidr;
+        this.cachedLocalV6Address = v6;
+        this.cachedV6Cidr = v6Cidr;
+        this.cachedNetworkConfig = config;
+    }
+
     private void handleIPv4Packet(byte[] packetData) {
         // ── 超快路径：无 InetAddress 分配 ──
         // 直接从原始字节提取目的 IPv4（偏移 16–19），避免在每个数据包上都分配
         // InetAddress / byte[] 对象，彻底消除视频/直播高频数据包路径上的 GC 压力。
-        // 多播地址 224.0.0.0/4 → 高 4 位 == 0xE，跳过直接路径，走下面的慢路径。
+        // 多播地址 224.0.0.0/4 → 高 4 位 == IPV4_MULTICAST_HIGH_NIBBLE，跳过直接路径。
+        // 同时对两个 volatile 字段做本地快照，避免检查与使用之间的 TOCTOU 竞态。
         int rawDestIP = IPPacketUtils.getDestIPv4AsInt(packetData);
-        if (rawDestIP != 0 && (rawDestIP >>> 28) != 0xE && cachedNetworkConfig != null) {
+        VirtualNetworkConfig configSnap = this.cachedNetworkConfig;
+        long localMacSnap = this.cachedLocalMac;
+        if (rawDestIP != 0 && (rawDestIP >>> 28) != IPV4_MULTICAST_HIGH_NIBBLE && configSnap != null) {
             Long fastMac = destMacFastPath.get(rawDestIP);
             if (fastMac != null) {
                 long[] fastDeadline = new long[1];
                 var fastResult = this.node.processVirtualNetworkFrame(
                         System.currentTimeMillis(), this.networkId,
-                        cachedLocalMac, fastMac, IPV4_PACKET, 0, packetData, fastDeadline);
+                        localMacSnap, fastMac, IPV4_PACKET, 0, packetData, fastDeadline);
                 if (fastResult == ResultCode.RESULT_OK) {
                     this.ztService.setNextBackgroundTaskDeadline(fastDeadline[0]);
                     return;
@@ -379,25 +410,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         if (virtualNetworkConfig == null) {
             virtualNetworkConfig = this.ztService.getVirtualNetworkConfig(this.networkId);
             if (virtualNetworkConfig != null) {
-                // 同时填充本地地址/MAC 缓存，避免后续每个包都遍历 assignedAddresses
-                InetAddress v4 = null;
-                InetAddress v6 = null;
-                int v4Cidr = 0, v6Cidr = 0;
-                for (InetSocketAddress addr : virtualNetworkConfig.getAssignedAddresses()) {
-                    if (addr.getAddress() instanceof Inet4Address && v4 == null) {
-                        v4 = addr.getAddress();
-                        v4Cidr = addr.getPort();
-                    } else if (addr.getAddress() instanceof Inet6Address && v6 == null) {
-                        v6 = addr.getAddress();
-                        v6Cidr = addr.getPort();
-                    }
-                }
-                this.cachedLocalMac = virtualNetworkConfig.getMac();
-                this.cachedLocalV4Address = v4;
-                this.cachedV4Cidr = v4Cidr;
-                this.cachedLocalV6Address = v6;
-                this.cachedV6Cidr = v6Cidr;
-                this.cachedNetworkConfig = virtualNetworkConfig;
+                populateNetworkConfigCache(virtualNetworkConfig);
             }
         }
 
@@ -537,24 +550,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         if (virtualNetworkConfig == null) {
             virtualNetworkConfig = this.ztService.getVirtualNetworkConfig(this.networkId);
             if (virtualNetworkConfig != null) {
-                InetAddress v4 = null;
-                InetAddress v6 = null;
-                int v4Cidr = 0, v6Cidr = 0;
-                for (InetSocketAddress addr : virtualNetworkConfig.getAssignedAddresses()) {
-                    if (addr.getAddress() instanceof Inet4Address && v4 == null) {
-                        v4 = addr.getAddress();
-                        v4Cidr = addr.getPort();
-                    } else if (addr.getAddress() instanceof Inet6Address && v6 == null) {
-                        v6 = addr.getAddress();
-                        v6Cidr = addr.getPort();
-                    }
-                }
-                this.cachedLocalMac = virtualNetworkConfig.getMac();
-                this.cachedLocalV4Address = v4;
-                this.cachedV4Cidr = v4Cidr;
-                this.cachedLocalV6Address = v6;
-                this.cachedV6Cidr = v6Cidr;
-                this.cachedNetworkConfig = virtualNetworkConfig;
+                populateNetworkConfigCache(virtualNetworkConfig);
             }
         }
 
