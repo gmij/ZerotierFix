@@ -95,6 +95,7 @@ import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -1029,8 +1030,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     LogUtil.e(TAG, "保护局域网连接时出错: " + e.getMessage());
                 }
                 
-                // 添加IPv6全局路由 (::/0)，如果IPv6未禁用
-                if (!this.disableIPv6) {
+                // IPv6 全局路由：仅在非 CHINA_DIRECT/COMBINED 模式下添加 ::/0 通过 ZT。
+                // CHINA_DIRECT/COMBINED 模式下跳过 IPv6 VPN 路由——中国 IPv6 地址（如腾讯 CDN、CERNET）
+                // 若通过 ZT 境外节点转发会增加延迟，直接走物理网络更快。
+                if (!this.disableIPv6 && !isChinaDirectMode) {
                     configureDirectIPv6Routing(builder, virtualNetworkConfig, assignedAddresses);
                 }
                 
@@ -1624,9 +1627,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     + router.getChinaCidrs().size() + " 条中国 IP + "
                     + localSubnets.size() + " 个本地子网");
         } else {
-            // Android 12-：添加非中国 CIDR，每条再剔除本地活跃子网
+            // Android 12-：添加非中国 CIDR，每条再剔除本地活跃子网。
+            // Android 11 及以下的 IPC 不支持分批传输大型路由列表，为避免 TransactionTooLargeException，
+            // 将总路由条数限制在安全范围内（3000 条 × ~50 字节 = 150KB，远低于 1MB Binder 上限）。
+            // 按前缀长度升序排序（前缀越短 = 覆盖越广），优先保留覆盖最大 IP 范围的路由。
+            final int MAX_ROUTES_LEGACY_ANDROID = (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) ? 3000 : Integer.MAX_VALUE;
+            List<CidrBlock> nonChina = new ArrayList<>(router.getNonChinaCidrs());
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                nonChina.sort(Comparator.comparingInt(c -> c.prefixLen));
+            }
             int added = 0;
-            for (CidrBlock cidr : router.getNonChinaCidrs()) {
+            for (CidrBlock cidr : nonChina) {
+                if (added >= MAX_ROUTES_LEGACY_ANDROID) break;
                 InetAddress addr = cidr.toInetAddress();
                 if (addr == null) continue;
                 // 将此 CIDR 剔除所有本地子网后的残余部分加入 VPN 路由
@@ -1638,9 +1650,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     parts = next;
                 }
                 for (long[] r : parts) {
+                    if (added >= MAX_ROUTES_LEGACY_ANDROID) break;
                     builder.addRoute(longToIpv4Addr(r[0]), (int) r[1]);
                     added++;
                 }
+            }
+            if (added >= MAX_ROUTES_LEGACY_ANDROID) {
+                LogUtil.w(TAG, "CHINA_DIRECT (Android 11-): 已达路由上限 " + MAX_ROUTES_LEGACY_ANDROID
+                        + " 条，部分非中国路由可能未加入 VPN 路由表");
             }
             LogUtil.d(TAG, "CHINA_DIRECT (Android 12-): 添加 " + added + " 条非中国路由");
         }

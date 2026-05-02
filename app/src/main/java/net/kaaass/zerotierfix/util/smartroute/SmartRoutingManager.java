@@ -255,27 +255,44 @@ public class SmartRoutingManager {
 
     private void loadOrDownloadChnroutes() {
         File file = new File(context.getFilesDir(), Constants.FILE_CHNROUTES);
-        if (!file.exists() || file.length() < 100) {
-            // 先尝试从 APK 内置 assets 复制（无需网络，立即可用）
+        boolean needsDownload = !file.exists() || file.length() < 100;
+        if (needsDownload) {
+            // 先从 APK 内置 assets 复制种子文件（无需网络，立即可用）
             copyFromAssets(Constants.FILE_CHNROUTES, file);
-            // 再尝试从网络下载最新版本（可能覆盖内置版本）
-            downloadFile(CHNROUTES_URL, CHNROUTES_URL_FALLBACK, file, "chnroutes");
         }
-        if (file.exists()) {
+        // 立即解析当前文件（assets 种子或之前缓存的版本），确保路由表尽快就绪，
+        // 不阻塞于后续的网络下载，消除 VPN 建立前 chnroutes 未就绪的竞态窗口。
+        if (file.exists() && file.length() >= 100) {
             parseChnroutes(file);
+        }
+        if (needsDownload) {
+            // 尝试从网络下载最新版本；仅在实际获取到新内容时重新解析
+            long sizeBefore = file.exists() ? file.length() : 0;
+            downloadFile(CHNROUTES_URL, CHNROUTES_URL_FALLBACK, file, "chnroutes");
+            if (file.exists() && file.length() != sizeBefore && file.length() >= 100) {
+                parseChnroutes(file);
+            }
         }
     }
 
     private void loadOrDownloadGfwList() {
         File file = new File(context.getFilesDir(), Constants.FILE_GFWLIST);
-        if (!file.exists() || file.length() < 100) {
-            // 先尝试从 APK 内置 assets 复制（无需网络，立即可用）
+        boolean needsDownload = !file.exists() || file.length() < 100;
+        if (needsDownload) {
+            // 先从 APK 内置 assets 复制种子文件（无需网络，立即可用）
             copyFromAssets(Constants.FILE_GFWLIST, file);
-            // 再尝试从网络下载最新版本（可能覆盖内置版本）
-            downloadFile(GFWLIST_URL, GFWLIST_URL_FALLBACK, file, "gfwlist");
         }
-        if (file.exists()) {
+        // 立即解析当前文件
+        if (file.exists() && file.length() >= 100) {
             parseGfwList(file);
+        }
+        if (needsDownload) {
+            // 尝试从网络下载最新版本；仅在实际获取到新内容时重新解析
+            long sizeBefore = file.exists() ? file.length() : 0;
+            downloadFile(GFWLIST_URL, GFWLIST_URL_FALLBACK, file, "gfwlist");
+            if (file.exists() && file.length() != sizeBefore && file.length() >= 100) {
+                parseGfwList(file);
+            }
         }
     }
 
