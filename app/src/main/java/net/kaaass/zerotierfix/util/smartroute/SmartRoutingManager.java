@@ -361,6 +361,9 @@ public class SmartRoutingManager {
             LogUtil.w(TAG, "持久化自学习直连 IP 失败: " + e.getMessage());
         }
     }
+
+    /**
+     * 处理一条 DNS 嗅探记录（由 TunTapAdapter 调用）
      *
      * @param record DNS A/AAAA 记录
      */
