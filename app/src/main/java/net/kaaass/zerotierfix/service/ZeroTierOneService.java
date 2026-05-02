@@ -1023,12 +1023,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     LogUtil.e(TAG, "保护局域网连接时出错: " + e.getMessage());
                 }
                 
-                // IPv6 全局路由：国内直连模式始终跳过 ::/0 通过 ZT。
-                // 中国 IPv6 地址（腾讯 CDN、CERNET）若经 ZT 境外节点转发会增加延迟，直接走物理网络更快。
-                // 新版本始终以 CHINA_DIRECT 运行，因此此分支始终不执行。
-                if (!this.disableIPv6 && !shouldAddGlobalRoutes) {
-                    configureDirectIPv6Routing(builder, virtualNetworkConfig, assignedAddresses);
-                }
+                // 新版本始终以 CHINA_DIRECT 运行，跳过 IPv6 全局路由（::/0 通过 ZT）。
+                // 中国 IPv6 地址（腾讯 CDN、CERNET）直接走物理网络，无需经境外 ZT 节点转发。
                 
             } catch (Exception e) {
                 LogUtil.e(TAG, "添加默认路由时出错: " + e.getMessage(), e);
