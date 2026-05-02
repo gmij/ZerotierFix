@@ -1605,12 +1605,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 如果下面某段出现 NOT_IN_CHINA，说明 chnroutes_supplement.txt 或当前 chnroutes.txt
         // 缺少该段，需要手动触发强制刷新或更新 chnroutes_supplement.txt。
         String[] tencentCidrChecks = {
-                // ── chnroutes_supplement.txt 中已补充的 5 个腾讯云段 ──
+                // ── AS45090 (Tencent Cloud China) ──
                 "43.128.0.0",  // 43.128.0.0/13  腾讯云新节点（视频号直播 CDN 调度）
                 "43.152.0.0",  // 43.152.0.0/13  腾讯云上海节点
                 "162.62.0.0",  // 162.62.0.0/16  腾讯云国内节点
                 "101.33.0.0",  // 101.33.0.0/17  腾讯云广州/北京
                 "119.28.0.0",  // 119.28.0.0/16  旧 QCloud
+                // ── AS132203 (Tencent Cloud International, 用于中国 CDN) ──
+                "129.226.0.0", // 129.226.0.0/16 视频号直播实测命中（szlong.weixin.qq.com）
+                "150.109.0.0", // 150.109.0.0/16 WeChat CDN / apmplus
+                "49.51.0.0",   // 49.51.0.0/16   Tencent Cloud International
                 // ── 其他常见腾讯/视频直播相关 IP（应在 chnroutes.txt BGP 数据中） ──
                 "183.2.0.0",   // 183.2.0.0/16   腾讯 AS17623（微信 CDN 常用）
                 "175.27.0.0",  // 175.27.0.0/16  腾讯云（B 站/视频号 CDN）
@@ -1619,6 +1623,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         String[] tencentCidrLabels = {
                 "43.128.0.0/13", "43.152.0.0/13", "162.62.0.0/16",
                 "101.33.0.0/17", "119.28.0.0/16",
+                "129.226.0.0/16", "150.109.0.0/16", "49.51.0.0/16",
                 "183.2.0.0/16", "175.27.0.0/16", "58.250.0.0/15",
         };
         for (int i = 0; i < tencentCidrChecks.length; i++) {
