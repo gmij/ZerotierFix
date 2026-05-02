@@ -11,6 +11,8 @@ import android.net.ConnectivityManager;
 import android.net.IpPrefix;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.VpnService;
 import android.os.Binder;
 import android.os.Build;
@@ -152,12 +154,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             "1.0.0.1",    // Cloudflare DNS 备
     };
     /**
-     * Android 13+ excludeRoute 最大条数。
-     * Binder 单次事务上限（1 MB）在部分 OEM ROM 中更低（如 600 KB）；
-     * 中国 IP CIDR 约 7 400+ 条，全部序列化约 620 KB，可能触发 TransactionTooLargeException。
-     * 限制为 4 000 条（排除覆盖最广的短前缀 CIDR），序列化约 336 KB，安全余量充足。
+     * Android 13+ excludeRoute 最大条数（安全上限）。
+     * Binder 单次事务上限（1 MB）在部分 OEM ROM 中更低（如 600 KB）。
+     * CIDR 聚合后中国 IP 数量通常降至 4 000-6 000 条（视 chnroutes 数据而定），
+     * 此上限作为最后一道安全网，确保即使在极端 OEM 设备上也不超过 Binder 限制。
+     * 6 500 条 × ~83 字节 ≈ 540 KB，低于常见 OEM 600 KB 限制。
      */
-    private static final int MAX_EXCLUDE_ROUTES_ANDROID13 = 4000;
+    private static final int MAX_EXCLUDE_ROUTES_ANDROID13 = 6500;
     private final IBinder mBinder = new ZeroTierBinder();
     private final DataStore dataStore = new DataStore(this);
     private final EventBus eventBus = EventBus.getDefault();
@@ -1293,10 +1296,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 注册网络变化回调。
      * 当手机在 WiFi、4G/5G、蓝牙热点等网络之间切换时，本地子网会发生变化，
      * 需要重新计算 VPN 路由排除列表以确保本地子网不被意外路由至 TUN。
+     *
+     * <p>重要：使用带 {@code NET_CAPABILITY_NOT_VPN} 的 {@link NetworkRequest} 过滤掉
+     * VPN 自身的网络事件。若使用 {@code registerDefaultNetworkCallback}，VPN 建立时
+     * 虚拟网络会成为新的默认网络并触发 {@code onAvailable}，导致每次重建 VPN 都再次
+     * 触发回调，形成无限重建循环，VPN 图标持续闪烁或消失。
      */
     private void registerNetworkChangeCallback() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
-            // API 24 以下不支持 registerDefaultNetworkCallback
+            // API 24 以下不支持 registerNetworkCallback
             return;
         }
         // 启动后台 HandlerThread，用于异步执行 VPN 重建，避免阻塞系统回调线程
@@ -1341,8 +1349,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     onNetworkChanged();
                 }
             };
-            cm.registerDefaultNetworkCallback(this.networkCallback);
-            LogUtil.d(TAG, "已注册网络变化回调");
+            // 仅监听非 VPN 的物理网络（WiFi、蜂窝、以太网等）变化。
+            // 不使用 registerDefaultNetworkCallback，因为它同样会在 VPN 建立时触发
+            // onAvailable，导致 VPN 反复重建（VPN 建立 → 成为默认网络 → 触发回调 →
+            // 重建 VPN → 再次成为默认网络 → 无限循环），VPN 图标因此持续消失。
+            NetworkRequest physicalNetworkRequest = new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                    .build();
+            cm.registerNetworkCallback(physicalNetworkRequest, this.networkCallback);
+            LogUtil.d(TAG, "已注册网络变化回调（仅监听物理网络）");
         } catch (Exception e) {
             LogUtil.w(TAG, "注册网络变化回调失败: " + e.getMessage());
         }
@@ -1788,11 +1803,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         } else {
             // Android 12-：添加非中国 CIDR，每条再剔除本地活跃子网。
-            // 非中国 CIDR 补集约 14,000+ 条。所有 Android 版本的 Binder 事务上限均为 1MB；
-            // 14,000 条路由序列化后约 1.1MB，会触发 TransactionTooLargeException 导致 establish() 失败。
-            // 将总路由条数限制在安全范围内（3000 条 × ~80 字节 ≈ 240KB，远低于 1MB Binder 上限）。
-            // 按前缀长度升序排序（前缀越短 = 覆盖越广），优先保留覆盖最大 IP 范围的路由。
-            final int MAX_ROUTES_LEGACY_ANDROID = 3000;
+            // 非中国 CIDR 补集数量取决于聚合后的中国 CIDR 数量，通常在 8 000-12 000 条左右。
+            // Binder 事务上限约 600 KB-1 MB；按前缀长度升序排序（前缀越短 = 覆盖越广），
+            // 优先保留覆盖最大 IP 范围的路由，并将总条数限制在 5 000 条（约 415 KB）以内。
+            final int MAX_ROUTES_LEGACY_ANDROID = 5000;
             List<CidrBlock> nonChina = new ArrayList<>(router.getNonChinaCidrs());
             nonChina.sort(Comparator.comparingInt(c -> c.prefixLen));
             int added = 0;

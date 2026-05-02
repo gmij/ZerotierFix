@@ -540,12 +540,17 @@ public class SmartRoutingManager {
             LogUtil.w(TAG, "读取 chnroutes_supplement.txt 失败: " + e.getMessage());
         }
         Collections.sort(blocks);
-        this.chinaCidrs = Collections.unmodifiableList(blocks);
+        // CIDR 聚合：将相邻/重叠的中国 CIDR 合并为最小等价集合。
+        // 对于 chnroutes2 BGP 数据，聚合通常可减少 20-40% 的条目数（将相邻 /24 合并为 /23、/22 等），
+        // 显著降低 VPN 路由表的 Binder parcel 大小，从而避免 establish() 抛出 TransactionTooLargeException。
+        int beforeAgg = blocks.size();
+        List<CidrBlock> aggregated = CidrBlock.aggregate(blocks);
+        this.chinaCidrs = Collections.unmodifiableList(aggregated);
         this.nonChinaCidrs = Collections.unmodifiableList(
-                CidrBlock.computeComplement(blocks));
-        LogUtil.i(TAG, "已加载 " + blocks.size() + " 条中国 IP 路由（含 "
-                + supplementalAdded + " 条腾讯云补充段），补集 "
-                + nonChinaCidrs.size() + " 条");
+                CidrBlock.computeComplement(aggregated));
+        LogUtil.i(TAG, "已加载 " + beforeAgg + " 条中国 IP 路由（含 "
+                + supplementalAdded + " 条腾讯云补充段），聚合后 " + aggregated.size()
+                + " 条，补集 " + nonChinaCidrs.size() + " 条");
         // 通知等待中的 CHINA_DIRECT VPN 路由重建（getAndSet 原子读取并清除，消除竞态）
         OnChnroutesReadyListener l = onChnroutesReadyListenerRef.getAndSet(null);
         if (l != null) {
