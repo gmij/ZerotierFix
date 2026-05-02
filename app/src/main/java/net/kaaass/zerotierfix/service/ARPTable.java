@@ -88,6 +88,13 @@ public class ARPTable {
         if (inetAddress == null) {
             return; // 避免空指针异常
         }
+        // 如果映射关系未变化，只刷新超时时间，避免在高频数据流（视频/直播）下
+        // 重复创建 ARPEntry 对象和进行无意义的四次 ConcurrentHashMap 写入。
+        Long existing = inetAddressToMacAddress.get(inetAddress);
+        if (existing != null && existing == j) {
+            updateArpEntryTime(inetAddress);
+            return;
+        }
         inetAddressToMacAddress.put(inetAddress, j);
         macAddressToInetAdddress.put(j, inetAddress);
         ARPEntry arpEntry = new ARPEntry(j, inetAddress);
@@ -122,7 +129,6 @@ public class ARPTable {
             return -1;
         }
         
-        Log.d(TAG, "Returning MAC for " + inetAddress.toString());
         var longValue = inetAddressToMacAddress.get(inetAddress);
         if (longValue != null) {
             updateArpEntryTime(longValue);
@@ -196,8 +202,6 @@ public class ARPTable {
             Log.e(TAG, "Invalid ARP packet");
             return null;
         }
-        
-        Log.d(TAG, "Processing ARP packet");
 
         InetAddress srcAddress = null;
         InetAddress dstAddress = null;
@@ -241,7 +245,6 @@ public class ARPTable {
             var packetType = packetData[7];
             if (packetType == REQUEST) {
                 // ARP 请求，返回应答数据
-                Log.d(TAG, "Reply needed");
                 return new ARPReplyData(srcMac, srcAddress);
             }
         } catch (Exception e) {
