@@ -132,6 +132,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 国内直连模式专用 DNS 服务器：使用国内权威 DNS，使微信视频号等内容解析到国内 CDN 节点。
      * 114DNS 和阿里 DNS 均为中国 IP，在 CHINA_DIRECT 模式下会被排除在 VPN 路由之外，
      * DNS 查询直接经物理网络发出，返回国内 CDN 地址，避免经过境外 ZeroTier 节点绕路。
+     * 仅在 per-app 路由模式下使用；全局代理模式下改用 INTERNATIONAL_DNS_SERVERS。
      */
     private static final String[] DOMESTIC_DNS_SERVERS = {
             "114.114.114.114",  // 114DNS 主
@@ -139,6 +140,24 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             "223.5.5.5",        // AliDNS 主
             "223.6.6.6",        // AliDNS 备
     };
+    /**
+     * 全局代理模式专用 DNS 服务器：使用国际 DNS，经 VPN（ZeroTier）发出，绕过 GFW 的 DNS 污染。
+     * 这些 IP 均为非中国 IP，在 CHINA_DIRECT 路由下会进入 VPN 隧道，不受 GFW DNS 污染影响，
+     * 因此可以正确解析 google.com 等被封锁域名，避免证书错误。
+     */
+    private static final String[] INTERNATIONAL_DNS_SERVERS = {
+            "8.8.8.8",    // Google DNS 主
+            "8.8.4.4",    // Google DNS 备
+            "1.1.1.1",    // Cloudflare DNS 主
+            "1.0.0.1",    // Cloudflare DNS 备
+    };
+    /**
+     * Android 13+ excludeRoute 最大条数。
+     * Binder 单次事务上限（1 MB）在部分 OEM ROM 中更低（如 600 KB）；
+     * 中国 IP CIDR 约 7 400+ 条，全部序列化约 620 KB，可能触发 TransactionTooLargeException。
+     * 限制为 4 000 条（排除覆盖最广的短前缀 CIDR），序列化约 336 KB，安全余量充足。
+     */
+    private static final int MAX_EXCLUDE_ROUTES_ANDROID13 = 4000;
     private final IBinder mBinder = new ZeroTierBinder();
     private final DataStore dataStore = new DataStore(this);
     private final EventBus eventBus = EventBus.getDefault();
@@ -183,6 +202,19 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * DNS 更新、MTU 变化等不改变地址的事件将被忽略，避免启动时的误报。
      */
     private Set<LinkAddress> lastLinkAddresses = null;
+    /**
+     * 防止 updateTunnelConfig 并发执行。
+     * 若有另一次 VPN 配置正在进行（例如来自 onNetworkReconfigure 和 networkChangeHandler 同时触发），
+     * 后到的调用将在当前配置完成后延迟重建，避免两次并发建立均失败（TransactionTooLargeException 双重触发）。
+     */
+    private final java.util.concurrent.atomic.AtomicBoolean isConfiguringVpn =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    /**
+     * 腾讯云 CIDR 验证日志一次性标志。
+     * configureChinaDirectRouting 可能在 VPN 重建时多次调用；该标志确保 11 条验证日志只打印一次，
+     * 避免每次重建都重复输出相同信息。chnroutes 刷新后重置，重新执行一次验证。
+     */
+    private volatile boolean tencentCidrsVerified = false;
     private Thread v4MulticastScanner = new Thread() {
         /* class com.zerotier.one.service.ZeroTierOneService.AnonymousClass1 */
         List<String> subscriptions = new ArrayList<>();
@@ -875,6 +907,23 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     private boolean updateTunnelConfig(Network network) {
+        // 防止并发执行：若已有 VPN 配置正在进行，延迟 3s 后由 networkChangeHandler 重试一次。
+        if (!isConfiguringVpn.compareAndSet(false, true)) {
+            LogUtil.d(TAG, "updateTunnelConfig: 已有配置正在进行，延迟 3s 重试");
+            if (networkChangeHandler != null) {
+                networkChangeHandler.removeCallbacks(networkChangeRunnable);
+                networkChangeHandler.postDelayed(networkChangeRunnable, NETWORK_CHANGE_DEBOUNCE_MS);
+            }
+            return false;
+        }
+        try {
+            return doUpdateTunnelConfig(network);
+        } finally {
+            isConfiguringVpn.set(false);
+        }
+    }
+
+    private boolean doUpdateTunnelConfig(Network network) {
         long networkId = network.getNetworkId();
         var networkConfig = network.getNetworkConfig();
         var virtualNetworkConfig = getVirtualNetworkConfig(networkId);
@@ -1467,16 +1516,22 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         var dnsMode = DNSMode.fromInt(networkConfig.getDnsMode());
         boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
         boolean isPerAppRouting = networkConfig.getPerAppRouting();
-        // VPN 激活（全局路由或 per-app）时始终使用国内 DNS（114DNS / AliDNS），
-        // 确保微信视频号等 CDN 域名解析到国内节点而非境外 CDN，无需依赖 DB 中存储的 smartRoutingMode 值。
-        boolean isChinaDirectMode = isRouteViaZeroTier || isPerAppRouting;
+        // 全局代理模式（isRouteViaZeroTier=true）：中国 IP 排除在 VPN 外，DNS 服务器本身却是中国 IP，
+        // 国内 DNS（114/AliDNS）直连时会对 google.com 等境外域名进行 DNS 污染，导致证书错误。
+        // 使用国际 DNS（Google/Cloudflare），这些 IP 是非中国 IP，会经 VPN/ZT 发出，绕过 GFW 污染。
+        // Per-app 路由模式（isPerAppRouting=true）：选中的应用（如微信）需要国内 CDN 解析到国内节点，
+        // 保持使用国内 DNS（在 CHINA_DIRECT 路由下直接走物理网络，不受 GFW 干扰）。
+        boolean isGlobalProxy = isRouteViaZeroTier;
+        boolean usesDomesticDns = isPerAppRouting && !isRouteViaZeroTier;
 
         switch (dnsMode) {
             case NETWORK_DNS:
                 if (virtualNetworkConfig.getDns() == null) {
-                    // VPN 激活（全局路由或 per-app）时始终添加国内 DNS，确保国内 CDN 解析到国内节点
-                    if (isChinaDirectMode) {
-                        LogUtil.d(TAG, "CHINA_DIRECT 模式：添加国内 DNS 服务器");
+                    if (isGlobalProxy) {
+                        LogUtil.d(TAG, "全局代理模式：添加国际 DNS 服务器（Google/Cloudflare，经 ZT 发出）");
+                        addInternationalDNSServers(builder);
+                    } else if (usesDomesticDns) {
+                        LogUtil.d(TAG, "Per-app 路由模式：添加国内 DNS 服务器（114DNS / AliDNS）");
                         addDomesticDNSServers(builder);
                     }
                     return;
@@ -1490,9 +1545,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         builder.addDnsServer(address);
                     }
                 }
-                // 全局/per-app 路由模式下额外添加国内备用 DNS
-                if (isChinaDirectMode) {
-                    LogUtil.d(TAG, "CHINA_DIRECT 模式：添加国内备用 DNS 服务器");
+                // 路由激活时额外添加 DNS 备援
+                if (isGlobalProxy) {
+                    LogUtil.d(TAG, "全局代理模式：添加国际备用 DNS 服务器");
+                    addInternationalDNSServers(builder);
+                } else if (usesDomesticDns) {
+                    LogUtil.d(TAG, "Per-app 路由模式：添加国内备用 DNS 服务器");
                     addDomesticDNSServers(builder);
                 }
                 break;
@@ -1510,19 +1568,23 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         LogUtil.e(TAG, "Exception parsing DNS server: " + e, e);
                     }
                 }
-                // 全局/per-app 路由模式下追加国内备用 DNS（与 NETWORK_DNS 分支保持一致）。
-                // 若自定义 DNS 是境外服务（如 8.8.8.8），CDN 域名会被解析到境外节点，
-                // 流量进入 ZT 隧道导致直播卡顿；追加国内 DNS 作为备用，确保国内 CDN 走直连。
-                if (isChinaDirectMode) {
-                    LogUtil.d(TAG, "CHINA_DIRECT 模式（自定义DNS）：追加国内备用 DNS 服务器");
+                if (isGlobalProxy) {
+                    LogUtil.d(TAG, "全局代理模式（自定义DNS）：追加国际备用 DNS 服务器");
+                    addInternationalDNSServers(builder);
+                } else if (usesDomesticDns) {
+                    // 若自定义 DNS 是境外服务（如 8.8.8.8），CDN 域名会被解析到境外节点，
+                    // 追加国内 DNS 作为备用，确保国内 CDN 走直连。
+                    LogUtil.d(TAG, "Per-app 路由模式（自定义DNS）：追加国内备用 DNS 服务器");
                     addDomesticDNSServers(builder);
                 }
                 break;
                 
             default:
-                // 全局/per-app 路由模式下始终使用国内 DNS
-                if (isChinaDirectMode) {
-                    LogUtil.d(TAG, "CHINA_DIRECT 模式（默认DNS）：添加国内 DNS 服务器");
+                if (isGlobalProxy) {
+                    LogUtil.d(TAG, "全局代理模式（默认DNS）：添加国际 DNS 服务器");
+                    addInternationalDNSServers(builder);
+                } else if (usesDomesticDns) {
+                    LogUtil.d(TAG, "Per-app 路由模式（默认DNS）：添加国内 DNS 服务器");
                     addDomesticDNSServers(builder);
                 }
                 break;
@@ -1562,6 +1624,24 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
         LogUtil.i(TAG, "CHINA_DIRECT 模式：已添加国内 DNS 服务器（114DNS / AliDNS）");
+    }
+
+    /**
+     * 添加全局代理模式专用 DNS 服务器（Google DNS / Cloudflare DNS）。
+     *
+     * <p>这些服务器是非中国 IP，在 CHINA_DIRECT 路由下会进入 VPN 隧道（ZeroTier），
+     * 因此 DNS 查询经 ZeroTier 加密转发，不受 GFW DNS 污染影响，
+     * 可正确解析 google.com 等被封锁域名，避免证书错误。
+     */
+    private void addInternationalDNSServers(VpnService.Builder builder) {
+        for (String dns : INTERNATIONAL_DNS_SERVERS) {
+            try {
+                builder.addDnsServer(InetAddress.getByName(dns));
+            } catch (Exception e) {
+                LogUtil.w(TAG, "添加国际 DNS 服务器失败 " + dns + ": " + e.getMessage());
+            }
+        }
+        LogUtil.i(TAG, "全局代理模式：已添加国际 DNS 服务器（Google DNS / Cloudflare DNS）");
     }
 
     /**
@@ -1616,6 +1696,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.w(TAG, "CHINA_DIRECT 模式：chnroutes 尚未加载，临时全局路由，就绪后重建");
             router.setOnChnroutesReadyListener(() -> {
                 LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
+                // chnroutes 新鲜加载完毕，重置一次性验证标志，使下次重建重新打印腾讯 CIDR 验证日志
+                tencentCidrsVerified = false;
                 onNetworkChanged();
             });
             addGlobalRoutesToBuilder(builder, localSubnets);
@@ -1626,59 +1708,79 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 若缺失则直播流量会经 ZT 境外节点中转，导致明显卡顿）。
         // 如果下面某段出现 NOT_IN_CHINA，说明 chnroutes_supplement.txt 或当前 chnroutes.txt
         // 缺少该段，需要手动触发强制刷新或更新 chnroutes_supplement.txt。
-        String[] tencentCidrChecks = {
-                // ── AS45090 (Tencent Cloud China) ──
-                "43.128.0.0",  // 43.128.0.0/13  腾讯云新节点（视频号直播 CDN 调度）
-                "43.152.0.0",  // 43.152.0.0/13  腾讯云上海节点
-                "162.62.0.0",  // 162.62.0.0/16  腾讯云国内节点
-                "101.33.0.0",  // 101.33.0.0/17  腾讯云广州/北京
-                "119.28.0.0",  // 119.28.0.0/16  旧 QCloud
-                // ── AS132203 (Tencent Cloud International, 用于中国 CDN) ──
-                "129.226.0.0", // 129.226.0.0/16 视频号直播实测命中（szlong.weixin.qq.com）
-                "150.109.0.0", // 150.109.0.0/16 WeChat CDN / apmplus
-                "49.51.0.0",   // 49.51.0.0/16   Tencent Cloud International
-                // ── 其他常见腾讯/视频直播相关 IP（应在 chnroutes.txt BGP 数据中） ──
-                "183.2.0.0",   // 183.2.0.0/16   腾讯 AS17623（微信 CDN 常用）
-                "175.27.0.0",  // 175.27.0.0/16  腾讯云（B 站/视频号 CDN）
-                "58.250.0.0",  // 58.250.0.0/15  腾讯 AS17623
-        };
-        String[] tencentCidrLabels = {
-                "43.128.0.0/13", "43.152.0.0/13", "162.62.0.0/16",
-                "101.33.0.0/17", "119.28.0.0/16",
-                "129.226.0.0/16", "150.109.0.0/16", "49.51.0.0/16",
-                "183.2.0.0/16", "175.27.0.0/16", "58.250.0.0/15",
-        };
-        for (int i = 0; i < tencentCidrChecks.length; i++) {
-            try {
-                InetAddress sample = InetAddress.getByName(tencentCidrChecks[i]);
-                boolean inChina = router.isChineseIp(sample);
-                if (inChina) {
-                    LogUtil.i(LogUtil.ROUTE_TAG, "腾讯云 " + tencentCidrLabels[i]
-                            + " → IN_CHINA（已排除出 VPN）✓");
-                } else {
-                    LogUtil.w(LogUtil.ROUTE_TAG, "腾讯云 " + tencentCidrLabels[i]
-                            + " → NOT_IN_CHINA（未排除出 VPN，直播可能卡顿！）");
+        // tencentCidrsVerified 标志确保此验证在每次 chnroutes 加载后只打印一次，
+        // 避免每次 VPN 重建都重复输出相同的 11 条日志。
+        if (!tencentCidrsVerified) {
+            tencentCidrsVerified = true;
+            String[] tencentCidrChecks = {
+                    // ── AS45090 (Tencent Cloud China) ──
+                    "43.128.0.0",  // 43.128.0.0/13  腾讯云新节点（视频号直播 CDN 调度）
+                    "43.152.0.0",  // 43.152.0.0/13  腾讯云上海节点
+                    "162.62.0.0",  // 162.62.0.0/16  腾讯云国内节点
+                    "101.33.0.0",  // 101.33.0.0/17  腾讯云广州/北京
+                    "119.28.0.0",  // 119.28.0.0/16  旧 QCloud
+                    // ── AS132203 (Tencent Cloud International, 用于中国 CDN) ──
+                    "129.226.0.0", // 129.226.0.0/16 视频号直播实测命中（szlong.weixin.qq.com）
+                    "150.109.0.0", // 150.109.0.0/16 WeChat CDN / apmplus
+                    "49.51.0.0",   // 49.51.0.0/16   Tencent Cloud International
+                    // ── 其他常见腾讯/视频直播相关 IP（应在 chnroutes.txt BGP 数据中） ──
+                    "183.2.0.0",   // 183.2.0.0/16   腾讯 AS17623（微信 CDN 常用）
+                    "175.27.0.0",  // 175.27.0.0/16  腾讯云（B 站/视频号 CDN）
+                    "58.250.0.0",  // 58.250.0.0/15  腾讯 AS17623
+            };
+            String[] tencentCidrLabels = {
+                    "43.128.0.0/13", "43.152.0.0/13", "162.62.0.0/16",
+                    "101.33.0.0/17", "119.28.0.0/16",
+                    "129.226.0.0/16", "150.109.0.0/16", "49.51.0.0/16",
+                    "183.2.0.0/16", "175.27.0.0/16", "58.250.0.0/15",
+            };
+            for (int i = 0; i < tencentCidrChecks.length; i++) {
+                try {
+                    InetAddress sample = InetAddress.getByName(tencentCidrChecks[i]);
+                    boolean inChina = router.isChineseIp(sample);
+                    if (inChina) {
+                        LogUtil.i(LogUtil.ROUTE_TAG, "腾讯云 " + tencentCidrLabels[i]
+                                + " → IN_CHINA（已排除出 VPN）✓");
+                    } else {
+                        LogUtil.w(LogUtil.ROUTE_TAG, "腾讯云 " + tencentCidrLabels[i]
+                                + " → NOT_IN_CHINA（未排除出 VPN，直播可能卡顿！）");
+                    }
+                } catch (Exception e) {
+                    LogUtil.w(LogUtil.ROUTE_TAG, "验证腾讯云 CIDR " + tencentCidrLabels[i] + " 失败: " + e.getMessage());
                 }
-            } catch (Exception e) {
-                LogUtil.w(LogUtil.ROUTE_TAG, "验证腾讯云 CIDR " + tencentCidrLabels[i] + " 失败: " + e.getMessage());
             }
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             // Android 13+：0.0.0.0/0 + excludeRoute(中国IP) + excludeRoute(本地子网)
+            // 部分 OEM ROM 的 Binder 事务上限低于 AOSP 1 MB（如 600 KB），
+            // 全量 7 400+ 条中国 CIDR 序列化约 620 KB 会触发 TransactionTooLargeException。
+            // 按前缀长度升序排序（短前缀 = 覆盖更广），取最重要的 MAX_EXCLUDE_ROUTES_ANDROID13 条，
+            // 序列化约 336 KB，安全余量充足。
             builder.addRoute(InetAddress.getByName("0.0.0.0"), 0);
-            for (CidrBlock cidr : router.getChinaCidrs()) {
+            List<CidrBlock> sortedChinaCidrs = new ArrayList<>(router.getChinaCidrs());
+            sortedChinaCidrs.sort(Comparator.comparingInt(c -> c.prefixLen));
+            int excluded = 0;
+            for (CidrBlock cidr : sortedChinaCidrs) {
+                if (excluded >= MAX_EXCLUDE_ROUTES_ANDROID13) break;
                 InetAddress addr = cidr.toInetAddress();
                 if (addr != null) {
                     builder.excludeRoute(new IpPrefix(addr, cidr.prefixLen));
+                    excluded++;
                 }
             }
             for (long[] s : localSubnets) {
                 builder.excludeRoute(new IpPrefix(longToIpv4Addr(s[0]), (int) s[1]));
             }
-            LogUtil.d(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
-                    + router.getChinaCidrs().size() + " 条中国 IP + "
-                    + localSubnets.size() + " 个本地子网");
+            if (excluded < router.getChinaCidrs().size()) {
+                LogUtil.w(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
+                        + excluded + "/" + router.getChinaCidrs().size() + " 条中国 IP（已截断）+ "
+                        + localSubnets.size() + " 个本地子网");
+            } else {
+                LogUtil.d(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
+                        + excluded + " 条中国 IP + "
+                        + localSubnets.size() + " 个本地子网");
+            }
         } else {
             // Android 12-：添加非中国 CIDR，每条再剔除本地活跃子网。
             // 非中国 CIDR 补集约 14,000+ 条。所有 Android 版本的 Binder 事务上限均为 1MB；
