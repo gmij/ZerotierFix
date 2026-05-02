@@ -242,10 +242,14 @@ public class SmartRoutingManager {
                         + " -> direct (CN)");
             }
         } else {
-            // 非中国 IP：直播相关域名升级为 INFO 级，便于发现 CDN 被误判走 ZT 的问题
+            // 非中国 IP：直播相关域名升级为 WARN 级，便于发现 CDN 被误判走 ZT 的问题。
+            // 此日志说明直播 CDN IP 不在 chnroutes 中，流量会经 ZT 转发，可能导致直播卡顿。
+            // 如果此日志出现，请将对应 IP 段添加到 assets/chnroutes_supplement.txt。
             if (isLiveStreamingDomain(record.domain)) {
-                LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                        + " -> ZT");
+                LogUtil.w(LogUtil.DNS_TAG, "⚠ 直播 CDN 走 ZT（非中国IP）: "
+                        + record.domain + " -> " + record.ip.getHostAddress()
+                        + " -> ZT；该 IP 段不在 chnroutes 中，直播可能卡顿，"
+                        + "请将此 IP 段加入 chnroutes_supplement.txt");
             } else {
                 LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
                         + " -> ZT");
@@ -436,6 +440,13 @@ public class SmartRoutingManager {
     /**
      * 判断域名是否属于直播相关服务（微信视频号、腾讯视频、B 站等），
      * 用于将该类域名的 DNS 解析日志提升为 INFO 级，release 包也可见。
+     *
+     * <p><b>注意 – DNS 嗅探盲区</b>：此方法仅在 DNS 响应经由 ZeroTier 虚拟网络返回时生效
+     * （{@code onVirtualNetworkFrame} 捕获）。在 CHINA_DIRECT 模式下，国内 DNS 服务器
+     * （114.114.114.114 等）是中国 IP，已通过 {@code excludeRoute} 排除在 VPN 之外，
+     * DNS 请求直接走物理网络，响应<em>不经过</em> ZeroTier，{@code onDnsRecord} 永远不会被调用。
+     * 这意味着在 CHINA_DIRECT 模式下此 INFO 日志实际不会出现；
+     * 若需判断哪些直播 CDN IP 在走 ZT，请通过 {@code [CONN]} 日志观察进入 TUN 的原始 IP。
      */
     private static boolean isLiveStreamingDomain(String domain) {
         if (domain == null) return false;
@@ -443,10 +454,16 @@ public class SmartRoutingManager {
         // 使用域名后缀匹配，避免误匹配（如 notweixin.example.com）
         return d.endsWith(".weixin.qq.com") || d.endsWith(".weixin.com")
                 || d.endsWith(".video.qq.com") || d.endsWith(".live.qq.com")
+                || d.endsWith(".kvideo.qq.com")          // 微信视频号直播 CDN
                 || d.endsWith(".qpic.cn") || d.endsWith(".qpic.com")
+                || d.endsWith(".myqcloud.com")            // 腾讯云对象存储/CDN（视频号用）
                 || d.endsWith(".tencent.com") || d.endsWith(".tencentvideo.com")
+                || d.endsWith(".wx.qq.com")               // 微信通用域名
+                || d.endsWith(".v.qq.com")                // 腾讯视频
                 || d.endsWith(".bilibili.com") || d.endsWith(".bilivideo.com")
                 || d.endsWith(".youku.com") || d.endsWith(".iqiyi.com")
+                || d.endsWith(".huya.com") || d.endsWith(".huya.cn")  // 虎牙直播
+                || d.endsWith(".douyu.com") || d.endsWith(".douyucdn.cn") // 斗鱼直播
                 || d.endsWith(".vlive.qq.com") || d.endsWith(".livep.qq.com");
     }
 

@@ -820,6 +820,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 // DNS 嗅探：解析 ZT 返回的 DNS 响应，填充 IP→域名 映射和 GFW IP 集合。
                 // 即使在全局路由模式（smartRoutingMode=OFF）下也需要解析，
                 // 以便 [CONN] 日志能显示域名而非纯 IP。
+                //
+                // ⚠ 盲区警告 – CHINA_DIRECT 模式：国内 DNS（114DNS / AliDNS）是中国 IP，
+                // 已通过 excludeRoute 排除在 VPN 之外，DNS 查询走物理网络直达 DNS 服务器，
+                // 响应【不经过】ZeroTier，onVirtualNetworkFrame 永远看不到这些 DNS 包。
+                // 因此 CHINA_DIRECT 模式下 ipToDomain 映射始终为空，[CONN] 日志只有裸 IP。
+                // 如需排查直播 CDN 路由问题（哪些 IP 走了 ZT），请直接查看 [CONN] 日志中的 IP 列表，
+                // 对比 chnroutes 中的中国 IP 段，识别未被排除的 CDN IP 并更新 chnroutes_supplement.txt。
                 if (smartRoutingManager != null) {
                     java.util.List<DnsPacketParser.DnsRecord> records =
                             DnsPacketParser.parseFromIpPacket(frameData);
