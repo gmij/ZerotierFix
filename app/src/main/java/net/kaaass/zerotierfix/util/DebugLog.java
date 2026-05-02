@@ -9,6 +9,10 @@ import net.kaaass.zerotierfix.BuildConfig;
  */
 public class DebugLog {
 
+    public static boolean isDebug() {
+        return BuildConfig.DEBUG;
+    }
+
     public static void d(String tag, String message) {
         if (BuildConfig.DEBUG) {
             Log.d(tag, message);

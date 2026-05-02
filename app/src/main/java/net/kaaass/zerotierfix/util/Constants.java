@@ -63,4 +63,12 @@ public class Constants {
     // 智能路由相关文件名
     public static final String FILE_CHNROUTES = "chnroutes.txt";
     public static final String FILE_GFWLIST   = "gfwlist.txt";
+    /** 补充 China IP 段，与主 chnroutes 文件合并使用（不通过网络更新，随 APK 打包发布） */
+    public static final String FILE_CHNROUTES_SUPPLEMENT = "chnroutes_supplement.txt";
+    /**
+     * 运行时自学习的直连 IP 列表（存储在 getFilesDir()，每行一个 /32 CIDR）。
+     * 由 SmartRoutingManager 在 DNS 嗅探发现直播 CDN 走 ZT 时自动写入，
+     * 下次启动时直接加载，无需重新发现，实现"越用越好用"的自适应直连效果。
+     */
+    public static final String FILE_LEARNED_DIRECT_IPS = "learned_direct_ips.txt";
 }

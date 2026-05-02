@@ -66,6 +66,19 @@ public class IPPacketUtils {
         return (byte) (bArr[0] >> 4);
     }
 
+    /**
+     * Returns the raw IPv4 destination address packed as an int (bytes 16–19),
+     * or 0 if the packet is too short. No {@link InetAddress} object is created,
+     * making this safe to call on every packet in the hot receive path.
+     */
+    public static int getDestIPv4AsInt(byte[] bArr) {
+        if (bArr.length < 20) return 0;
+        return ((bArr[16] & 0xFF) << 24)
+                | ((bArr[17] & 0xFF) << 16)
+                | ((bArr[18] & 0xFF) << 8)
+                |  (bArr[19] & 0xFF);
+    }
+
     public static long calculateChecksum(byte[] bArr, long j, int i, int i2) {
         int i3 = i2 - i;
         while (i3 > 1) {

@@ -6,6 +6,7 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -28,6 +29,9 @@ public class DnsPacketParser {
         }
     }
 
+    /** 空结果常量，避免在非 DNS 包（如 TCP 视频流）的热路径上重复分配 ArrayList 对象 */
+    private static final List<DnsRecord> EMPTY = Collections.emptyList();
+
     /**
      * 尝试从 IPv4 UDP 数据包中解析 DNS 响应
      *
@@ -35,27 +39,26 @@ public class DnsPacketParser {
      * @return 解析出的 DNS A/AAAA 记录列表，解析失败则返回空列表
      */
     public static List<DnsRecord> parseFromIpPacket(byte[] ipPacket) {
-        List<DnsRecord> records = new ArrayList<>();
         try {
-            if (ipPacket.length < 28) return records; // IPv4 header(20) + UDP header(8)
+            if (ipPacket.length < 28) return EMPTY; // IPv4 header(20) + UDP header(8)
             // 检查是否是 UDP 协议 (protocol = 17)
-            if ((ipPacket[9] & 0xFF) != 17) return records;
+            if ((ipPacket[9] & 0xFF) != 17) return EMPTY;
             // IPv4 头部长度
             int ipHeaderLen = (ipPacket[0] & 0x0F) * 4;
-            if (ipPacket.length < ipHeaderLen + 8) return records;
+            if (ipPacket.length < ipHeaderLen + 8) return EMPTY;
             // UDP 源端口（应该是 53）
             int srcPort = ((ipPacket[ipHeaderLen] & 0xFF) << 8) | (ipPacket[ipHeaderLen + 1] & 0xFF);
-            if (srcPort != 53) return records;
+            if (srcPort != 53) return EMPTY;
             // UDP 载荷
             int udpPayloadOffset = ipHeaderLen + 8;
             int udpPayloadLen = ipPacket.length - udpPayloadOffset;
-            if (udpPayloadLen < 12) return records;
+            if (udpPayloadLen < 12) return EMPTY;
             byte[] dns = new byte[udpPayloadLen];
             System.arraycopy(ipPacket, udpPayloadOffset, dns, 0, udpPayloadLen);
             return parseDnsResponse(dns);
         } catch (Exception e) {
             LogUtil.d(TAG, "Failed to parse DNS packet: " + e.getMessage());
-            return records;
+            return EMPTY;
         }
     }
 

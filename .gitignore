@@ -16,6 +16,5 @@
 local.properties
 .idea
 
-# 智能路由数据文件（构建时自动生成，不提交）
+# 智能路由数据文件（chnroutes.txt 已作为种子文件提交；gfwlist.txt 由网络下载）
 app/src/main/assets/gfwlist.txt
-app/src/main/assets/chnroutes.txt

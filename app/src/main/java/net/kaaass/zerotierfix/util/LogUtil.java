@@ -16,6 +16,11 @@ public class LogUtil {
      * The trailing underscore pads the tag to 4 chars so that [DNS ] aligns with [CONN] in logs.
      */
     public static final String DNS_TAG = "DNS_";
+    /**
+     * Tag used for VPN route configuration log entries (CHINA_DIRECT CIDR verification,
+     * route count summaries, etc.).
+     */
+    public static final String ROUTE_TAG = "ROUTE";
     
     /**
      * 记录调试级别日志

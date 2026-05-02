@@ -44,6 +44,8 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private static final int IPV6_PACKET = 34525;
     private static final int TCP_PROTOCOL = 6;
     private static final int UDP_PROTOCOL = 17;
+    /** IPv4 多播地址范围 224.0.0.0/4 的高 4 位标识，用于原始 int 快速检测 */
+    private static final int IPV4_MULTICAST_HIGH_NIBBLE = 0xE;
 
     private final HashMap<Route, Long> routeMap = new HashMap<>();
     private final long networkId;
@@ -67,12 +69,50 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private boolean perAppRoutingActive = false;
 
     /**
-     * 已记录 [CONN] 日志的连接端点集合（destIP:port），用于每条连接只记录一次日志。
+     * 已记录 [CONN] 日志的连接端点集合，用于每条连接只记录一次日志。
+     * 键编码为 long：高 32 位为 IPv4 地址，低 16 位为目标端口，避免在高频数据包路径上分配 String 对象。
      * 网络切换时通过 {@link #clearConnLog()} 清空，重新记录新的连接。
      */
-    private final Set<String> connLoggedSet =
+    private final Set<Long> connLoggedSet =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
     private static final int MAX_CONN_LOG_ENTRIES = 5000;
+
+    /**
+     * 已发出 CHINA_DIRECT 路由漏洞告警的中国 IP 集合（每个 IP 仅告警一次）。
+     * 用 long 编码 IPv4（与 connLoggedSet 格式相同，端口固定为 0 确保无冲突）。
+     */
+    private final Set<Long> chinaDirectLeakWarned =
+            Collections.newSetFromMap(new ConcurrentHashMap<>());
+
+    /**
+     * 缓存的 VirtualNetworkConfig，避免在每个数据包的处理热路径上都进行 synchronized 锁获取。
+     * 在 {@link #clearRouteMap()} 时清空，由下一个数据包按需重新填充。
+     */
+    private volatile VirtualNetworkConfig cachedNetworkConfig;
+    /** 缓存的本地 MAC 地址（来自 cachedNetworkConfig） */
+    private volatile long cachedLocalMac;
+    /** 缓存的本地 IPv4 地址（来自 cachedNetworkConfig 的 assignedAddresses） */
+    private volatile InetAddress cachedLocalV4Address;
+    /** 缓存的本地 IPv4 CIDR 前缀长度 */
+    private volatile int cachedV4Cidr;
+    /** 缓存的本地 IPv6 地址（来自 cachedNetworkConfig 的 assignedAddresses） */
+    private volatile InetAddress cachedLocalV6Address;
+    /** 缓存的本地 IPv6 CIDR 前缀长度 */
+    private volatile int cachedV6Cidr;
+
+    /**
+     * 目标 MAC 快速路径缓存：rawDestIPv4（int）→ finalDestMac（网关解析后的实际 MAC）。
+     *
+     * <p>第一个发往某目标 IP 的数据包会经过完整的路由查找、ARP 查找和连接日志流程；
+     * 成功发送后将 (rawDestIPv4 → destMac) 存入此 Map。
+     * 后续所有发往同一目标 IP 的数据包直接使用缓存的 MAC 调用 processVirtualNetworkFrame，
+     * 跳过路由查找、ARP 查找、智能路由诊断和连接日志等所有开销，
+     * 消除视频/直播高频数据包路径上的每包 synchronized 锁争用和多次 HashMap 查找。
+     *
+     * <p>键为原始 IPv4 地址的 int 形式（bytes 16-19 packed），避免 InetAddress 对象分配。
+     * 在 {@link #clearRouteMap()} 时随其他缓存一起清除，确保路由变更后重新走完整流程。
+     */
+    private final ConcurrentHashMap<Integer, Long> destMacFastPath = new ConcurrentHashMap<>();
 
     public TunTapAdapter(ZeroTierOneService zeroTierOneService, long j) {
         this.ztService = zeroTierOneService;
@@ -85,6 +125,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
      */
     public void clearConnLog() {
         connLoggedSet.clear();
+        chinaDirectLeakWarned.clear();
     }
 
     /**
@@ -181,8 +222,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         int srcPort = ((packetData[ipHdrLen]     & 0xFF) << 8) | (packetData[ipHdrLen + 1] & 0xFF);
         int dstPort = ((packetData[ipHdrLen + 2] & 0xFF) << 8) | (packetData[ipHdrLen + 3] & 0xFF);
 
-        String key = origDestIP.getHostAddress() + ":" + dstPort;
-        if (!connLoggedSet.add(key)) return; // 已记录过此端点
+        // 使用 long 编码（IPv4 地址占 bits 16-47，目标端口占 bits 0-15）作为集合键，
+        // 避免在高频数据包路径上分配 String 对象，减少 GC 压力。
+        byte[] addrBytes = origDestIP.getAddress();
+        long ipLong = ((addrBytes[0] & 0xFFL) << 24) | ((addrBytes[1] & 0xFFL) << 16)
+                | ((addrBytes[2] & 0xFFL) << 8) | (addrBytes[3] & 0xFFL);
+        long connKey = (ipLong << 16) | (dstPort & 0xFFFFL);
+        if (!connLoggedSet.add(connKey)) return; // 已记录过此端点
 
         String destStr = origDestIP.getHostAddress();
         String hostname = (smartRoutingManager != null)
@@ -225,6 +271,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             this.routeMap.clear();
             addMulticastRoutes();
         }
+        // 路由表重建意味着网络配置可能已变更，清除缓存以强制下一个数据包重新加载。
+        this.cachedNetworkConfig = null;
+        this.cachedLocalV4Address = null;
+        this.cachedLocalV6Address = null;
+        this.destMacFastPath.clear();
+        this.connLoggedSet.clear();
+        this.chinaDirectLeakWarned.clear();
     }
 
     private boolean isIPv4Multicast(InetAddress inetAddress) {
@@ -303,14 +356,71 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         this.receiveThread.start();
     }
 
+    /**
+     * 将 {@link VirtualNetworkConfig} 的地址/MAC 信息填充到各 cached* 字段，
+     * 避免在每个数据包的处理热路径上重复遍历 getAssignedAddresses()。
+     * 由 handleIPv4Packet 和 handleIPv6Packet 在缓存失效时共同调用。
+     */
+    private void populateNetworkConfigCache(VirtualNetworkConfig config) {
+        InetAddress v4 = null;
+        InetAddress v6 = null;
+        int v4Cidr = 0, v6Cidr = 0;
+        for (InetSocketAddress addr : config.getAssignedAddresses()) {
+            if (addr.getAddress() instanceof Inet4Address && v4 == null) {
+                v4 = addr.getAddress();
+                v4Cidr = addr.getPort();
+            } else if (addr.getAddress() instanceof Inet6Address && v6 == null) {
+                v6 = addr.getAddress();
+                v6Cidr = addr.getPort();
+            }
+        }
+        this.cachedLocalMac = config.getMac();
+        this.cachedLocalV4Address = v4;
+        this.cachedV4Cidr = v4Cidr;
+        this.cachedLocalV6Address = v6;
+        this.cachedV6Cidr = v6Cidr;
+        this.cachedNetworkConfig = config;
+    }
+
     private void handleIPv4Packet(byte[] packetData) {
+        // ── 超快路径：无 InetAddress 分配 ──
+        // 直接从原始字节提取目的 IPv4（偏移 16–19），避免在每个数据包上都分配
+        // InetAddress / byte[] 对象，彻底消除视频/直播高频数据包路径上的 GC 压力。
+        // 多播地址 224.0.0.0/4 → 高 4 位 == IPV4_MULTICAST_HIGH_NIBBLE，跳过直接路径。
+        // 同时对两个 volatile 字段做本地快照，避免检查与使用之间的 TOCTOU 竞态。
+        int rawDestIP = IPPacketUtils.getDestIPv4AsInt(packetData);
+        VirtualNetworkConfig configSnap = this.cachedNetworkConfig;
+        long localMacSnap = this.cachedLocalMac;
+        if (rawDestIP != 0 && (rawDestIP >>> 28) != IPV4_MULTICAST_HIGH_NIBBLE && configSnap != null) {
+            Long fastMac = destMacFastPath.get(rawDestIP);
+            if (fastMac != null) {
+                long[] fastDeadline = new long[1];
+                var fastResult = this.node.processVirtualNetworkFrame(
+                        System.currentTimeMillis(), this.networkId,
+                        localMacSnap, fastMac, IPV4_PACKET, 0, packetData, fastDeadline);
+                if (fastResult == ResultCode.RESULT_OK) {
+                    this.ztService.setNextBackgroundTaskDeadline(fastDeadline[0]);
+                    return;
+                }
+                // processVirtualNetworkFrame 失败（ZT 节点未就绪等），移除缓存后走完整流程重试
+                destMacFastPath.remove(rawDestIP);
+            }
+        }
+
+        // ── 慢路径（首包或缓存失效） ──
         boolean isMulticast;
-        long destMac;
         var destIP = IPPacketUtils.getDestIP(packetData);
         var sourceIP = IPPacketUtils.getSourceIP(packetData);
-        var virtualNetworkConfig = this.ztService.getVirtualNetworkConfig(this.networkId);
 
-        DebugLog.d(TAG, "处理IPv4数据包: 源IP=" + sourceIP + ", 目的IP=" + destIP + ", 数据包大小=" + packetData.length);
+        // 优先使用缓存的 VirtualNetworkConfig，避免在每个数据包上都进行 synchronized 锁获取。
+        // 缓存在 clearRouteMap() 时失效，确保网络重新配置后能取到最新配置。
+        var virtualNetworkConfig = this.cachedNetworkConfig;
+        if (virtualNetworkConfig == null) {
+            virtualNetworkConfig = this.ztService.getVirtualNetworkConfig(this.networkId);
+            if (virtualNetworkConfig != null) {
+                populateNetworkConfigCache(virtualNetworkConfig);
+            }
+        }
 
         if (virtualNetworkConfig == null) {
             LogUtil.e(TAG, "TunTapAdapter has no network config yet");
@@ -323,33 +433,51 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             return;
         }
 
+        DebugLog.d(TAG, "处理IPv4数据包: 源IP=" + sourceIP + ", 目的IP=" + destIP + ", 数据包大小=" + packetData.length);
+
         // 代理功能已移除
 
-        // ── 智能路由诊断 ──
+        // ── 智能路由诊断（仅调试模式，首包生效） ──
         // 分流应由 Android VPN 路由表决定。包已经进入 TUN 后不能通过丢弃实现"直连"，
         // 否则会造成应用侧黑洞；这里只记录异常命中，仍继续转发到 ZT。
         if (!perAppRoutingActive && !isIPv4Multicast(destIP) && smartRoutingManager != null) {
 
             // ── GFW 列表模式 ──
-            // 路由表中没有全局路由，仅有已知 GFW IP /32 显式路由会进入 TUN。
-            // 如果非 GFW IP 意外进入 TUN，仅记录诊断日志，避免丢包黑洞。
             if (smartRoutingMode == SmartRoutingManager.MODE_GFW_LIST) {
-                Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
-                if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
-                    DebugLog.d(TAG, "智能路由(GFW): 目的IP=" + destIP
-                            + " 不在GFW列表但已进入TUN，继续转发以避免黑洞");
+                if (DebugLog.isDebug()) {
+                    Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
+                    if (!gfwIps.isEmpty() && !gfwIps.contains(destIP)) {
+                        DebugLog.d(TAG, "智能路由(GFW): 目的IP=" + destIP
+                                + " 不在GFW列表但已进入TUN，继续转发以避免黑洞");
+                    }
                 }
             }
 
             // ── 组合模式 ──
-            // 路由表负责控制哪些 IP 进入 TUN；中国 IP 意外进入时只记录，不丢弃。
             if (smartRoutingMode == SmartRoutingManager.MODE_COMBINED) {
-                if (smartRoutingManager.isChineseIp(destIP)) {
-                    Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
-                    boolean isGfwIp = gfwIps.contains(destIP);
-                    DebugLog.d(TAG, "智能路由(组合): 目的IP=" + destIP
-                            + (isGfwIp ? " 是GFW中国CDN IP，走ZT转发"
-                            : " 是非GFW中国IP但已进入TUN，继续转发以避免黑洞"));
+                if (DebugLog.isDebug()) {
+                    if (smartRoutingManager.isChineseIp(destIP)) {
+                        Set<InetAddress> gfwIps = smartRoutingManager.getGfwIpSet();
+                        boolean isGfwIp = gfwIps.contains(destIP);
+                        DebugLog.d(TAG, "智能路由(组合): 目的IP=" + destIP
+                                + (isGfwIp ? " 是GFW中国CDN IP，走ZT转发"
+                                : " 是非GFW中国IP但已进入TUN，继续转发以避免黑洞"));
+                    }
+                }
+            }
+
+            // ── 国内直连模式：中国 IP 进入 TUN 说明 OS 路由排除未生效，记录一次性告警 ──
+            if (smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT
+                    && smartRoutingManager.isChineseIp(destIP)) {
+                byte[] addrBytes = destIP.getAddress();
+                if (addrBytes != null && addrBytes.length == 4) {
+                    long ipLong = ((addrBytes[0] & 0xFFL) << 24) | ((addrBytes[1] & 0xFFL) << 16)
+                            | ((addrBytes[2] & 0xFFL) << 8) | (addrBytes[3] & 0xFFL);
+                    if (chinaDirectLeakWarned.add(ipLong)) {
+                        LogUtil.w(LogUtil.CONN_TAG, "⚠ 国内IP " + destIP.getHostAddress()
+                                + " 进入TUN（应直连但OS路由未排除），走ZT转发，可能导致直播卡顿"
+                                + "；请检查 chnroutes 数据是否已加载及 VPN 路由是否正确配置");
+                    }
                 }
             }
         }
@@ -380,20 +508,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         DebugLog.d(TAG, "路由决策: 目的IP=" + destIP + ", 选择路由=" + (route != null ? route.toString() : "无") 
               + ", 网关=" + (gateway != null ? gateway.toString() : "无"));
 
-        // 查找当前节点的 v4 地址
-        InetSocketAddress[] ztAddresses = virtualNetworkConfig.getAssignedAddresses();
-        InetAddress localV4Address = null;
-        int cidr = 0;
-
-        int addressCount = ztAddresses.length;
-        for (int i = 0; i < addressCount; i++) {
-            InetSocketAddress address = ztAddresses[i];
-            if (address.getAddress() instanceof Inet4Address) {
-                localV4Address = address.getAddress();
-                cidr = address.getPort();
-                break;
-            }
-        }
+        // 使用缓存的本地 v4 地址和 CIDR，避免每个包都遍历 getAssignedAddresses()
+        InetAddress localV4Address = cachedLocalV4Address;
+        int cidr = cachedV4Cidr;
 
         var destRoute = InetAddressUtils.addressToRouteNo0Route(destIP, cidr);
         var sourceRoute = InetAddressUtils.addressToRouteNo0Route(sourceIP, cidr);
@@ -408,16 +525,14 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
         DebugLog.d(TAG, "本地IPv4地址: " + localV4Address + "/" + cidr);
 
-        long localMac = virtualNetworkConfig.getMac();
+        long localMac = cachedLocalMac;
         long[] nextDeadline = new long[1];
-        if (isMulticast || this.arpTable.hasMacForAddress(destIP)) {
+        // 单次 ARP 查找：getMacForAddress 在未命中时返回 -1；多播包直接进入分支（不依赖 ARP 表）。
+        // 此处消除了原来 hasMacForAddress + getMacForAddress 的双重 HashMap 查找。
+        long destMac = this.arpTable.getMacForAddress(destIP);
+        if (isMulticast || destMac != -1L) {
             // 已确定目标 MAC，直接发送
-            if (isIPv4Multicast(destIP)) {
-                destMac = this.arpTable.getMacForAddress(destIP);
-            } else {
-                destMac = this.arpTable.getMacForAddress(destIP);
-            }
-            
+
             DebugLog.d(TAG, "发送IPv4数据包: 本地MAC=" + StringUtils.macAddressToString(localMac) + 
                   ", 目标MAC=" + StringUtils.macAddressToString(destMac) + 
                   ", 目的IP=" + destIP);
@@ -429,6 +544,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             }
             DebugLog.d(TAG, "数据包已发送至ZeroTier: 目的IP=" + destIP);
             this.ztService.setNextBackgroundTaskDeadline(nextDeadline[0]);
+
+            // ── 填充快速路径缓存 ──
+            // 首包成功发送后，将 rawDestIP → finalDestMac 存入缓存，
+            // 后续包直接走快速路径，跳过路由查找、ARP 查找和连接日志。
+            if (!isMulticast) {
+                destMacFastPath.put(rawDestIP, destMac);
+            }
         } else {
             // 目标 MAC 未知，进行 ARP 查询
             DebugLog.d(TAG, "Unknown dest MAC address.  Need to look it up. " + destIP);
@@ -447,7 +569,15 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     private void handleIPv6Packet(byte[] packetData) {
         var destIP = IPPacketUtils.getDestIP(packetData);
         var sourceIP = IPPacketUtils.getSourceIP(packetData);
-        var virtualNetworkConfig = this.ztService.getVirtualNetworkConfig(this.networkId);
+
+        // 使用缓存的 VirtualNetworkConfig，避免重复加锁
+        var virtualNetworkConfig = this.cachedNetworkConfig;
+        if (virtualNetworkConfig == null) {
+            virtualNetworkConfig = this.ztService.getVirtualNetworkConfig(this.networkId);
+            if (virtualNetworkConfig != null) {
+                populateNetworkConfigCache(virtualNetworkConfig);
+            }
+        }
 
         DebugLog.d(TAG, "处理IPv6数据包: 源IP=" + sourceIP + ", 目的IP=" + destIP + ", 数据包大小=" + packetData.length);
 
@@ -478,20 +608,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         DebugLog.d(TAG, "IPv6路由决策: 目的IP=" + destIP + ", 选择路由=" + (route != null ? route.toString() : "无")
                 + ", 网关=" + (gateway != null ? gateway.toString() : "无"));
 
-        // 查找当前节点的 v6 地址
-        InetSocketAddress[] ztAddresses = virtualNetworkConfig.getAssignedAddresses();
-        InetAddress localV6Address = null;
-        int cidr = 0;
-
-        int addressCount = ztAddresses.length;
-        for (int i = 0; i < addressCount; i++) {
-            InetSocketAddress address = ztAddresses[i];
-            if (address.getAddress() instanceof Inet6Address) {
-                localV6Address = address.getAddress();
-                cidr = address.getPort();
-                break;
-            }
-        }
+        // 使用缓存的本地 v6 地址和 CIDR，避免每个包都遍历 getAssignedAddresses()
+        InetAddress localV6Address = cachedLocalV6Address;
+        int cidr = cachedV6Cidr;
 
         var destRoute = InetAddressUtils.addressToRouteNo0Route(destIP, cidr);
         var sourceRoute = InetAddressUtils.addressToRouteNo0Route(sourceIP, cidr);
@@ -506,7 +625,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
         DebugLog.d(TAG, "本地IPv6地址: " + localV6Address + "/" + cidr);
 
-        long localMac = virtualNetworkConfig.getMac();
+        long localMac = cachedLocalMac;
         long[] nextDeadline = new long[1];
 
         // 确定目标 MAC 地址
@@ -641,26 +760,33 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             DebugLog.d(TAG, "收到ARP数据包");
             var arpReply = this.arpTable.processARPPacket(frameData);
             if (arpReply != null && arpReply.getDestMac() != 0 && arpReply.getDestAddress() != null) {
-                // 获取本地 V4 地址
-                var networkConfig = this.node.networkConfig(networkId);
-                InetAddress localV4Address = null;
-                for (var address : networkConfig.getAssignedAddresses()) {
-                    if (address.getAddress() instanceof Inet4Address) {
-                        localV4Address = address.getAddress();
-                        break;
+                // 优先使用缓存的本地地址和 MAC，避免在每次 ARP 应答时调用
+                // this.node.networkConfig() JNI，防止在直播等高频场景下的延迟抖动。
+                // 首次启动缓存未就绪时，回退到 JNI 获取配置（极少发生）。
+                InetAddress localV4Address = this.cachedLocalV4Address;
+                long localMac = this.cachedLocalMac;
+                if (localV4Address == null || localMac == 0) {
+                    var networkConfig = this.node.networkConfig(networkId);
+                    if (networkConfig != null) {
+                        localMac = networkConfig.getMac();
+                        for (var address : networkConfig.getAssignedAddresses()) {
+                            if (address.getAddress() instanceof Inet4Address) {
+                                localV4Address = address.getAddress();
+                                break;
+                            }
+                        }
                     }
                 }
-                // 构造并返回 ARP 应答
-                if (localV4Address != null) {
+                if (localV4Address != null && localMac != 0) {
                     var nextDeadline = new long[1];
-                    var packetData = this.arpTable.getReplyPacket(networkConfig.getMac(),
+                    var packetData = this.arpTable.getReplyPacket(localMac,
                             localV4Address, arpReply.getDestMac(), arpReply.getDestAddress());
                     DebugLog.d(TAG, "发送ARP应答: 本地地址=" + localV4Address +
                             ", 目标地址=" + arpReply.getDestAddress() +
                             ", 目标MAC=" + StringUtils.macAddressToString(arpReply.getDestMac()));
                     var result = this.node
                             .processVirtualNetworkFrame(System.currentTimeMillis(), networkId,
-                                    networkConfig.getMac(), srcMac, ARP_PACKET, 0,
+                                    localMac, srcMac, ARP_PACKET, 0,
                                     packetData, nextDeadline);
                     if (result != ResultCode.RESULT_OK) {
                         LogUtil.e(TAG, "发送ARP应答失败: " + result.toString());
@@ -694,6 +820,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 // DNS 嗅探：解析 ZT 返回的 DNS 响应，填充 IP→域名 映射和 GFW IP 集合。
                 // 即使在全局路由模式（smartRoutingMode=OFF）下也需要解析，
                 // 以便 [CONN] 日志能显示域名而非纯 IP。
+                //
+                // ⚠ 盲区警告 – CHINA_DIRECT 模式：国内 DNS（114DNS / AliDNS）是中国 IP，
+                // 已通过 excludeRoute 排除在 VPN 之外，DNS 查询走物理网络直达 DNS 服务器，
+                // 响应【不经过】ZeroTier，onVirtualNetworkFrame 永远看不到这些 DNS 包。
+                // 因此 CHINA_DIRECT 模式下 ipToDomain 映射始终为空，[CONN] 日志只有裸 IP。
+                // 如需排查直播 CDN 路由问题（哪些 IP 走了 ZT），请直接查看 [CONN] 日志中的 IP 列表，
+                // 对比 chnroutes 中的中国 IP 段，识别未被排除的 CDN IP 并更新 chnroutes_supplement.txt。
                 if (smartRoutingManager != null) {
                     java.util.List<DnsPacketParser.DnsRecord> records =
                             DnsPacketParser.parseFromIpPacket(frameData);

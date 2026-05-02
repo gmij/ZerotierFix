@@ -64,10 +64,12 @@ public class SmartRoutingManager {
 
     // ────────────────────────── 下载地址 ──────────────────────────
 
+    // misakaio/chnroutes2 每小时从真实 BGP 路由表生成，数据比 17mon（季度更新）更新，
+    // 备用源使用 jsDelivr CDN 镜像。
     private static final String CHNROUTES_URL =
-            "https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt";
+            "https://raw.githubusercontent.com/misakaio/chnroutes2/master/chnroutes.txt";
     private static final String CHNROUTES_URL_FALLBACK =
-            "https://cdn.jsdelivr.net/gh/17mon/china_ip_list@master/china_ip_list.txt";
+            "https://cdn.jsdelivr.net/gh/misakaio/chnroutes2@master/chnroutes.txt";
 
     private static final String GFWLIST_URL =
             "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt";
@@ -125,6 +127,41 @@ public class SmartRoutingManager {
     }
     private volatile OnNewGfwIpListener onNewGfwIpListener;
 
+    /**
+     * chnroutes 数据加载完成监听器（用于在 CHINA_DIRECT 路由数据就绪后重建 VPN 路由）
+     */
+    public interface OnChnroutesReadyListener {
+        void onChnroutesReady();
+    }
+    private final java.util.concurrent.atomic.AtomicReference<OnChnroutesReadyListener> onChnroutesReadyListenerRef =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    /**
+     * 自学习直连 IP 监听器：当 DNS 嗅探发现新的直播 CDN IP 走 ZT（非中国IP）时触发，
+     * 用于通知 ZeroTierOneService 做防抖 VPN 重建，让新 IP 立即走直连。
+     */
+    public interface OnNewLearnedIpListener {
+        void onNewLearnedIp(InetAddress ip);
+    }
+    private volatile OnNewLearnedIpListener onNewLearnedIpListener;
+
+    /**
+     * 自学习直连 IP 集合（uint32 整数形式，用于 isChineseIp O(1) 快速查找）。
+     * 在 DNS 嗅探发现直播 CDN IP 走 ZT 时动态增长，跨 session 持久化到文件。
+     */
+    private final java.util.concurrent.CopyOnWriteArraySet<Long> learnedDirectIpSet =
+            new java.util.concurrent.CopyOnWriteArraySet<>();
+
+    /**
+     * 自学习直连 IP 的 CIDR 列表（全部为 /32），用于 VPN 路由 excludeRoute 配置。
+     * 与 chinaCidrs 一起通过 getChinaCidrs() 对外提供。
+     */
+    private final java.util.concurrent.CopyOnWriteArrayList<CidrBlock> learnedDirectCidrs =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /** 自学习 IP 上限，防止无限增长 */
+    private static final int MAX_LEARNED_IPS = 500;
+
     private SmartRoutingManager(Context context) {
         this.context = context;
     }
@@ -139,13 +176,13 @@ public class SmartRoutingManager {
     }
 
     /**
-     * 判断某 IP 是否为中国 IP（使用已加载的 chnroutes 列表）
+     * 判断某 IP 是否为中国 IP（先查自学习集合，再二分查找 chnroutes 列表）
      */
     public boolean isChineseIp(InetAddress address) {
         if (address == null) return false;
-        List<CidrBlock> list = chinaCidrs;
-        // 二分查找：chinaCidrs 已按 startIp 排序
-        return binaryContains(list, address);
+        long ipLong = toUint32(address);
+        if (ipLong != -1 && learnedDirectIpSet.contains(ipLong)) return true;
+        return binaryContains(chinaCidrs, address);
     }
 
     /**
@@ -163,17 +200,25 @@ public class SmartRoutingManager {
     }
 
     /**
-     * 返回非中国 CIDR 列表（CHINA_DIRECT 模式路由排除的补集）
+     * 返回非中国 CIDR 列表（CHINA_DIRECT 模式路由排除的补集）。
+     * 若有自学习 IP，重新计算补集以确保它们也被排除。
      */
     public List<CidrBlock> getNonChinaCidrs() {
-        return nonChinaCidrs;
+        if (learnedDirectCidrs.isEmpty()) return nonChinaCidrs;
+        return Collections.unmodifiableList(CidrBlock.computeComplement(getChinaCidrs()));
     }
 
     /**
-     * 返回中国 CIDR 列表
+     * 返回中国 CIDR 列表（包含 chnroutes + supplement + 自学习 IP）。
      */
     public List<CidrBlock> getChinaCidrs() {
-        return chinaCidrs;
+        List<CidrBlock> learned = new ArrayList<>(learnedDirectCidrs);
+        if (learned.isEmpty()) return chinaCidrs;
+        List<CidrBlock> merged = new ArrayList<>(chinaCidrs.size() + learned.size());
+        merged.addAll(chinaCidrs);
+        merged.addAll(learned);
+        Collections.sort(merged);
+        return Collections.unmodifiableList(merged);
     }
 
     /**
@@ -198,6 +243,126 @@ public class SmartRoutingManager {
     }
 
     /**
+     * 注册 chnroutes 数据加载完成回调（用于在 CHINA_DIRECT 路由数据就绪后重建 VPN 路由）
+     */
+    public void setOnChnroutesReadyListener(OnChnroutesReadyListener listener) {
+        this.onChnroutesReadyListenerRef.set(listener);
+    }
+
+    /**
+     * 注册自学习直连 IP 发现回调（用于触发防抖 VPN 重建）
+     */
+    public void setOnNewLearnedIpListener(OnNewLearnedIpListener listener) {
+        this.onNewLearnedIpListener = listener;
+    }
+
+
+    /**
+     * 尝试将一个直播 CDN IP 加入自学习直连列表。
+     * <p>
+     * 条件：IPv4、未超出上限、此前未知。满足条件时：
+     * <ol>
+     *   <li>立即更新内存中的 {@link #learnedDirectIpSet} 和 {@link #learnedDirectCidrs}，
+     *       使 {@link #isChineseIp} 和 {@link #getChinaCidrs} 即刻生效；</li>
+     *   <li>通过后台线程将 IP 持久化到 {@code learned_direct_ips.txt}；</li>
+     *   <li>触发 {@link OnNewLearnedIpListener}，由 ZeroTierOneService 在 10 s 防抖后
+     *       重建 VPN 路由，使新 IP 真正走物理网络直连。</li>
+     * </ol>
+     *
+     * @param ip     要学习的 IP（仅处理 IPv4 /32）
+     * @param domain 触发该学习的域名（仅用于日志）
+     */
+    public void learnDirectIp(InetAddress ip, String domain) {
+        if (ip == null) return;
+        long ipLong = toUint32(ip);
+        if (ipLong == -1) return; // 仅学习 IPv4
+        if (learnedDirectIpSet.contains(ipLong)) {
+            LogUtil.d(TAG, "自学习直连 IP 已知: " + ip.getHostAddress() + " (domain=" + domain + ")");
+            return;
+        }
+        if (learnedDirectIpSet.size() >= MAX_LEARNED_IPS) {
+            LogUtil.d(TAG, "自学习直连 IP 已达上限 " + MAX_LEARNED_IPS + "，跳过 " + ip.getHostAddress());
+            return;
+        }
+        // 更新内存（线程安全）
+        learnedDirectIpSet.add(ipLong);
+        // 注意：(int) ipLong 的高位截断是有意为之——CidrBlock 内部以 signed int 存储 IP，
+        // 与 parseChnroutes 的处理方式一致（binaryContains 同样使用 signed int 比较）。
+        int ipInt = (int) ipLong;
+        learnedDirectCidrs.add(new CidrBlock(ipInt, 32));
+        LogUtil.i(LogUtil.DNS_TAG, "✅ 自学习直连: " + ip.getHostAddress()
+                + " (" + domain + ") → 已加入直连列表，下次 VPN 重建后生效，将持久化到 "
+                + Constants.FILE_LEARNED_DIRECT_IPS);
+        // 持久化（异步，不阻塞主流程）
+        executor.execute(this::persistLearnedIps);
+        // 触发 VPN 重建回调
+        OnNewLearnedIpListener l = onNewLearnedIpListener;
+        if (l != null) l.onNewLearnedIp(ip);
+    }
+
+    /**
+     * 从 {@code learned_direct_ips.txt} 加载之前持久化的自学习直连 IP。
+     * 在 {@link #loadOrDownloadAll()} 中调用，VPN 启动即可使用上次积累的学习结果。
+     */
+    private void loadLearnedIps() {
+        File file = new File(context.getFilesDir(), Constants.FILE_LEARNED_DIRECT_IPS);
+        if (!file.exists()) return;
+        int loaded = 0;
+        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                // 格式：x.x.x.x/32 或 x.x.x.x
+                String ipStr = line.contains("/") ? line.substring(0, line.indexOf('/')) : line;
+                try {
+                    InetAddress ip = InetAddress.getByName(ipStr);
+                    long ipLong = toUint32(ip);
+                    if (ipLong != -1 && learnedDirectIpSet.add(ipLong)) {
+                        learnedDirectCidrs.add(new CidrBlock((int) ipLong, 32));
+                        loaded++;
+                    }
+                } catch (Exception e) {
+                    LogUtil.d(TAG, "跳过无效自学习 IP 行: " + line);
+                }
+                if (learnedDirectIpSet.size() >= MAX_LEARNED_IPS) break;
+            }
+        } catch (IOException e) {
+            LogUtil.w(TAG, "加载自学习直连 IP 失败: " + e.getMessage());
+        }
+        if (loaded > 0) {
+            LogUtil.i(TAG, "已加载 " + loaded + " 个自学习直连 IP（共 "
+                    + learnedDirectIpSet.size() + " 个）");
+        }
+    }
+
+    /**
+     * 将当前 {@link #learnedDirectIpSet} 持久化到文件。
+     * 在后台线程执行，不阻塞调用方。
+     */
+    private void persistLearnedIps() {
+        File file = new File(context.getFilesDir(), Constants.FILE_LEARNED_DIRECT_IPS);
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("# 自学习直连 IP 列表 - 由 SmartRoutingManager 在 DNS 嗅探时自动生成\n");
+            sb.append("# 每行一个 IPv4 /32 CIDR，启动时自动加载，无需手动编辑\n");
+            for (Long ipLong : learnedDirectIpSet) {
+                long l = ipLong & 0xFFFFFFFFL;
+                int a = (int) ((l >> 24) & 0xFF);
+                int b = (int) ((l >> 16) & 0xFF);
+                int c = (int) ((l >> 8) & 0xFF);
+                int d = (int) (l & 0xFF);
+                sb.append(a).append('.').append(b).append('.').append(c).append('.').append(d)
+                        .append("/32\n");
+            }
+            org.apache.commons.io.FileUtils.writeStringToFile(
+                    file, sb.toString(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            LogUtil.w(TAG, "持久化自学习直连 IP 失败: " + e.getMessage());
+        }
+    }
+
+    /**
      * 处理一条 DNS 嗅探记录（由 TunTapAdapter 调用）
      *
      * @param record DNS A/AAAA 记录
@@ -215,12 +380,34 @@ public class SmartRoutingManager {
                 if (l != null) l.onNewGfwIp(record.ip);
             }
         } else if (isChineseIp(record.ip)) {
-            LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                    + " -> direct (CN)");
+            // 直播相关域名升级为 INFO 级，release 包也可见，用于确认国内 CDN 是否走直连
+            if (isLiveStreamingDomain(record.domain)) {
+                LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                        + " -> direct (CN)");
+            } else {
+                LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                        + " -> direct (CN)");
+            }
         } else {
-            LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                    + " -> ZT");
+            // 非中国 IP：直播相关域名自动触发自学习。
+            // learnDirectIp 内部会判断是否新 IP：
+            //   - 新 IP → 打印 "✅ 自学习" 日志 + 触发防抖 VPN 重建
+            //   - 已知 IP → 静默跳过（已在 learnedDirectIpSet 中）
+            if (isLiveStreamingDomain(record.domain)) {
+                learnDirectIp(record.ip, record.domain);
+            } else {
+                LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                        + " -> ZT");
+            }
         }
+    }
+
+    /** 把 IPv4 InetAddress 转换为 uint32 long（用于 learnedDirectIpSet 查找） */
+    private static long toUint32(InetAddress ip) {
+        byte[] b = ip.getAddress();
+        if (b.length != 4) return -1;
+        return ((b[0] & 0xFFL) << 24) | ((b[1] & 0xFFL) << 16)
+                | ((b[2] & 0xFFL) << 8) | (b[3] & 0xFFL);
     }
 
     /**
@@ -234,33 +421,53 @@ public class SmartRoutingManager {
     // ────────────────────────── 下载 / 加载逻辑 ──────────────────────────
 
     private void loadOrDownloadAll() {
+        loadLearnedIps();       // 先加载上次积累的自学习直连 IP，确保 VPN 启动即生效
         loadOrDownloadChnroutes();
         loadOrDownloadGfwList();
     }
 
     private void loadOrDownloadChnroutes() {
         File file = new File(context.getFilesDir(), Constants.FILE_CHNROUTES);
-        if (!file.exists() || file.length() < 100) {
-            // 先尝试从 APK 内置 assets 复制（无需网络，立即可用）
+        // 文件不存在、太小，或超过 7 天未更新时触发下载；确保腾讯新增 CDN 网段能被及时获取。
+        boolean needsDownload = !file.exists() || file.length() < 100
+                || (System.currentTimeMillis() - file.lastModified() > 7L * 24 * 60 * 60 * 1000);
+        if (needsDownload && (!file.exists() || file.length() < 100)) {
+            // 先从 APK 内置 assets 复制种子文件（无需网络，立即可用）
             copyFromAssets(Constants.FILE_CHNROUTES, file);
-            // 再尝试从网络下载最新版本（可能覆盖内置版本）
-            downloadFile(CHNROUTES_URL, CHNROUTES_URL_FALLBACK, file, "chnroutes");
         }
-        if (file.exists()) {
+        // 立即解析当前文件（assets 种子或之前缓存的版本），确保路由表尽快就绪，
+        // 不阻塞于后续的网络下载，消除 VPN 建立前 chnroutes 未就绪的竞态窗口。
+        if (file.exists() && file.length() >= 100) {
             parseChnroutes(file);
+        }
+        if (needsDownload) {
+            // 尝试从网络下载最新版本；仅在实际获取到新内容时重新解析
+            long sizeBefore = file.exists() ? file.length() : 0;
+            downloadFile(CHNROUTES_URL, CHNROUTES_URL_FALLBACK, file, "chnroutes");
+            if (file.exists() && file.length() != sizeBefore && file.length() >= 100) {
+                parseChnroutes(file);
+            }
         }
     }
 
     private void loadOrDownloadGfwList() {
         File file = new File(context.getFilesDir(), Constants.FILE_GFWLIST);
-        if (!file.exists() || file.length() < 100) {
-            // 先尝试从 APK 内置 assets 复制（无需网络，立即可用）
+        boolean needsDownload = !file.exists() || file.length() < 100;
+        if (needsDownload) {
+            // 先从 APK 内置 assets 复制种子文件（无需网络，立即可用）
             copyFromAssets(Constants.FILE_GFWLIST, file);
-            // 再尝试从网络下载最新版本（可能覆盖内置版本）
-            downloadFile(GFWLIST_URL, GFWLIST_URL_FALLBACK, file, "gfwlist");
         }
-        if (file.exists()) {
+        // 立即解析当前文件
+        if (file.exists() && file.length() >= 100) {
             parseGfwList(file);
+        }
+        if (needsDownload) {
+            // 尝试从网络下载最新版本；仅在实际获取到新内容时重新解析
+            long sizeBefore = file.exists() ? file.length() : 0;
+            downloadFile(GFWLIST_URL, GFWLIST_URL_FALLBACK, file, "gfwlist");
+            if (file.exists() && file.length() != sizeBefore && file.length() >= 100) {
+                parseGfwList(file);
+            }
         }
     }
 
@@ -313,12 +520,37 @@ public class SmartRoutingManager {
             LogUtil.e(TAG, "读取 chnroutes 文件失败: " + e.getMessage());
             return;
         }
+        // 追加 assets/chnroutes_supplement.txt 中的补充 IP 段：
+        // 所有公开数据源均缺少这些段，但微信视频号直播 CDN 依赖它们。
+        // 该文件随 APK 打包发布，无需网络更新，确保直播流量直连而非经 ZT 境外节点中转。
+        int supplementalAdded = 0;
+        try (InputStream supplementIn = context.getAssets().open(Constants.FILE_CHNROUTES_SUPPLEMENT);
+             BufferedReader supplementReader = new BufferedReader(new java.io.InputStreamReader(supplementIn))) {
+            String line;
+            while ((line = supplementReader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                CidrBlock block = CidrBlock.parse(line);
+                if (block != null) {
+                    blocks.add(block);
+                    supplementalAdded++;
+                }
+            }
+        } catch (IOException e) {
+            LogUtil.w(TAG, "读取 chnroutes_supplement.txt 失败: " + e.getMessage());
+        }
         Collections.sort(blocks);
         this.chinaCidrs = Collections.unmodifiableList(blocks);
         this.nonChinaCidrs = Collections.unmodifiableList(
                 CidrBlock.computeComplement(blocks));
-        LogUtil.i(TAG, "已加载 " + blocks.size() + " 条中国 IP 路由，补集 "
+        LogUtil.i(TAG, "已加载 " + blocks.size() + " 条中国 IP 路由（含 "
+                + supplementalAdded + " 条腾讯云补充段），补集 "
                 + nonChinaCidrs.size() + " 条");
+        // 通知等待中的 CHINA_DIRECT VPN 路由重建（getAndSet 原子读取并清除，消除竞态）
+        OnChnroutesReadyListener l = onChnroutesReadyListenerRef.getAndSet(null);
+        if (l != null) {
+            l.onChnroutesReady();
+        }
     }
 
     private void parseGfwList(File file) {
@@ -358,6 +590,36 @@ public class SmartRoutingManager {
     }
 
     // ────────────────────────── 工具方法 ──────────────────────────
+
+    /**
+     * 判断域名是否属于直播相关服务（微信视频号、腾讯视频、B 站等），
+     * 用于将该类域名的 DNS 解析日志提升为 INFO 级，release 包也可见。
+     *
+     * <p><b>注意 – DNS 嗅探盲区</b>：此方法仅在 DNS 响应经由 ZeroTier 虚拟网络返回时生效
+     * （{@code onVirtualNetworkFrame} 捕获）。在 CHINA_DIRECT 模式下，国内 DNS 服务器
+     * （114.114.114.114 等）是中国 IP，已通过 {@code excludeRoute} 排除在 VPN 之外，
+     * DNS 请求直接走物理网络，响应<em>不经过</em> ZeroTier，{@code onDnsRecord} 永远不会被调用。
+     * 这意味着在 CHINA_DIRECT 模式下此 INFO 日志实际不会出现；
+     * 若需判断哪些直播 CDN IP 在走 ZT，请通过 {@code [CONN]} 日志观察进入 TUN 的原始 IP。
+     */
+    private static boolean isLiveStreamingDomain(String domain) {
+        if (domain == null) return false;
+        String d = domain.toLowerCase();
+        // 使用域名后缀匹配，避免误匹配（如 notweixin.example.com）
+        return d.endsWith(".weixin.qq.com") || d.endsWith(".weixin.com")
+                || d.endsWith(".video.qq.com") || d.endsWith(".live.qq.com")
+                || d.endsWith(".kvideo.qq.com")          // 微信视频号直播 CDN
+                || d.endsWith(".qpic.cn") || d.endsWith(".qpic.com")
+                || d.endsWith(".myqcloud.com")            // 腾讯云对象存储/CDN（视频号用）
+                || d.endsWith(".tencent.com") || d.endsWith(".tencentvideo.com")
+                || d.endsWith(".wx.qq.com")               // 微信通用域名
+                || d.endsWith(".v.qq.com")                // 腾讯视频
+                || d.endsWith(".bilibili.com") || d.endsWith(".bilivideo.com")
+                || d.endsWith(".youku.com") || d.endsWith(".iqiyi.com")
+                || d.endsWith(".huya.com") || d.endsWith(".huya.cn")  // 虎牙直播
+                || d.endsWith(".douyu.com") || d.endsWith(".douyucdn.cn") // 斗鱼直播
+                || d.endsWith(".vlive.qq.com") || d.endsWith(".livep.qq.com");
+    }
 
     /**
      * 在已排序的 CIDR 列表中二分查找指定 IP 是否命中
