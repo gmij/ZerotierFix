@@ -91,7 +91,7 @@ public class ARPTable {
         // 如果映射关系未变化，只刷新超时时间，避免在高频数据流（视频/直播）下
         // 重复创建 ARPEntry 对象和进行无意义的四次 ConcurrentHashMap 写入。
         Long existing = inetAddressToMacAddress.get(inetAddress);
-        if (existing != null && existing == j) {
+        if (existing != null && existing.longValue() == j) {
             updateArpEntryTime(inetAddress);
             return;
         }

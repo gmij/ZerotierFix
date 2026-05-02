@@ -198,7 +198,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         int srcPort = ((packetData[ipHdrLen]     & 0xFF) << 8) | (packetData[ipHdrLen + 1] & 0xFF);
         int dstPort = ((packetData[ipHdrLen + 2] & 0xFF) << 8) | (packetData[ipHdrLen + 3] & 0xFF);
 
-        // 使用 long 编码（IPv4 地址高 32 位 | 目标端口低 16 位）作为集合键，
+        // 使用 long 编码（IPv4 地址占 bits 16-47，目标端口占 bits 0-15）作为集合键，
         // 避免在高频数据包路径上分配 String 对象，减少 GC 压力。
         byte[] addrBytes = origDestIP.getAddress();
         long ipLong = ((addrBytes[0] & 0xFFL) << 24) | ((addrBytes[1] & 0xFFL) << 16)
