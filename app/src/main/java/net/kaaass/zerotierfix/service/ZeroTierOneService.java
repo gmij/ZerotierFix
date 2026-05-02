@@ -964,18 +964,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         int smartRoutingMode = networkConfig.getSmartRoutingMode();
         if (shouldAddGlobalRoutes) {
             try {
-                // 国内直连模式（CHINA_DIRECT / COMBINED）：将中国 IP 从 VPN 路由表中排除，
-                // 使微信视频号等国内 CDN 流量直接经物理网络到达国内节点，避免绕行境外 ZT 节点。
-                // Per-app 路由模式下不做 CHINA_DIRECT 路由分割（仅指定应用进 TUN，无需按 IP 分流）。
-                boolean isChinaDirectMode = !isPerAppRouting && (
-                        smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT
-                        || smartRoutingMode == SmartRoutingManager.MODE_COMBINED);
-                if (isChinaDirectMode) {
-                    configureChinaDirectRouting(builder, virtualNetworkConfig, assignedAddresses);
-                } else {
-                    configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses,
-                            isPerAppRouting);
-                }
+                // 新版本始终启用国内直连分流，无需依赖 DB 中的 smartRoutingMode 值：
+                //   • 全局路由（isRouteViaZeroTier=true）：中国 IP 排除在 VPN 之外，直接走物理网络
+                //   • Per-app 路由（isPerAppRouting=true）：选中应用（如微信）的中国 CDN 流量
+                //     同样走物理网络，仅非中国 IP 进入 VPN/ZT，避免直播 CDN 因 ZT 绕路而卡顿
+                configureChinaDirectRouting(builder, virtualNetworkConfig, assignedAddresses);
                 
                 // 大幅增强对本地连接的保护，避免VPN路由循环
                 // 1. 保护常用DNS查询连接
@@ -1030,10 +1023,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     LogUtil.e(TAG, "保护局域网连接时出错: " + e.getMessage());
                 }
                 
-                // IPv6 全局路由：仅在非 CHINA_DIRECT/COMBINED 模式下添加 ::/0 通过 ZT。
-                // CHINA_DIRECT/COMBINED 模式下跳过 IPv6 VPN 路由——中国 IPv6 地址（如腾讯 CDN、CERNET）
-                // 若通过 ZT 境外节点转发会增加延迟，直接走物理网络更快。
-                if (!this.disableIPv6 && !isChinaDirectMode) {
+                // IPv6 全局路由：国内直连模式始终跳过 ::/0 通过 ZT。
+                // 中国 IPv6 地址（腾讯 CDN、CERNET）若经 ZT 境外节点转发会增加延迟，直接走物理网络更快。
+                // 新版本始终以 CHINA_DIRECT 运行，因此此分支始终不执行。
+                if (!this.disableIPv6 && !shouldAddGlobalRoutes) {
                     configureDirectIPv6Routing(builder, virtualNetworkConfig, assignedAddresses);
                 }
                 
@@ -1117,16 +1110,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.tunTapAdapter.setVpnSocket(this.vpnSocket);
         this.tunTapAdapter.setFileStreams(this.in, this.out);
 
-        // 配置智能路由上下文。
-        // CHINA_DIRECT/COMBINED 模式下即使启用了全局路由，也保留 smartRoutingMode，
-        // 以便 TunTapAdapter 能记录正确的路由原因日志。
+        // 配置 TunTapAdapter 路由上下文（用于 CONN 日志和诊断）。
+        // 新版本始终以 CHINA_DIRECT 运行，无需依赖 DB 中的 smartRoutingMode 值。
         // Per-app 模式：perAppRoutingActive=true，仅选定应用进入 TUN。
-        int effectiveSmartRoutingMode = (!isPerAppRouting
-                && (smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT
-                    || smartRoutingMode == SmartRoutingManager.MODE_COMBINED))
-                ? smartRoutingMode
-                : ((isRouteViaZeroTier && !isPerAppRouting)
-                        ? SmartRoutingManager.MODE_OFF : smartRoutingMode);
+        int effectiveSmartRoutingMode = shouldAddGlobalRoutes
+                ? SmartRoutingManager.MODE_CHINA_DIRECT
+                : smartRoutingMode;
         SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
         this.tunTapAdapter.setSmartRouting(smartRouter, effectiveSmartRoutingMode, isPerAppRouting);
 
@@ -1430,10 +1419,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         var virtualNetworkConfig = getVirtualNetworkConfig(network.getNetworkId());
         var dnsMode = DNSMode.fromInt(networkConfig.getDnsMode());
         boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
-        int smartRoutingMode = networkConfig.getSmartRoutingMode();
-        // 国内直连 / 组合模式：用国内 DNS 确保微信视频号等内容解析到国内 CDN 节点
-        boolean isChinaDirectMode = (smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT
-                || smartRoutingMode == SmartRoutingManager.MODE_COMBINED);
+        boolean isPerAppRouting = networkConfig.getPerAppRouting();
+        // VPN 激活（全局路由或 per-app）时始终使用国内 DNS（114DNS / AliDNS），
+        // 确保微信视频号等 CDN 域名解析到国内节点而非境外 CDN，无需依赖 DB 中存储的 smartRoutingMode 值。
+        boolean isChinaDirectMode = isRouteViaZeroTier || isPerAppRouting;
 
         switch (dnsMode) {
             case NETWORK_DNS:
