@@ -74,6 +74,7 @@ import net.kaaass.zerotierfix.util.LogUtil;
 import net.kaaass.zerotierfix.util.NetworkInfoUtils;
 // import net.kaaass.zerotierfix.util.ProxyManager; // 代理功能已移除
 import net.kaaass.zerotierfix.util.StringUtils;
+import net.kaaass.zerotierfix.util.smartroute.CidrBlock;
 import net.kaaass.zerotierfix.util.smartroute.SmartRoutingManager;
 
 import org.greenrobot.eventbus.EventBus;
@@ -126,6 +127,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private static final long CGN_PREFIX = 0x64400000L; // 100.64.0.0
     /** CGN 子网掩码 /10，uint32。 */
     private static final long CGN_MASK   = 0xFFC00000L; // /10
+    /**
+     * 国内直连模式专用 DNS 服务器：使用国内权威 DNS，使微信视频号等内容解析到国内 CDN 节点。
+     * 114DNS 和阿里 DNS 均为中国 IP，在 CHINA_DIRECT 模式下会被排除在 VPN 路由之外，
+     * DNS 查询直接经物理网络发出，返回国内 CDN 地址，避免经过境外 ZeroTier 节点绕路。
+     */
+    private static final String[] DOMESTIC_DNS_SERVERS = {
+            "114.114.114.114",  // 114DNS 主
+            "114.114.115.115",  // 114DNS 备
+            "223.5.5.5",        // AliDNS 主
+            "223.6.6.6",        // AliDNS 备
+    };
     private final IBinder mBinder = new ZeroTierBinder();
     private final DataStore dataStore = new DataStore(this);
     private final EventBus eventBus = EventBus.getDefault();
@@ -951,8 +963,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         int smartRoutingMode = networkConfig.getSmartRoutingMode();
         if (shouldAddGlobalRoutes) {
             try {
-                configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses,
-                        isPerAppRouting);
+                // 国内直连模式（CHINA_DIRECT / COMBINED）：将中国 IP 从 VPN 路由表中排除，
+                // 使微信视频号等国内 CDN 流量直接经物理网络到达国内节点，避免绕行境外 ZT 节点。
+                // Per-app 路由模式下不做 CHINA_DIRECT 路由分割（仅指定应用进 TUN，无需按 IP 分流）。
+                boolean isChinaDirectMode = !isPerAppRouting && (
+                        smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT
+                        || smartRoutingMode == SmartRoutingManager.MODE_COMBINED);
+                if (isChinaDirectMode) {
+                    configureChinaDirectRouting(builder, virtualNetworkConfig, assignedAddresses);
+                } else {
+                    configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses,
+                            isPerAppRouting);
+                }
                 
                 // 大幅增强对本地连接的保护，避免VPN路由循环
                 // 1. 保护常用DNS查询连接
@@ -1093,10 +1115,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.tunTapAdapter.setFileStreams(this.in, this.out);
 
         // 配置智能路由上下文。
-        // 全局路由模式（isRouteViaZeroTier=true, isPerAppRouting=false）：连接日志按全局路由展示。
+        // CHINA_DIRECT/COMBINED 模式下即使启用了全局路由，也保留 smartRoutingMode，
+        // 以便 TunTapAdapter 能记录正确的路由原因日志。
         // Per-app 模式：perAppRoutingActive=true，仅选定应用进入 TUN。
-        int effectiveSmartRoutingMode = (isRouteViaZeroTier && !isPerAppRouting)
-                ? SmartRoutingManager.MODE_OFF : smartRoutingMode;
+        int effectiveSmartRoutingMode = (!isPerAppRouting
+                && (smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT
+                    || smartRoutingMode == SmartRoutingManager.MODE_COMBINED))
+                ? smartRoutingMode
+                : ((isRouteViaZeroTier && !isPerAppRouting)
+                        ? SmartRoutingManager.MODE_OFF : smartRoutingMode);
         SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
         this.tunTapAdapter.setSmartRouting(smartRouter, effectiveSmartRoutingMode, isPerAppRouting);
 
@@ -1400,14 +1427,22 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         var virtualNetworkConfig = getVirtualNetworkConfig(network.getNetworkId());
         var dnsMode = DNSMode.fromInt(networkConfig.getDnsMode());
         boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
+        int smartRoutingMode = networkConfig.getSmartRoutingMode();
+        // 国内直连 / 组合模式：用国内 DNS 确保微信视频号等内容解析到国内 CDN 节点
+        boolean isChinaDirectMode = (smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT
+                || smartRoutingMode == SmartRoutingManager.MODE_COMBINED);
 
         switch (dnsMode) {
             case NETWORK_DNS:
                 if (virtualNetworkConfig.getDns() == null) {
-                    // 若无网络DNS，但在全局路由模式下，添加可信DNS
                     if (isRouteViaZeroTier) {
-                    LogUtil.d(TAG, "全局路由模式：添加可信DNS服务器");
-                    addTrustedDNSServers(builder);
+                        if (isChinaDirectMode) {
+                            LogUtil.d(TAG, "CHINA_DIRECT 模式：添加国内 DNS 服务器");
+                            addDomesticDNSServers(builder);
+                        } else {
+                            LogUtil.d(TAG, "全局路由模式：添加可信DNS服务器");
+                            addTrustedDNSServers(builder);
+                        }
                     }
                     return;
                 }
@@ -1420,11 +1455,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         builder.addDnsServer(address);
                     }
                 }
-                
-                // 在全局路由模式下，额外添加可信DNS作为备用
+                // 全局路由模式下额外添加备用 DNS
                 if (isRouteViaZeroTier) {
-                    LogUtil.d(TAG, "全局路由模式：添加可信DNS服务器");
-                    addTrustedDNSServers(builder);
+                    if (isChinaDirectMode) {
+                        LogUtil.d(TAG, "CHINA_DIRECT 模式：添加国内备用 DNS 服务器");
+                        addDomesticDNSServers(builder);
+                    } else {
+                        LogUtil.d(TAG, "全局路由模式：添加可信DNS服务器");
+                        addTrustedDNSServers(builder);
+                    }
                 }
                 break;
                 
@@ -1444,10 +1483,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 break;
                 
             default:
-                // 默认情况下，全局路由模式添加可信DNS
                 if (isRouteViaZeroTier) {
-                    LogUtil.d(TAG, "默认DNS模式：添加可信DNS服务器");
-                    addTrustedDNSServers(builder);
+                    if (isChinaDirectMode) {
+                        LogUtil.d(TAG, "CHINA_DIRECT 模式（默认DNS）：添加国内 DNS 服务器");
+                        addDomesticDNSServers(builder);
+                    } else {
+                        LogUtil.d(TAG, "默认DNS模式：添加可信DNS服务器");
+                        addTrustedDNSServers(builder);
+                    }
                 }
                 break;
         }
@@ -1487,7 +1530,141 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private void configureProxyIPv6Routing(VpnService.Builder builder) throws Exception {
     }
-    
+
+    /**
+     * 添加国内直连模式专用 DNS 服务器（114DNS / AliDNS）。
+     *
+     * <p>这些 DNS 服务器本身是中国 IP，在 CHINA_DIRECT 路由下会被排除在 VPN 之外，
+     * 因此 DNS 查询经物理网络直接发出，返回国内 CDN 地址（如微信视频号 CDN）。
+     * 若改用 Cloudflare/Google DNS，境外 DNS 会将微信视频号等内容解析到境外 CDN 节点，
+     * 导致流量绕行境外 ZeroTier 节点，引发明显卡顿。
+     */
+    private void addDomesticDNSServers(VpnService.Builder builder) {
+        for (String dns : DOMESTIC_DNS_SERVERS) {
+            try {
+                builder.addDnsServer(InetAddress.getByName(dns));
+            } catch (Exception e) {
+                LogUtil.w(TAG, "添加国内 DNS 服务器失败 " + dns + ": " + e.getMessage());
+            }
+        }
+        LogUtil.d(TAG, "CHINA_DIRECT 模式：已添加国内 DNS 服务器（114DNS / AliDNS）");
+    }
+
+    /**
+     * 配置国内直连模式的 IPv4 VPN 路由：非中国 IP 走 ZeroTier，中国 IP 直接走物理网络。
+     *
+     * <p>与全局路由的差异：
+     * <ul>
+     *   <li>Android 13+：添加 0.0.0.0/0 后用 {@link VpnService.Builder#excludeRoute(IpPrefix)}
+     *       排除所有中国 IP 段及本地子网</li>
+     *   <li>Android 12 及以下：直接添加各条非中国 CIDR（已排除本地活跃子网）</li>
+     * </ul>
+     *
+     * <p>若 chnroutes 数据尚未加载完毕，临时回退到全局路由（排除本地子网），
+     * 并注册一次性回调：数据就绪后自动触发 VPN 路由重建。
+     */
+    private void configureChinaDirectRouting(VpnService.Builder builder,
+                                             VirtualNetworkConfig virtualNetworkConfig,
+                                             InetSocketAddress[] assignedAddresses) throws Exception {
+        SmartRoutingManager router = SmartRoutingManager.getInstance(this);
+        List<long[]> localSubnets = detectLocalSubnetsToExclude();
+
+        // 找 ZeroTier 网关（与 configureDirectGlobalRouting 逻辑相同）
+        InetAddress zerotierGateway = null;
+        if (virtualNetworkConfig.getRoutes().length > 0) {
+            for (var routeConfig : virtualNetworkConfig.getRoutes()) {
+                var via = routeConfig.getVia();
+                if (via != null) {
+                    zerotierGateway = via.getAddress();
+                    break;
+                }
+            }
+        }
+        if (zerotierGateway == null && assignedAddresses.length > 0) {
+            for (var addr : assignedAddresses) {
+                if (addr.getAddress() instanceof Inet4Address) {
+                    byte[] ipBytes = addr.getAddress().getAddress();
+                    ipBytes[3] = 1;
+                    zerotierGateway = InetAddress.getByAddress(ipBytes);
+                    break;
+                }
+            }
+        }
+
+        // TUN 层始终保留 0.0.0.0/0 默认路由，使 TunTapAdapter 能将所有进入 TUN 的包转发到 ZT 网关。
+        // （OS 已通过 excludeRoute/非中国路由保证中国 IP 不进入 TUN，此规则仅对非中国 IP 生效）
+        Route defaultTunRoute = new Route(InetAddress.getByName("0.0.0.0"), 0);
+        if (zerotierGateway != null) defaultTunRoute.setGateway(zerotierGateway);
+        this.tunTapAdapter.addRouteAndNetwork(defaultTunRoute, networkId);
+
+        if (!router.isChnroutesReady()) {
+            // chnroutes 尚未加载，临时使用全局路由，数据就绪后触发重建
+            LogUtil.w(TAG, "CHINA_DIRECT 模式：chnroutes 尚未加载，临时全局路由，就绪后重建");
+            router.setOnChnroutesReadyListener(() -> {
+                LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
+                onNetworkChanged();
+            });
+            addGlobalRoutesToBuilder(builder, localSubnets);
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+：0.0.0.0/0 + excludeRoute(中国IP) + excludeRoute(本地子网)
+            builder.addRoute(InetAddress.getByName("0.0.0.0"), 0);
+            for (CidrBlock cidr : router.getChinaCidrs()) {
+                InetAddress addr = cidr.toInetAddress();
+                if (addr != null) {
+                    builder.excludeRoute(new IpPrefix(addr, cidr.prefixLen));
+                }
+            }
+            for (long[] s : localSubnets) {
+                builder.excludeRoute(new IpPrefix(longToIpv4Addr(s[0]), (int) s[1]));
+            }
+            LogUtil.d(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
+                    + router.getChinaCidrs().size() + " 条中国 IP + "
+                    + localSubnets.size() + " 个本地子网");
+        } else {
+            // Android 12-：添加非中国 CIDR，每条再剔除本地活跃子网
+            int added = 0;
+            for (CidrBlock cidr : router.getNonChinaCidrs()) {
+                InetAddress addr = cidr.toInetAddress();
+                if (addr == null) continue;
+                // 将此 CIDR 剔除所有本地子网后的残余部分加入 VPN 路由
+                List<long[]> parts = new ArrayList<>();
+                parts.add(new long[]{cidr.startIp & 0xFFFFFFFFL, cidr.prefixLen});
+                for (long[] local : localSubnets) {
+                    List<long[]> next = new ArrayList<>();
+                    for (long[] part : parts) next.addAll(routeMinusCidr(part, local));
+                    parts = next;
+                }
+                for (long[] r : parts) {
+                    builder.addRoute(longToIpv4Addr(r[0]), (int) r[1]);
+                    added++;
+                }
+            }
+            LogUtil.d(TAG, "CHINA_DIRECT (Android 12-): 添加 " + added + " 条非中国路由");
+        }
+    }
+
+    /**
+     * 将全局路由（0.0.0.0/0 排除本地子网）添加到 VPN builder，作为 CHINA_DIRECT 数据未就绪时的回退。
+     */
+    private void addGlobalRoutesToBuilder(VpnService.Builder builder, List<long[]> localSubnets) throws Exception {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            builder.addRoute(InetAddress.getByName("0.0.0.0"), 0);
+            for (long[] s : localSubnets) {
+                builder.excludeRoute(new IpPrefix(longToIpv4Addr(s[0]), (int) s[1]));
+            }
+        } else {
+            List<long[]> vpnRoutes = localSubnets.isEmpty()
+                    ? Collections.singletonList(new long[]{0L, 0L})
+                    : computeGlobalRoutesExcluding(localSubnets);
+            for (long[] r : vpnRoutes) {
+                builder.addRoute(longToIpv4Addr(r[0]), (int) r[1]);
+            }
+        }
+    }
+
     /**
      * 配置直接通过ZeroTier的IPv4路由（不使用代理）。
      *

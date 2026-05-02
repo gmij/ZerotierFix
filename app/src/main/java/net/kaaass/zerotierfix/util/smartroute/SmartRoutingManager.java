@@ -125,6 +125,14 @@ public class SmartRoutingManager {
     }
     private volatile OnNewGfwIpListener onNewGfwIpListener;
 
+    /**
+     * chnroutes 数据加载完成监听器（用于在 CHINA_DIRECT 路由数据就绪后重建 VPN 路由）
+     */
+    public interface OnChnroutesReadyListener {
+        void onChnroutesReady();
+    }
+    private volatile OnChnroutesReadyListener onChnroutesReadyListener;
+
     private SmartRoutingManager(Context context) {
         this.context = context;
     }
@@ -195,6 +203,13 @@ public class SmartRoutingManager {
      */
     public void setOnNewGfwIpListener(OnNewGfwIpListener listener) {
         this.onNewGfwIpListener = listener;
+    }
+
+    /**
+     * 注册 chnroutes 数据加载完成回调（用于在 CHINA_DIRECT 路由数据就绪后重建 VPN 路由）
+     */
+    public void setOnChnroutesReadyListener(OnChnroutesReadyListener listener) {
+        this.onChnroutesReadyListener = listener;
     }
 
     /**
@@ -319,6 +334,12 @@ public class SmartRoutingManager {
                 CidrBlock.computeComplement(blocks));
         LogUtil.i(TAG, "已加载 " + blocks.size() + " 条中国 IP 路由，补集 "
                 + nonChinaCidrs.size() + " 条");
+        // 通知等待中的 CHINA_DIRECT VPN 路由重建
+        OnChnroutesReadyListener l = onChnroutesReadyListener;
+        if (l != null) {
+            onChnroutesReadyListener = null; // 单次触发
+            l.onChnroutesReady();
+        }
     }
 
     private void parseGfwList(File file) {
