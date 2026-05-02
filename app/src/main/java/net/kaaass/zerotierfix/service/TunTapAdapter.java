@@ -2,6 +2,10 @@ package net.kaaass.zerotierfix.service;
 
 import android.os.ParcelFileDescriptor;
 import android.support.v4.media.session.PlaybackStateCompat;
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.OsConstants;
+import android.system.StructPollfd;
 
 import com.zerotier.sdk.Node;
 import com.zerotier.sdk.ResultCode;
@@ -247,9 +251,16 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                     LogUtil.d(TunTapAdapter.TAG, "TUN Receive Thread Started");
                     var buffer = ByteBuffer.allocate(32767);
                     buffer.order(ByteOrder.LITTLE_ENDIAN);
+                    // 使用 Os.poll() 阻塞等待 TUN fd 可读，避免非阻塞 fd 上的轮询延迟。
+                    // 原先依赖 Thread.sleep(10) 的轮询方式会导致 ACK 吞吐量上限约 100/s，
+                    // 从而将单连接 TCP 下载速度卡在 ~100KB/s。
+                    var pfd = new StructPollfd();
+                    pfd.fd = TunTapAdapter.this.vpnSocket.getFileDescriptor();
+                    pfd.events = (short) OsConstants.POLLIN;
+                    var pollFds = new StructPollfd[]{pfd};
                     while (!isInterrupted()) {
                         try {
-                            boolean noDataBeenRead = true;
+                            Os.poll(pollFds, 1000); // 最多阻塞 1s，以便检查 isInterrupted()
                             int readCount = TunTapAdapter.this.in.read(buffer.array());
                             if (readCount > 0) {
                                 DebugLog.d(TunTapAdapter.TAG, "Sending packet to ZeroTier. " + readCount + " bytes.");
@@ -264,23 +275,29 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                                     LogUtil.e(TunTapAdapter.TAG, "Unknown IP version");
                                 }
                                 buffer.clear();
-                                noDataBeenRead = false;
                             }
-                            if (noDataBeenRead) {
-                                Thread.sleep(10);
-                            }
+                        } catch (ErrnoException e) {
+                            // fd 已关闭（EBADF）或线程被标记中断，正常退出。
+                            if (isInterrupted() || e.errno == OsConstants.EBADF) break;
+                            LogUtil.e(TunTapAdapter.TAG, "poll error in TUN Receive: " + e.getMessage(), e);
                         } catch (IOException e) {
+                            // TUN fd 已关闭或发生 I/O 错误。
+                            // 若线程已被标记中断（通常是 interrupt() 先关闭 fd 再设标志），则正常退出；
+                            // 否则记录错误并继续等待下一个数据包。
+                            if (isInterrupted()) {
+                                break;
+                            }
                             LogUtil.e(TunTapAdapter.TAG, "Error in TUN Receive: " + e.getMessage(), e);
                         }
                     }
-                } catch (InterruptedException ignored) {
+                } finally {
+                    LogUtil.d(TunTapAdapter.TAG, "TUN Receive Thread ended");
+                    // 关闭 ARP、NDP 表
+                    TunTapAdapter.this.ndpTable.stop();
+                    TunTapAdapter.this.ndpTable = null;
+                    TunTapAdapter.this.arpTable.stop();
+                    TunTapAdapter.this.arpTable = null;
                 }
-                LogUtil.d(TunTapAdapter.TAG, "TUN Receive Thread ended");
-                // 关闭 ARP、NDP 表
-                TunTapAdapter.this.ndpTable.stop();
-                TunTapAdapter.this.ndpTable = null;
-                TunTapAdapter.this.arpTable.stop();
-                TunTapAdapter.this.arpTable = null;
             }
         };
         this.receiveThread.start();
