@@ -1096,7 +1096,36 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         builder.setSession(Constants.VPN_SESSION_NAME);
 
         // 建立 VPN 连接
-        this.vpnSocket = builder.establish();
+        // establish() 通过 Binder 传输路由表，若路由条数过多可能抛出 TransactionTooLargeException。
+        // 捕获该异常并降级为全局路由（0.0.0.0/0），确保 VPN 至少能正常启动。
+        try {
+            this.vpnSocket = builder.establish();
+        } catch (RuntimeException e) {
+            LogUtil.e(TAG, "establish() 失败（可能路由条数过多）：" + e.getMessage() + "，降级为全局路由重试", e);
+            // 降级：重建 builder，仅使用 0.0.0.0/0 全局路由
+            var fallbackBuilder = new VpnService.Builder();
+            for (var vpnAddress : assignedAddresses) {
+                if (!this.disableIPv6 || !(vpnAddress.getAddress() instanceof Inet6Address)) {
+                    var address = vpnAddress.getAddress();
+                    var port = vpnAddress.getPort();
+                    fallbackBuilder.addAddress(address, port);
+                }
+            }
+            try {
+                List<long[]> localSubnets = detectLocalSubnetsToExclude();
+                addGlobalRoutesToBuilder(fallbackBuilder, localSubnets);
+            } catch (Exception fallbackEx) {
+                LogUtil.e(TAG, "降级全局路由配置失败: " + fallbackEx.getMessage(), fallbackEx);
+                try {
+                    fallbackBuilder.addRoute(InetAddress.getByName("0.0.0.0"), 0);
+                } catch (Exception ignored) { }
+            }
+            addDNSServers(fallbackBuilder, network);
+            configureAllowedDisallowedApps(fallbackBuilder, isRouteViaZeroTier);
+            fallbackBuilder.setMtu(mtu);
+            fallbackBuilder.setSession(Constants.VPN_SESSION_NAME);
+            this.vpnSocket = fallbackBuilder.establish();
+        }
         if (this.vpnSocket == null) {
             this.eventBus.post(new VPNErrorEvent(getString(R.string.toast_vpn_application_not_prepared)));
             return false;
@@ -1581,19 +1610,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     + localSubnets.size() + " 个本地子网");
         } else {
             // Android 12-：添加非中国 CIDR，每条再剔除本地活跃子网。
-            // Android 11 及以下的 IPC 不支持分批传输大型路由列表，为避免 TransactionTooLargeException，
-            // 将总路由条数限制在安全范围内（3000 条 × ~50 字节 = 150KB，远低于 1MB Binder 上限）。
-            // 仅在需要限制时才复制并排序列表（前缀越短 = 覆盖越广），优先保留覆盖最大 IP 范围的路由。
-            final int MAX_ROUTES_LEGACY_ANDROID;
-            List<CidrBlock> nonChina;
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                MAX_ROUTES_LEGACY_ANDROID = 3000;
-                nonChina = new ArrayList<>(router.getNonChinaCidrs());
-                nonChina.sort(Comparator.comparingInt(c -> c.prefixLen));
-            } else {
-                MAX_ROUTES_LEGACY_ANDROID = Integer.MAX_VALUE;
-                nonChina = router.getNonChinaCidrs();
-            }
+            // 非中国 CIDR 补集约 14,000+ 条。所有 Android 版本的 Binder 事务上限均为 1MB；
+            // 14,000 条路由序列化后约 1.1MB，会触发 TransactionTooLargeException 导致 establish() 失败。
+            // 将总路由条数限制在安全范围内（3000 条 × ~80 字节 ≈ 240KB，远低于 1MB Binder 上限）。
+            // 按前缀长度升序排序（前缀越短 = 覆盖越广），优先保留覆盖最大 IP 范围的路由。
+            final int MAX_ROUTES_LEGACY_ANDROID = 3000;
+            List<CidrBlock> nonChina = new ArrayList<>(router.getNonChinaCidrs());
+            nonChina.sort(Comparator.comparingInt(c -> c.prefixLen));
             int added = 0;
             for (CidrBlock cidr : nonChina) {
                 if (added >= MAX_ROUTES_LEGACY_ANDROID) break;
@@ -1614,7 +1637,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 }
             }
             if (added >= MAX_ROUTES_LEGACY_ANDROID) {
-                LogUtil.w(TAG, "CHINA_DIRECT (Android 11-): 已达路由上限 " + MAX_ROUTES_LEGACY_ANDROID
+                LogUtil.w(TAG, "CHINA_DIRECT (Android 12-): 已达路由上限 " + MAX_ROUTES_LEGACY_ANDROID
                         + " 条，部分非中国路由可能未加入 VPN 路由表");
             }
             LogUtil.d(TAG, "CHINA_DIRECT (Android 12-): 添加 " + added + " 条非中国路由");
