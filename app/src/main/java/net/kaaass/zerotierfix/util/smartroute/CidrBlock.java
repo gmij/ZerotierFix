@@ -117,12 +117,14 @@ public class CidrBlock implements Comparable<CidrBlock> {
         // 2. 排序
         ranges.sort((a, b) -> Long.compare(a[0], b[0]));
 
-        // 3. 合并相邻/重叠区间（条件：next.start <= cur.end + 1）
+        // 3. 合并相邻/重叠区间（条件：next.start <= cur.end + 1，注意 0xFFFFFFFF 溢出边界）
         List<long[]> merged = new ArrayList<>();
         long[] cur = new long[]{ranges.get(0)[0], ranges.get(0)[1]};
         for (int i = 1; i < ranges.size(); i++) {
             long[] next = ranges.get(i);
-            if (next[0] <= cur[1] + 1) {
+            // cur[1] < 0xFFFFFFFFL 时正常比较；cur[1] == 0xFFFFFFFF 时已覆盖全部地址空间，无需再合并
+            boolean adjacent = cur[1] < 0xFFFFFFFFL && next[0] <= cur[1] + 1;
+            if (adjacent) {
                 if (next[1] > cur[1]) cur[1] = next[1];
             } else {
                 merged.add(cur);

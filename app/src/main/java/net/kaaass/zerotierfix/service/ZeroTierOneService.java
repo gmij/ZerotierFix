@@ -1353,8 +1353,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             // 不使用 registerDefaultNetworkCallback，因为它同样会在 VPN 建立时触发
             // onAvailable，导致 VPN 反复重建（VPN 建立 → 成为默认网络 → 触发回调 →
             // 重建 VPN → 再次成为默认网络 → 无限循环），VPN 图标因此持续消失。
+            // NET_CAPABILITY_INTERNET：只监听有互联网访问能力的物理网络（排除蓝牙 PAN、
+            // 测试网络等不相关网络，避免误触发 VPN 路由重建）。
             NetworkRequest physicalNetworkRequest = new NetworkRequest.Builder()
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                     .build();
             cm.registerNetworkCallback(physicalNetworkRequest, this.networkCallback);
             LogUtil.d(TAG, "已注册网络变化回调（仅监听物理网络）");
@@ -1779,7 +1782,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             // 按前缀长度升序排序：prefixLen 数值越小表示覆盖范围越大（/8 > /24），
             // 升序排列后 /8 排在 /24 之前，优先 excludeRoute 覆盖最广的 CIDR，
             // 在截断时确保最重要（覆盖最多 IP）的段被排除。
-            sortedChinaCidrs.sort(Comparator.comparingInt(c -> c.prefixLen));
+            // 仅对超出上限的列表排序（已聚合后通常 ≤ 上限，排序仅作安全兜底）。
+            if (sortedChinaCidrs.size() > MAX_EXCLUDE_ROUTES_ANDROID13) {
+                sortedChinaCidrs.sort(Comparator.comparingInt(c -> c.prefixLen));
+            }
             int excluded = 0;
             for (CidrBlock cidr : sortedChinaCidrs) {
                 if (excluded >= MAX_EXCLUDE_ROUTES_ANDROID13) break;
