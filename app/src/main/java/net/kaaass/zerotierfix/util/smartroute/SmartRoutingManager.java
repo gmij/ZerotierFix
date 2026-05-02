@@ -64,10 +64,32 @@ public class SmartRoutingManager {
 
     // ────────────────────────── 下载地址 ──────────────────────────
 
+    // misakaio/chnroutes2 每小时从真实 BGP 路由表生成，数据比 17mon（季度更新）更新，
+    // 备用源使用 jsDelivr CDN 镜像。
     private static final String CHNROUTES_URL =
-            "https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt";
+            "https://raw.githubusercontent.com/misakaio/chnroutes2/master/chnroutes.txt";
     private static final String CHNROUTES_URL_FALLBACK =
-            "https://cdn.jsdelivr.net/gh/17mon/china_ip_list@master/china_ip_list.txt";
+            "https://cdn.jsdelivr.net/gh/misakaio/chnroutes2@master/chnroutes.txt";
+
+    /**
+     * 静态补充的腾讯云 IP 段——所有公开 chnroutes 数据源均缺少这些段，但它们被微信、
+     * 视频号等应用的 CDN 调度/直播推流基础设施广泛使用：
+     * <ul>
+     *   <li>{@code 43.128.0.0/13} – 腾讯云港新节点（视频号直播 CDN 调度服务器）</li>
+     *   <li>{@code 43.152.0.0/13} – 腾讯云上海节点</li>
+     *   <li>{@code 162.62.0.0/16} – 腾讯云国内节点</li>
+     *   <li>{@code 101.33.0.0/17} – 腾讯云广州/北京节点（低 128 半段）</li>
+     *   <li>{@code 119.28.0.0/16} – 旧腾讯云节点（仍被部分服务使用）</li>
+     * </ul>
+     * 在 parseChnroutes() 解析完文件后追加，确保无论下载哪个版本均生效。
+     */
+    private static final String[] SUPPLEMENTAL_CHINA_CIDRS = {
+        "43.128.0.0/13",   // 腾讯云港新节点（视频号直播CDN调度）
+        "43.152.0.0/13",   // 腾讯云上海节点
+        "162.62.0.0/16",   // 腾讯云国内节点
+        "101.33.0.0/17",   // 腾讯云广州/北京节点（0–127 低半段，高半段 128–255 已在 chnroutes 中）
+        "119.28.0.0/16",   // 旧腾讯云节点
+    };
 
     private static final String GFWLIST_URL =
             "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt";
@@ -346,11 +368,22 @@ public class SmartRoutingManager {
             LogUtil.e(TAG, "读取 chnroutes 文件失败: " + e.getMessage());
             return;
         }
+        // 追加静态补充的腾讯云 IP 段：所有公开数据源均缺少这些段，但微信视频号直播 CDN 依赖它们。
+        // 无论下载哪个版本的 chnroutes，这些段始终存在，确保直播流量直连而非经 ZT 境外节点中转。
+        int supplementalAdded = 0;
+        for (String cidr : SUPPLEMENTAL_CHINA_CIDRS) {
+            CidrBlock block = CidrBlock.parse(cidr);
+            if (block != null) {
+                blocks.add(block);
+                supplementalAdded++;
+            }
+        }
         Collections.sort(blocks);
         this.chinaCidrs = Collections.unmodifiableList(blocks);
         this.nonChinaCidrs = Collections.unmodifiableList(
                 CidrBlock.computeComplement(blocks));
-        LogUtil.i(TAG, "已加载 " + blocks.size() + " 条中国 IP 路由，补集 "
+        LogUtil.i(TAG, "已加载 " + blocks.size() + " 条中国 IP 路由（含 "
+                + supplementalAdded + " 条腾讯云补充段），补集 "
                 + nonChinaCidrs.size() + " 条");
         // 通知等待中的 CHINA_DIRECT VPN 路由重建（getAndSet 原子读取并清除，消除竞态）
         OnChnroutesReadyListener l = onChnroutesReadyListenerRef.getAndSet(null);
