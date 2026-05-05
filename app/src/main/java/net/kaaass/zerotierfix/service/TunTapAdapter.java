@@ -313,7 +313,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                     var pollFds = new StructPollfd[]{pfd};
                     while (!isInterrupted()) {
                         try {
-                            Os.poll(pollFds, 1000); // 最多阻塞 1s，以便检查 isInterrupted()
+                            // 最多阻塞 10s。中断路径通过关闭 fd（EBADF）即刻返回，
+                            // 无需短超时来响应 interrupt()，加长超时可减少空闲时的 CPU 唤醒频率。
+                            Os.poll(pollFds, 10000);
                             int readCount = TunTapAdapter.this.in.read(buffer.array());
                             if (readCount > 0) {
                                 DebugLog.d(TunTapAdapter.TAG, "Sending packet to ZeroTier. " + readCount + " bytes.");

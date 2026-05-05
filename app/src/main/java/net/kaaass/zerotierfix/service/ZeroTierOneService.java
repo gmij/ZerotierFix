@@ -671,18 +671,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         LogUtil.e(TAG, "Error on processBackgroundTasks: " + taskResult.toString());
                         shutdown();
                     }
-                    // 按 ZeroTier 指定的下一个截止时间睡眠。
-                    // 此处重新取时刻以计入 processBackgroundTasks 本身的耗时；
-                    // 若 sleepMs 为负（任务执行期间已超过截止时间），下方 if (sleepMs > 0) 会跳过睡眠。
+                    // 按 ZeroTier 指定的下一个截止时间睡眠（计入 processBackgroundTasks 自身耗时）。
                     sleepMs = newDeadline[0] - System.currentTimeMillis();
                 } else {
                     sleepMs = taskDeadline - currentTime;
                 }
-                // 限制最长睡眠时间，避免在更新截止时间时无法及时响应
+                // 限制最长睡眠时间，避免在更新截止时间时无法及时响应。
+                // 同时保证最短 50 ms：防止 ZeroTier SDK 返回 0 或已过期的截止时间时
+                // 造成忙等（100% CPU），既不影响正常协议时序，也给调度器留出充足喘息空间。
                 if (sleepMs > 5000) sleepMs = 5000;
-                if (sleepMs > 0) {
-                    Thread.sleep(sleepMs);
-                }
+                if (sleepMs < 50)   sleepMs = 50;
+                Thread.sleep(sleepMs);
             } catch (InterruptedException ignored) {
                 break;
             } catch (Exception e) {
