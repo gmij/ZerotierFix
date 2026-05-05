@@ -218,6 +218,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 避免每次重建都重复输出相同信息。chnroutes 刷新后重置，重新执行一次验证。
      */
     private volatile boolean tencentCidrsVerified = false;
+    /** 多播组扫描间隔（毫秒）。多播组变更极少，无需高频扫描；间隔越短 CPU 唤醒越频繁。 */
+    private static final long MULTICAST_SCAN_INTERVAL_MS = 5000;
     private Thread v4MulticastScanner = new Thread() {
         /* class com.zerotier.one.service.ZeroTierOneService.AnonymousClass1 */
         List<String> subscriptions = new ArrayList<>();
@@ -266,7 +268,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         }
                     }
                     this.subscriptions = groups;
-                    Thread.sleep(1000);
+                    Thread.sleep(MULTICAST_SCAN_INTERVAL_MS);
                 } catch (InterruptedException e) {
                     LogUtil.e(ZeroTierOneService.TAG, "V4 Multicast Scanner Thread Interrupted", e);
                     break;
@@ -311,7 +313,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         }
                     }
                     this.subscriptions = groups;
-                    Thread.sleep(1000);
+                    Thread.sleep(MULTICAST_SCAN_INTERVAL_MS);
                 } catch (InterruptedException e) {
                     LogUtil.e(ZeroTierOneService.TAG, "V6 Multicast Scanner Thread Interrupted", e);
                     break;
@@ -458,7 +460,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 if (this.svrSocket == null) {
                     this.svrSocket = new DatagramSocket(null);
                     this.svrSocket.setReuseAddress(true);
-                    this.svrSocket.setSoTimeout(1000);
+                    this.svrSocket.setSoTimeout(5000);
                     this.svrSocket.bind(new InetSocketAddress(9994));
                 }
                 if (!protect(this.svrSocket)) {
@@ -1229,7 +1231,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             String channelName = getString(R.string.channel_name);
             String description = getString(R.string.channel_description);
             var channel = new NotificationChannel(
-                    Constants.CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_HIGH);
+                    Constants.CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_LOW);
             channel.setDescription(description);
             this.notificationManager.createNotificationChannel(channel);
         }
