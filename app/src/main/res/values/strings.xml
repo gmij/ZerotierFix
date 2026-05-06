@@ -46,6 +46,9 @@
     <string name="network_status_authentication_required">Authentication Required</string>
     <string name="network_list_status_connected">Connected</string>
     <string name="network_list_status_disconnected">Disconnected</string>
+    <string name="notification_channel_vpn_service">ZeroTier VPN Service</string>
+    <string name="notification_vpn_connecting">VPN connecting…</string>
+    <string name="notification_vpn_connected">VPN connected</string>
     <string name="network_type">Type</string>
     <string name="network_type_label">Type:</string>
     <string name="network_type_private">Private</string>

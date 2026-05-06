@@ -1,5 +1,6 @@
 package net.kaaass.zerotierfix.service;
 
+import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -169,6 +170,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     DatagramSocket svrSocket;
     ParcelFileDescriptor vpnSocket;
     private int bindCount = 0;
+    private Notification currentForegroundNotification;
     private boolean disableIPv6 = false;
     private int mStartID = -1;
     private long networkId = 0;
@@ -359,12 +361,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.i(TAG, "Bind Count: " + this.bindCount);
     }
 
-    /**
-     * 启动前台服务通知。
-     * 使用 IMPORTANCE_DEFAULT 通道确保 OEM ROM（如 Flyme/MIUI）正确注册前台服务状态，
-     * 使系统 VPN 🔑 图标可靠显示在状态栏。通知本身作为"VPN 正在连接"的指示。
-     */
-    private void startConnectingForeground() {
+    private PendingIntent getVpnConfigureIntent() {
+        Intent notificationIntent = new Intent(this,
+                net.kaaass.zerotierfix.ui.NetworkListActivity.class);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            flags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        return PendingIntent.getActivity(this, 0, notificationIntent, flags);
+    }
+
+    private Notification buildForegroundNotification(int textResId) {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = nm.getNotificationChannel(Constants.CHANNEL_ID);
@@ -373,27 +380,34 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         Constants.CHANNEL_ID,
                         getString(R.string.app_name),
                         NotificationManager.IMPORTANCE_DEFAULT);
-                channel.setDescription("ZeroTier VPN Service");
+                channel.setDescription(getString(R.string.notification_channel_vpn_service));
                 channel.setShowBadge(false);
                 nm.createNotificationChannel(channel);
             }
         }
 
-        Intent notificationIntent = new Intent(this,
-                net.kaaass.zerotierfix.ui.NetworkListActivity.class);
-        PendingIntent pendingIntent = PendingIntent.getActivity(this, 0,
-                notificationIntent, PendingIntent.FLAG_IMMUTABLE);
-
-        var notification = new NotificationCompat.Builder(this, Constants.CHANNEL_ID)
+        return new NotificationCompat.Builder(this, Constants.CHANNEL_ID)
                 .setContentTitle(getString(R.string.app_name))
-                .setContentText("VPN 连接中…")
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setContentIntent(pendingIntent)
+                .setContentText(getString(textResId))
+                .setSmallIcon(R.drawable.ic_stat_notify)
+                .setContentIntent(getVpnConfigureIntent())
                 .setOngoing(true)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .build();
+    }
 
-        startForeground(ZT_NOTIFICATION_TAG, notification);
+    /**
+     * 启动前台服务通知。部分 OEM ROM 只有在 VPN Service 保持前台状态时才稳定显示系统 VPN 图标。
+     */
+    private void startConnectingForeground() {
+        this.currentForegroundNotification = buildForegroundNotification(R.string.notification_vpn_connecting);
+        startForeground(ZT_NOTIFICATION_TAG, this.currentForegroundNotification);
+    }
+
+    private void updateConnectedForeground() {
+        this.currentForegroundNotification = buildForegroundNotification(R.string.notification_vpn_connected);
+        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        nm.notify(ZT_NOTIFICATION_TAG, this.currentForegroundNotification);
     }
 
     public IBinder onBind(Intent intent) {
@@ -407,6 +421,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.d(TAG, "Unbound by: " + getPackageManager().getNameForUid(Binder.getCallingUid()));
         this.bindCount--;
         logBindCount();
+        if (this.bindCount <= 0 && this.currentForegroundNotification != null) {
+            startForeground(ZT_NOTIFICATION_TAG, this.currentForegroundNotification);
+        }
         return false;
     }
 
@@ -649,6 +666,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (this.eventBus.isRegistered(this)) {
             this.eventBus.unregister(this);
         }
+        this.currentForegroundNotification = null;
         stopForeground(true);
         if (!stopSelfResult(this.mStartID)) {
             // stopSelfResult 在服务被快速重启时（新 startId 已生成）会返回 false，属正常现象
@@ -1215,6 +1233,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         builder.setMtu(mtu);
 
         builder.setSession(Constants.VPN_SESSION_NAME);
+        builder.setConfigureIntent(getVpnConfigureIntent());
 
         // 建立 VPN 连接
         // establish() 通过 Binder 传输路由表，若路由条数过多可能抛出 TransactionTooLargeException。
@@ -1245,12 +1264,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             configureAllowedDisallowedApps(fallbackBuilder, isRouteViaZeroTier);
             fallbackBuilder.setMtu(mtu);
             fallbackBuilder.setSession(Constants.VPN_SESSION_NAME);
+            fallbackBuilder.setConfigureIntent(getVpnConfigureIntent());
             this.vpnSocket = fallbackBuilder.establish();
         }
         if (this.vpnSocket == null) {
             this.eventBus.post(new VPNErrorEvent(getString(R.string.toast_vpn_application_not_prepared)));
             return false;
         }
+        updateConnectedForeground();
         this.in = new FileInputStream(this.vpnSocket.getFileDescriptor());
         this.out = new FileOutputStream(this.vpnSocket.getFileDescriptor());
         this.tunTapAdapter.setVpnSocket(this.vpnSocket);
