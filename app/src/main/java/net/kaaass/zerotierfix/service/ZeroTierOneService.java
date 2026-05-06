@@ -213,6 +213,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private final java.util.concurrent.atomic.AtomicBoolean isConfiguringVpn =
             new java.util.concurrent.atomic.AtomicBoolean(false);
     /**
+     * VPN 最近一次重建开始的时间戳（{@link android.os.SystemClock#elapsedRealtime()} 毫秒）。
+     * 用于抑制 VPN 建立后物理网络的虚假回调（Android 在 establish() 后会重新评估物理网络，
+     * 导致 onAvailable/onLinkPropertiesChanged 在毫秒级触发，形成 3s debounce → 重建 → 触发 → 重建 的无限循环）。
+     * 同样用于抑制 ZT 节点在 VPN 重建后立刻触发的 onNetworkReconfigure。
+     */
+    private volatile long lastRebuildTime = 0;
+    /** VPN 重建后抑制后续虚假网络回调的静默期（毫秒）。应大于 NETWORK_CHANGE_DEBOUNCE_MS。 */
+    private static final long REBUILD_SETTLE_MS = 5_000;
+    /**
      * 腾讯云 CIDR 验证日志一次性标志。
      * configureChinaDirectRouting 可能在 VPN 重建时多次调用；该标志确保 11 条验证日志只打印一次，
      * 避免每次重建都重复输出相同信息。chnroutes 刷新后重置，重新执行一次验证。
@@ -807,6 +816,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         boolean isChanged = event.isChanged();
         var network = event.getNetwork();
         var networkConfig = event.getVirtualNetworkConfig();
+        // 抑制 VPN 重建后 ZT 节点的虚假回调：establish() 创建新 TUN 接口后，ZT 节点会立刻上报
+        // 配置变化（isChanged=true），若不过滤会立即触发第二次完整重建，形成双重重建循环。
+        if (isChanged && android.os.SystemClock.elapsedRealtime() - lastRebuildTime < REBUILD_SETTLE_MS) {
+            LogUtil.d(TAG, "onNetworkReconfigure: VPN 重建稳定期内，跳过重建（距上次重建 "
+                    + (android.os.SystemClock.elapsedRealtime() - lastRebuildTime) + "ms）");
+            isChanged = false;
+        }
         boolean configUpdated = isChanged && updateTunnelConfig(network);
         boolean networkIsOk = networkConfig.getStatus() == VirtualNetworkStatus.NETWORK_STATUS_OK;
 
@@ -932,6 +948,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     private boolean doUpdateTunnelConfig(Network network) {
+        // 记录重建开始时间：用于抑制 VPN establish() 触发的虚假物理网络回调和 ZT node 回调
+        lastRebuildTime = android.os.SystemClock.elapsedRealtime();
         long networkId = network.getNetworkId();
         var networkConfig = network.getNetworkConfig();
         var virtualNetworkConfig = getVirtualNetworkConfig(networkId);
@@ -1316,28 +1334,52 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * VPN 自身的网络事件。若使用 {@code registerDefaultNetworkCallback}，VPN 建立时
      * 虚拟网络会成为新的默认网络并触发 {@code onAvailable}，导致每次重建 VPN 都再次
      * 触发回调，形成无限重建循环，VPN 图标持续闪烁或消失。
+     *
+     * <p>本方法可在 VPN 重建路径（networkChangeThread 上）中安全重入：
+     * 只更换 ConnectivityManager 回调对象，不销毁 HandlerThread/Handler，
+     * 避免 Bug：原先调用 unregisterNetworkChangeCallback() 会同时清空 handler，
+     * 导致重建后所有网络变化均被静默丢弃。
      */
     private void registerNetworkChangeCallback() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
             // API 24 以下不支持 registerNetworkCallback
             return;
         }
-        // 启动后台 HandlerThread，用于异步执行 VPN 重建，避免阻塞系统回调线程
+        // 仅在 HandlerThread 不存在时创建。VPN 重建时本方法可能在 networkChangeThread 上被调用，
+        // 此时 thread != null，直接复用已有 thread 和 handler，不销毁再重建。
         if (networkChangeThread == null) {
             networkChangeThread = new HandlerThread("ZT-NetworkChange");
             networkChangeThread.start();
             networkChangeHandler = new Handler(networkChangeThread.getLooper());
         }
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return;
+        // 仅注销旧的 ConnectivityManager 回调（不销毁 HandlerThread），避免自毁 handler。
+        if (this.networkCallback != null) {
+            try {
+                cm.unregisterNetworkCallback(this.networkCallback);
+            } catch (Exception e) {
+                LogUtil.d(TAG, "取消旧网络回调时出错: " + e.getMessage());
+            }
+            this.networkCallback = null;
+        }
+        this.lastLinkAddresses = null;
+        // 清除可能由本次 VPN establish() 触发的旧 pending 重建任务。
+        // establish() 调用完成后物理网络会在数毫秒内触发 onAvailable，若不清除将立即发起下一次重建。
+        networkChangeHandler.removeCallbacks(networkChangeRunnable);
         try {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            if (cm == null) return;
-            unregisterNetworkChangeCallback(); // 避免重复注册
             this.networkCallback = new ConnectivityManager.NetworkCallback() {
                 @Override
                 public void onAvailable(android.net.Network network) {
-                    LogUtil.i(TAG, "网络变化: 新网络可用 (" + network + ")");
-                    // 新网络出现时重置地址快照，确保后续 onLinkPropertiesChanged 能正常比较
+                    // 新网络出现时始终重置地址快照，确保后续 onLinkPropertiesChanged 能正常比较
                     lastLinkAddresses = null;
+                    // 检查 VPN 重建稳定期：establish() 会触发物理网络在毫秒级内调用 onAvailable，
+                    // 若不过滤则每次 VPN 重建后 3s 都会再次重建，形成无限循环。
+                    if (android.os.SystemClock.elapsedRealtime() - lastRebuildTime < REBUILD_SETTLE_MS) {
+                        LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，跳过 onAvailable (" + network + ")");
+                        return;
+                    }
+                    LogUtil.i(TAG, "网络变化: 新网络可用 (" + network + ")");
                     onNetworkChanged();
                 }
 
@@ -1351,6 +1393,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 @Override
                 public void onLinkPropertiesChanged(android.net.Network network,
                                                     LinkProperties linkProperties) {
+                    // 检查 VPN 重建稳定期（同 onAvailable 说明）。
+                    if (android.os.SystemClock.elapsedRealtime() - lastRebuildTime < REBUILD_SETTLE_MS) {
+                        LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，跳过 onLinkPropertiesChanged (" + network + ")");
+                        lastLinkAddresses = null;
+                        return;
+                    }
                     // 只有链路地址（IP 地址/前缀）发生变化时才重配 VPN。
                     // DNS 更新、MTU 变化、DHCP 续租等不改变地址的事件将被忽略，
                     // 避免 VPN 启动时因 Android 系统多次下发配置而产生误报日志和无效重建。
