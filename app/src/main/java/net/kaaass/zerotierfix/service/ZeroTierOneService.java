@@ -176,6 +176,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private long nextBackgroundTaskDeadline = 0;
     private Node node;
     private NotificationManager notificationManager;
+    /** 最近一次传给 startForeground 的通知对象，用于在 Bind Count 降为 0 时重新刷新图标。
+     * 部分 OEM ROM（Meizu Flyme 等）会在所有客户端解绑后主动清除前台通知；
+     * 重新调用 startForeground 可立即恢复状态栏图标，无需重建 VPN。 */
+    private android.app.Notification currentForegroundNotification = null;
     private TunTapAdapter tunTapAdapter;
     private UdpCom udpCom;
     private Thread udpThread;
@@ -372,6 +376,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.d(TAG, "Unbound by: " + getPackageManager().getNameForUid(Binder.getCallingUid()));
         this.bindCount--;
         logBindCount();
+        // 当所有客户端解绑（Bind Count=0）时，部分 OEM ROM（Meizu Flyme 等）会主动清除前台服务通知。
+        // 重新调用 startForeground 可立即恢复状态栏图标，无需重建 VPN。
+        if (this.bindCount == 0 && currentForegroundNotification != null) {
+            startForeground(ZT_NOTIFICATION_TAG, currentForegroundNotification);
+        }
         return false;
     }
 
@@ -614,6 +623,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (this.notificationManager != null) {
             // stopForeground 将前台服务绑定的通知一并移除，与 startForeground 配套使用。
             // 原先的 notificationManager.cancel() 对 startForeground 绑定的通知无效。
+            currentForegroundNotification = null;
             stopForeground(true);
         }
         if (!stopSelfResult(this.mStartID)) {
@@ -1285,6 +1295,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // startForeground() 将通知绑定到前台服务生命周期，防止 OS/OEM 独立回收通知图标。
         // 原先的 notificationManager.notify() 只是普通通知，与服务无关联，随时可被系统清除。
         startForeground(ZT_NOTIFICATION_TAG, notification);
+        // 缓存通知对象：Meizu Flyme 等 OEM ROM 会在所有客户端解绑（Bind Count=0）后清除前台通知，
+        // onUnbind 中重新调用 startForeground 来恢复图标。
+        currentForegroundNotification = notification;
         LogUtil.i(TAG, "ZeroTier One Connected");
 
         // 注册网络变化回调：当手机在 WiFi/4G/5G 之间切换时重新配置 VPN 路由
