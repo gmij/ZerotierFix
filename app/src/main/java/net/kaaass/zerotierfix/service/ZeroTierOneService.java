@@ -1,8 +1,5 @@
 package net.kaaass.zerotierfix.service;
 
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
@@ -23,8 +20,6 @@ import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.preference.PreferenceManager;
 import android.widget.Toast;
-
-import androidx.core.app.NotificationCompat;
 
 import com.zerotier.sdk.Event;
 import com.zerotier.sdk.EventListener;
@@ -159,8 +154,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 6 500 条 × ~83 字节 ≈ 540 KB，低于常见 OEM 600 KB 限制。
      */
     private static final int MAX_EXCLUDE_ROUTES_ANDROID13 = 6500;
-    /** 前台服务通知 ID */
-    private static final int ZT_NOTIFICATION_TAG = 9994;
     private final IBinder mBinder = new ZeroTierBinder();
     private final DataStore dataStore = new DataStore(this);
     private final EventBus eventBus = EventBus.getDefault();
@@ -170,7 +163,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     DatagramSocket svrSocket;
     ParcelFileDescriptor vpnSocket;
     private int bindCount = 0;
-    private Notification currentForegroundNotification;
     private boolean disableIPv6 = false;
     private int mStartID = -1;
     private long networkId = 0;
@@ -361,6 +353,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.i(TAG, "Bind Count: " + this.bindCount);
     }
 
+    /**
+     * PendingIntent 提供给 {@link VpnService.Builder#setConfigureIntent}，
+     * 用户在系统 VPN 设置中点击当前 VPN 时会跳转到本应用主界面。
+     * 与状态栏图标无关。
+     */
     private PendingIntent getVpnConfigureIntent() {
         Intent notificationIntent = new Intent(this,
                 net.kaaass.zerotierfix.ui.NetworkListActivity.class);
@@ -369,45 +366,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
         return PendingIntent.getActivity(this, 0, notificationIntent, flags);
-    }
-
-    private Notification buildForegroundNotification(int textResId) {
-        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = nm.getNotificationChannel(Constants.CHANNEL_ID);
-            if (channel == null) {
-                channel = new NotificationChannel(
-                        Constants.CHANNEL_ID,
-                        getString(R.string.app_name),
-                        NotificationManager.IMPORTANCE_DEFAULT);
-                channel.setDescription(getString(R.string.notification_channel_vpn_service));
-                channel.setShowBadge(false);
-                nm.createNotificationChannel(channel);
-            }
-        }
-
-        return new NotificationCompat.Builder(this, Constants.CHANNEL_ID)
-                .setContentTitle(getString(R.string.app_name))
-                .setContentText(getString(textResId))
-                .setSmallIcon(R.drawable.ic_stat_notify)
-                .setContentIntent(getVpnConfigureIntent())
-                .setOngoing(true)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .build();
-    }
-
-    /**
-     * 启动前台服务通知。部分 OEM ROM 只有在 VPN Service 保持前台状态时才稳定显示系统 VPN 图标。
-     */
-    private void startConnectingForeground() {
-        this.currentForegroundNotification = buildForegroundNotification(R.string.notification_vpn_connecting);
-        startForeground(ZT_NOTIFICATION_TAG, this.currentForegroundNotification);
-    }
-
-    private void updateConnectedForeground() {
-        this.currentForegroundNotification = buildForegroundNotification(R.string.notification_vpn_connected);
-        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        nm.notify(ZT_NOTIFICATION_TAG, this.currentForegroundNotification);
     }
 
     public IBinder onBind(Intent intent) {
@@ -421,9 +379,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.d(TAG, "Unbound by: " + getPackageManager().getNameForUid(Binder.getCallingUid()));
         this.bindCount--;
         logBindCount();
-        if (this.bindCount == 0 && this.currentForegroundNotification != null) {
-            startForeground(ZT_NOTIFICATION_TAG, this.currentForegroundNotification);
-        }
         return false;
     }
 
@@ -450,8 +405,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         this.mStartID = startId;
 
-        // 启动前台服务：确保系统 VPN 图标可靠显示，并防止服务被 OEM ROM 后台杀死
-        startConnectingForeground();
+        // 注意：本服务不调用 startForeground()。Android 的 VpnService 在 establish() 创建 TUN 后，
+        // 系统会自动在状态栏显示原生 VPN 钥匙图标；启动前台通知反而会把系统图标盖住。
 
         // 注册事件总线监听器
         if (!this.eventBus.isRegistered(this)) {
@@ -666,8 +621,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (this.eventBus.isRegistered(this)) {
             this.eventBus.unregister(this);
         }
-        this.currentForegroundNotification = null;
-        stopForeground(true);
         if (!stopSelfResult(this.mStartID)) {
             // stopSelfResult 在服务被快速重启时（新 startId 已生成）会返回 false，属正常现象
             LogUtil.d(TAG, "stopSelfResult() returned false (service likely restarted with new startId)");
@@ -1271,7 +1224,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             this.eventBus.post(new VPNErrorEvent(getString(R.string.toast_vpn_application_not_prepared)));
             return false;
         }
-        updateConnectedForeground();
         this.in = new FileInputStream(this.vpnSocket.getFileDescriptor());
         this.out = new FileOutputStream(this.vpnSocket.getFileDescriptor());
         this.tunTapAdapter.setVpnSocket(this.vpnSocket);
