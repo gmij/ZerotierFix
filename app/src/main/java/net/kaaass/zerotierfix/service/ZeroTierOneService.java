@@ -834,8 +834,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
     @Subscribe(threadMode = ThreadMode.ASYNC)
     public void onNetworkReconfigure(NetworkReconfigureEvent event) {
-        boolean isChanged = event.isChanged();
         var network = event.getNetwork();
+        // 只处理当前服务所连接网络的配置变化，忽略其他 ZT 网络的 CONFIG_UPDATE。
+        // onNetworkConfigurationUpdated 对 ZT 节点中所有网络均会触发，若用户配置了多个
+        // ZeroTier 网络（例如一个全局代理、一个 per-app），不同网络的 CONFIG_UPDATE
+        // 会在此处交替触发 updateTunnelConfig，导致 VPN 路由模式反复在全局/per-app
+        // 之间切换，每次切换都生成新 TUN fd，OEM ROM 随即清除系统 VPN 钥匙图标。
+        if (network.getNetworkId() != this.networkId) {
+            return;
+        }
+        boolean isChanged = event.isChanged();
         var networkConfig = event.getVirtualNetworkConfig();
         if (isChanged) {
             long now = android.os.SystemClock.elapsedRealtime();
