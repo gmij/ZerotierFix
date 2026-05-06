@@ -603,7 +603,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             this.eventBus.unregister(this);
         }
         if (this.notificationManager != null) {
-            this.notificationManager.cancel(ZT_NOTIFICATION_TAG);
+            // stopForeground 将前台服务绑定的通知一并移除，与 startForeground 配套使用。
+            // 原先的 notificationManager.cancel() 对 startForeground 绑定的通知无效。
+            stopForeground(true);
         }
         if (!stopSelfResult(this.mStartID)) {
             LogUtil.e(TAG, "stopSelfResult() failed!");
@@ -1229,9 +1231,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (Build.VERSION.SDK_INT >= 26) {
             String channelName = getString(R.string.channel_name);
             String description = getString(R.string.channel_description);
+            // 使用 IMPORTANCE_DEFAULT 以确保状态栏图标在所有厂商 ROM（含 MIUI/ColorOS 等）上
+            // 始终可见。IMPORTANCE_LOW 在国产 OEM 上通常被等同于 IMPORTANCE_MIN（无状态栏图标）。
+            // 通过显式关闭声音和震动保持静默，不影响省电效果。
             var channel = new NotificationChannel(
-                    Constants.CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_LOW);
+                    Constants.CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_DEFAULT);
             channel.setDescription(description);
+            channel.setSound(null, null);
+            channel.enableVibration(false);
             this.notificationManager.createNotificationChannel(channel);
         }
         int pendingIntentFlag = PendingIntent.FLAG_UPDATE_CURRENT;
@@ -1245,14 +1252,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                                         | Intent.FLAG_ACTIVITY_CLEAR_TOP)
                         , pendingIntentFlag);
         var notification = new NotificationCompat.Builder(this, Constants.CHANNEL_ID)
-                .setPriority(1)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setOngoing(true)
+                .setOnlyAlertOnce(true)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle(getString(R.string.notification_title_connected))
                 .setContentText(getString(R.string.notification_text_connected, network.getNetworkIdStr()))
                 .setColor(ContextCompat.getColor(getApplicationContext(), R.color.zerotier_orange))
                 .setContentIntent(pendingIntent).build();
-        this.notificationManager.notify(ZT_NOTIFICATION_TAG, notification);
+        // startForeground() 将通知绑定到前台服务生命周期，防止 OS/OEM 独立回收通知图标。
+        // 原先的 notificationManager.notify() 只是普通通知，与服务无关联，随时可被系统清除。
+        startForeground(ZT_NOTIFICATION_TAG, notification);
         LogUtil.i(TAG, "ZeroTier One Connected");
 
         // 注册网络变化回调：当手机在 WiFi/4G/5G 之间切换时重新配置 VPN 路由
