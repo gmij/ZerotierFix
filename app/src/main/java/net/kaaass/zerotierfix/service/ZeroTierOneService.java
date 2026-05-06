@@ -421,7 +421,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.d(TAG, "Unbound by: " + getPackageManager().getNameForUid(Binder.getCallingUid()));
         this.bindCount--;
         logBindCount();
-        if (this.bindCount <= 0 && this.currentForegroundNotification != null) {
+        if (this.bindCount == 0 && this.currentForegroundNotification != null) {
             startForeground(ZT_NOTIFICATION_TAG, this.currentForegroundNotification);
         }
         return false;
