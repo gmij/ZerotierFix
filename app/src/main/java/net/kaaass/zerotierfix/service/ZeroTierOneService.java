@@ -211,8 +211,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 同样用于抑制 ZT 节点在 VPN 重建后立刻触发的 onNetworkReconfigure。
      */
     private volatile long lastRebuildTime = 0;
-    /** VPN 重建后抑制后续虚假网络回调的静默期（毫秒）。应大于 NETWORK_CHANGE_DEBOUNCE_MS。 */
-    private static final long REBUILD_SETTLE_MS = 5_000;
+    /** VPN 重建后抑制后续虚假网络回调的静默期（毫秒）。应大于 NETWORK_CHANGE_DEBOUNCE_MS。
+     * 全局模式 establish() 需添加 ~3900 条 excludeRoute，耗时较长，OS 在 establish() 返回后
+     * 会重新评估所有物理网络并触发 onAvailable / onLinkPropertiesChanged；
+     * 设置 12s 静默期可覆盖这些回调的 3s debounce + 重评估延迟，避免不必要的二次重建。 */
+    private static final long REBUILD_SETTLE_MS = 12_000;
     /**
      * 腾讯云 CIDR 验证日志一次性标志。
      * configureChinaDirectRouting 可能在 VPN 重建时多次调用；该标志确保 11 条验证日志只打印一次，
@@ -1443,18 +1446,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 实际执行 VPN 路由重建的逻辑，由 {@link #networkChangeRunnable} 在后台线程调用。
      */
     private void doNetworkChangedUpdate() {
-        // 防御性检查：若 VPN 刚刚重建完成（settle 窗口内），延迟到窗口外再处理。
+        // 防御性检查：若 VPN 刚刚重建完成（settle 窗口内），直接丢弃本次事件。
         // 多个回调路径（onAvailable / onLost / onLinkPropertiesChanged / onNetworkReconfigure 等）
-        // 都可能在 establish() 后被系统虚假触发；若任意一条路径绕过 settle 检查并完成 3s debounce，
-        // 都会导致一次新的 establish()，新 TUN fd 顶替旧 TUN，OEM ROM 会因此抹掉系统 VPN 钥匙图标。
+        // 都可能在 establish() 后被系统虚假触发；若在此处"延迟重试"而非直接丢弃，
+        // 反而会在 settle 窗口到期后触发一次必然重建，产生新 TUN fd，OEM ROM 会抹掉 VPN 钥匙图标。
+        // 真正的物理网络变化（WiFi→4G 切换等）会在 settle 窗口外重新触发独立回调，不会被此处遗漏。
         long sinceRebuild = android.os.SystemClock.elapsedRealtime() - lastRebuildTime;
         if (sinceRebuild < REBUILD_SETTLE_MS) {
-            long delay = REBUILD_SETTLE_MS - sinceRebuild + 100;
-            LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，推迟重建 " + delay + "ms");
-            if (networkChangeHandler != null) {
-                networkChangeHandler.removeCallbacks(networkChangeRunnable);
-                networkChangeHandler.postDelayed(networkChangeRunnable, delay);
-            }
+            LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，丢弃本次事件（距上次重建 " + sinceRebuild + "ms）");
             return;
         }
 
