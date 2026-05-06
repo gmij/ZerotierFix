@@ -1255,7 +1255,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(R.drawable.ic_stat_notify)
                 .setContentTitle(getString(R.string.notification_title_connected))
                 .setContentText(getString(R.string.notification_text_connected, network.getNetworkIdStr()))
                 .setColor(ContextCompat.getColor(getApplicationContext(), R.color.zerotier_orange))
