@@ -1350,6 +1350,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
                 @Override
                 public void onLost(android.net.Network network) {
+                    // 检查 VPN 重建稳定期：establish() 时系统会重新评估物理网络优先级，
+                    // 偶发触发 onLost；不过滤将形成 重建 → onLost → debounce → 重建 的循环，
+                    // 新生成的 TUN 顶替旧 TUN，OEM ROM（Flyme/MIUI/ColorOS）会顺势抹掉系统 VPN 钥匙图标。
+                    if (android.os.SystemClock.elapsedRealtime() - lastRebuildTime < REBUILD_SETTLE_MS) {
+                        LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，跳过 onLost (" + network + ")");
+                        return;
+                    }
                     LogUtil.i(TAG, "网络变化: 网络丢失 (" + network + ")");
                     lastLinkAddresses = null;
                     onNetworkChanged();
@@ -1436,6 +1443,21 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 实际执行 VPN 路由重建的逻辑，由 {@link #networkChangeRunnable} 在后台线程调用。
      */
     private void doNetworkChangedUpdate() {
+        // 防御性检查：若 VPN 刚刚重建完成（settle 窗口内），延迟到窗口外再处理。
+        // 多个回调路径（onAvailable / onLost / onLinkPropertiesChanged / onNetworkReconfigure 等）
+        // 都可能在 establish() 后被系统虚假触发；若任意一条路径绕过 settle 检查并完成 3s debounce，
+        // 都会导致一次新的 establish()，新 TUN fd 顶替旧 TUN，OEM ROM 会因此抹掉系统 VPN 钥匙图标。
+        long sinceRebuild = android.os.SystemClock.elapsedRealtime() - lastRebuildTime;
+        if (sinceRebuild < REBUILD_SETTLE_MS) {
+            long delay = REBUILD_SETTLE_MS - sinceRebuild + 100;
+            LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，推迟重建 " + delay + "ms");
+            if (networkChangeHandler != null) {
+                networkChangeHandler.removeCallbacks(networkChangeRunnable);
+                networkChangeHandler.postDelayed(networkChangeRunnable, delay);
+            }
+            return;
+        }
+
         // 清除连接日志缓存，以便网络切换后重新记录
         if (this.tunTapAdapter != null) {
             this.tunTapAdapter.clearConnLog();
