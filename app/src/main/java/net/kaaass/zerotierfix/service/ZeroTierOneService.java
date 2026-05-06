@@ -1239,6 +1239,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             channel.setDescription(description);
             channel.setSound(null, null);
             channel.enableVibration(false);
+            channel.setLockscreenVisibility(android.app.Notification.VISIBILITY_PUBLIC);
+            channel.setShowBadge(true);
             this.notificationManager.createNotificationChannel(channel);
         }
         int pendingIntentFlag = PendingIntent.FLAG_UPDATE_CURRENT;
@@ -1259,6 +1261,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 .setContentTitle(getString(R.string.notification_title_connected))
                 .setContentText(getString(R.string.notification_text_connected, network.getNetworkIdStr()))
                 .setColor(ContextCompat.getColor(getApplicationContext(), R.color.zerotier_orange))
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
                 .setContentIntent(pendingIntent).build();
         // startForeground() 将通知绑定到前台服务生命周期，防止 OS/OEM 独立回收通知图标。
         // 原先的 notificationManager.notify() 只是普通通知，与服务无关联，随时可被系统清除。
