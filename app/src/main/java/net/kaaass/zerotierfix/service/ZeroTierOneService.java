@@ -603,7 +603,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             this.eventBus.unregister(this);
         }
         if (!stopSelfResult(this.mStartID)) {
-            LogUtil.e(TAG, "stopSelfResult() failed!");
+            // stopSelfResult 在服务被快速重启时（新 startId 已生成）会返回 false，属正常现象
+            LogUtil.d(TAG, "stopSelfResult() returned false (service likely restarted with new startId)");
         }
     }
 
@@ -1739,20 +1740,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (!tencentCidrsVerified) {
             tencentCidrsVerified = true;
             String[] tencentCidrChecks = {
-                    // ── AS45090 (Tencent Cloud China) ──
-                    "43.128.0.0",  // 43.128.0.0/13  腾讯云新节点（视频号直播 CDN 调度）
-                    "43.152.0.0",  // 43.152.0.0/13  腾讯云上海节点
-                    "162.62.0.0",  // 162.62.0.0/16  腾讯云国内节点
-                    "101.33.0.0",  // 101.33.0.0/17  腾讯云广州/北京
-                    "119.28.0.0",  // 119.28.0.0/16  旧 QCloud
-                    // ── AS132203 (Tencent Cloud International, 用于中国 CDN) ──
-                    "129.226.0.0", // 129.226.0.0/16 视频号直播实测命中（szlong.weixin.qq.com）
-                    "150.109.0.0", // 150.109.0.0/16 WeChat CDN / apmplus
-                    "49.51.0.0",   // 49.51.0.0/16   Tencent Cloud International
-                    // ── 其他常见腾讯/视频直播相关 IP（应在 chnroutes.txt BGP 数据中） ──
-                    "183.2.0.0",   // 183.2.0.0/16   腾讯 AS17623（微信 CDN 常用）
-                    "175.27.0.0",  // 175.27.0.0/16  腾讯云（B 站/视频号 CDN）
-                    "58.250.0.0",  // 58.250.0.0/15  腾讯 AS17623
+                    "43.128.0.0", "43.152.0.0", "162.62.0.0", "101.33.0.0", "119.28.0.0",
+                    "129.226.0.0", "150.109.0.0", "49.51.0.0", "183.2.0.0", "175.27.0.0", "58.250.0.0",
             };
             String[] tencentCidrLabels = {
                     "43.128.0.0/13", "43.152.0.0/13", "162.62.0.0/16",
@@ -1760,20 +1749,25 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     "129.226.0.0/16", "150.109.0.0/16", "49.51.0.0/16",
                     "183.2.0.0/16", "175.27.0.0/16", "58.250.0.0/15",
             };
+            int okCount = 0;
+            List<String> failedCidrs = new ArrayList<>();
             for (int i = 0; i < tencentCidrChecks.length; i++) {
                 try {
                     InetAddress sample = InetAddress.getByName(tencentCidrChecks[i]);
-                    boolean inChina = router.isChineseIp(sample);
-                    if (inChina) {
-                        LogUtil.i(LogUtil.ROUTE_TAG, "腾讯云 " + tencentCidrLabels[i]
-                                + " → IN_CHINA（已排除出 VPN）✓");
+                    if (router.isChineseIp(sample)) {
+                        okCount++;
                     } else {
-                        LogUtil.w(LogUtil.ROUTE_TAG, "腾讯云 " + tencentCidrLabels[i]
-                                + " → NOT_IN_CHINA（未排除出 VPN，直播可能卡顿！）");
+                        failedCidrs.add(tencentCidrLabels[i]);
                     }
                 } catch (Exception e) {
-                    LogUtil.w(LogUtil.ROUTE_TAG, "验证腾讯云 CIDR " + tencentCidrLabels[i] + " 失败: " + e.getMessage());
+                    failedCidrs.add(tencentCidrLabels[i] + "(err)");
                 }
+            }
+            if (failedCidrs.isEmpty()) {
+                LogUtil.i(LogUtil.ROUTE_TAG, "腾讯云 " + okCount + " 个补充段全部 IN_CHINA（已排除出 VPN）✓");
+            } else {
+                LogUtil.w(LogUtil.ROUTE_TAG, "腾讯云补充段验证：" + okCount + "/" + tencentCidrChecks.length
+                        + " 通过，未排除: " + android.text.TextUtils.join(", ", failedCidrs) + "（直播可能卡顿！）");
             }
         }
 
