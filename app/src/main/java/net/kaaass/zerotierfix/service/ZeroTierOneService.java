@@ -1397,6 +1397,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                     .build();
+            // 在注册新回调之前刷新 lastRebuildTime：
+            // cm.unregisterNetworkCallback 是异步的（向 ConnectivityService 发消息），
+            // 旧回调在取消消息被 ConnectivityService 处理之前仍可能触发 onAvailable / onLinkPropertiesChanged。
+            // 这些"旧回调回声"事件的到来时 lastRebuildTime 仍为本次重建开始时的旧值，
+            // 但若建立过程耗时较长（如全局模式添加 ~3900 条 excludeRoute，历时约 300ms），
+            // 而上次静默期已过（距上次 build 超过 REBUILD_SETTLE_MS），旧回调会通过静默检查，
+            // 导致 3s 后触发一次必然重建，新 TUN fd 顶替旧 TUN，OEM ROM 因此清除 VPN 钥匙图标。
+            // 此处刷新 lastRebuildTime，确保刚注册新回调时的任何事件（旧回调回声或新回调初始通知）
+            // 都落在新的静默窗口内，被正确抑制。
+            lastRebuildTime = android.os.SystemClock.elapsedRealtime();
             cm.registerNetworkCallback(physicalNetworkRequest, this.networkCallback);
             LogUtil.d(TAG, "已注册网络变化回调（仅监听物理网络）");
         } catch (Exception e) {
