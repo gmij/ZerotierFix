@@ -211,6 +211,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 同样用于抑制 ZT 节点在 VPN 重建后立刻触发的 onNetworkReconfigure。
      */
     private volatile long lastRebuildTime = 0;
+    /**
+     * 最近一次检测到物理网络变化的时间戳（{@link android.os.SystemClock#elapsedRealtime()} 毫秒）。
+     * 物理网络（WiFi/蜂窝）发生 onAvailable/onLost/onLinkPropertiesChanged 时更新。
+     * 用于抑制 ZT SDK 因物理网络变化而连锁触发的 onNetworkReconfigure：
+     * ZT 节点在底层 socket 连通性改变后数百毫秒内触发 CONFIG_UPDATE（isChanged=true），
+     * 若此时距上次 VPN 重建已超过 REBUILD_SETTLE_MS，settle 检查会放行该事件并立即重建，
+     * 新 TUN fd 顶替旧 TUN，OEM ROM 因此清除系统 VPN 钥匙图标。
+     * 通过记录物理网络变化时刻，在 onNetworkReconfigure 中额外屏蔽这段"连锁窗口"内的重建，
+     * 让 3s debounce 路径统一处理物理网络切换，避免双重重建。
+     */
+    private volatile long lastPhysicalNetworkChangeTime = 0;
     /** VPN 重建后抑制后续虚假网络回调的静默期（毫秒）。应大于 NETWORK_CHANGE_DEBOUNCE_MS。
      * 全局模式 establish() 需添加 ~3900 条 excludeRoute，耗时较长，OS 在 establish() 返回后
      * 会重新评估所有物理网络并触发 onAvailable / onLinkPropertiesChanged；
@@ -825,12 +836,25 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         boolean isChanged = event.isChanged();
         var network = event.getNetwork();
         var networkConfig = event.getVirtualNetworkConfig();
-        // 抑制 VPN 重建后 ZT 节点的虚假回调：establish() 创建新 TUN 接口后，ZT 节点会立刻上报
-        // 配置变化（isChanged=true），若不过滤会立即触发第二次完整重建，形成双重重建循环。
-        if (isChanged && android.os.SystemClock.elapsedRealtime() - lastRebuildTime < REBUILD_SETTLE_MS) {
-            LogUtil.d(TAG, "onNetworkReconfigure: VPN 重建稳定期内，跳过重建（距上次重建 "
-                    + (android.os.SystemClock.elapsedRealtime() - lastRebuildTime) + "ms）");
-            isChanged = false;
+        if (isChanged) {
+            long now = android.os.SystemClock.elapsedRealtime();
+            long sinceRebuild = now - lastRebuildTime;
+            long sinceNetworkChange = now - lastPhysicalNetworkChangeTime;
+            // 抑制 VPN 重建后 ZT 节点的虚假回调：establish() 创建新 TUN 接口后，ZT 节点会立刻上报
+            // 配置变化（isChanged=true），若不过滤会立即触发第二次完整重建，形成双重重建循环。
+            if (sinceRebuild < REBUILD_SETTLE_MS) {
+                LogUtil.d(TAG, "onNetworkReconfigure: VPN 重建稳定期内，跳过重建（距上次重建 "
+                        + sinceRebuild + "ms）");
+                isChanged = false;
+            } else if (sinceNetworkChange < NETWORK_CHANGE_DEBOUNCE_MS + 2000) {
+                // 物理网络刚发生变化（onLost/onAvailable 已调度 3s debounce 重建），
+                // ZT SDK 会在数百毫秒内因 socket 连通性改变连锁触发 CONFIG_UPDATE。
+                // 此时直接重建会产生额外一次 establish()，OEM ROM 随即清除 VPN 图标；
+                // 丢弃此事件，让 debounce 路径统一处理物理网络切换。
+                LogUtil.d(TAG, "onNetworkReconfigure: 物理网络切换窗口内，跳过（距上次网络变化 "
+                        + sinceNetworkChange + "ms，debounce 重建已排队）");
+                isChanged = false;
+            }
         }
         boolean configUpdated = isChanged && updateTunnelConfig(network);
         boolean networkIsOk = networkConfig.getStatus() == VirtualNetworkStatus.NETWORK_STATUS_OK;
@@ -1448,6 +1472,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private void onNetworkChanged() {
         if (networkChangeHandler == null) return;
+        // 记录物理网络变化时刻，供 onNetworkReconfigure 判断是否为连锁触发。
+        lastPhysicalNetworkChangeTime = android.os.SystemClock.elapsedRealtime();
         networkChangeHandler.removeCallbacks(networkChangeRunnable);
         networkChangeHandler.postDelayed(networkChangeRunnable, NETWORK_CHANGE_DEBOUNCE_MS);
     }
