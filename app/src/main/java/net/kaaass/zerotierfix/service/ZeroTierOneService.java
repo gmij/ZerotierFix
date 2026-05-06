@@ -90,6 +90,7 @@ import java.net.Socket;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -945,7 +946,26 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             network.setNetworkName(networkName);
         }
         network.update();
-        return !virtualNetworkConfig.equals(virtualNetworkConfig2);
+        // 仅当分配的 IP 地址发生变化时才触发 VPN 重建。
+        // ZT SDK 在节点发现过程中会频繁更新 peer 路由、组播组、托管路由等字段，
+        // 这些变化对我们的"中国直连/全局代理"路由配置毫无影响，但每次都会导致
+        // onNetworkReconfigure 触发完整的 VPN establish()，新 TUN fd 替换旧的，
+        // OEM ROM（Flyme/MIUI/ColorOS）随即清除系统 VPN 钥匙图标。
+        // 只有 assignedAddresses（设备在 ZT 网络中的 IP）发生变化时才需要重建 VPN 接口。
+        InetSocketAddress[] newAddrs = virtualNetworkConfig.getAssignedAddresses();
+        if (virtualNetworkConfig2 == null) {
+            // 首次配置：仅当 ZT 已分配 IP 地址时才触发建链，避免在节点授权前
+            // 触发一次失败的 establish()，进而污染 lastRebuildTime 阻塞后续建链。
+            return newAddrs != null && newAddrs.length > 0;
+        }
+        InetSocketAddress[] oldAddrs = virtualNetworkConfig2.getAssignedAddresses();
+        // 使用 Set 比较，避免 Arrays.equals 的顺序敏感性导致误判。
+        // InetSocketAddress.equals() 正确比较 IP 地址和前缀长度（port 字段）。
+        Set<InetSocketAddress> newSet = newAddrs != null
+                ? new HashSet<>(Arrays.asList(newAddrs)) : new HashSet<>();
+        Set<InetSocketAddress> oldSet = oldAddrs != null
+                ? new HashSet<>(Arrays.asList(oldAddrs)) : new HashSet<>();
+        return !newSet.equals(oldSet);
     }
 
     protected void shutdown() {
