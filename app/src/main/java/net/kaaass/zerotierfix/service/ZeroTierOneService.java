@@ -1,8 +1,5 @@
 package net.kaaass.zerotierfix.service;
 
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
@@ -22,9 +19,6 @@ import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.preference.PreferenceManager;
 import android.widget.Toast;
-
-import androidx.core.app.NotificationCompat;
-import androidx.core.content.ContextCompat;
 
 import com.zerotier.sdk.Event;
 import com.zerotier.sdk.EventListener;
@@ -68,7 +62,6 @@ import net.kaaass.zerotierfix.model.Network;
 import net.kaaass.zerotierfix.model.NetworkConfig;
 import net.kaaass.zerotierfix.model.NetworkDao;
 import net.kaaass.zerotierfix.model.type.DNSMode;
-import net.kaaass.zerotierfix.ui.NetworkListActivity;
 import net.kaaass.zerotierfix.util.Constants;
 import net.kaaass.zerotierfix.util.DatabaseUtils;
 import net.kaaass.zerotierfix.util.InetAddressUtils;
@@ -113,7 +106,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     public static final String ZT1_USE_DEFAULT_ROUTE = "com.zerotier.one.use_default_route";
     private static final String[] DISALLOWED_APPS = {"com.android.vending"};
     private static final String TAG = "ZT1_Service";
-    private static final int ZT_NOTIFICATION_TAG = 5919812;
     /** 移动数据接口名称前缀——这些是"上行"互联网提供者，不应排除在 VPN 路由之外。 */
     private static final String[] MOBILE_DATA_IFACE_PREFIXES = {
             "rmnet", "v4-rmnet",   // Qualcomm (rmnet_data0 等) 及其 CLAT/464XLAT 接口
@@ -175,7 +167,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private long networkId = 0;
     private long nextBackgroundTaskDeadline = 0;
     private Node node;
-    private NotificationManager notificationManager;
     private TunTapAdapter tunTapAdapter;
     private UdpCom udpCom;
     private Thread udpThread;
@@ -462,11 +453,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return START_NOT_STICKY;
         }
 
-        // 在 Bind Count > 0 时立即调用 startForeground，确保 Flyme 等 OEM ROM 认可该前台通知。
-        // Android 规定：startForeground 须在 onStartCommand 返回前调用（API 26+ 5 秒内）。
-        // 后续 VPN 连接完成后通过 notificationManager.notify() 更新通知文本，保留前台关联。
-        startConnectingForeground();
-
         // 启动 ZT 服务
         synchronized (this) {
             try {
@@ -615,11 +601,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         if (this.eventBus.isRegistered(this)) {
             this.eventBus.unregister(this);
-        }
-        if (this.notificationManager != null) {
-            // stopForeground 将前台服务绑定的通知一并移除，与 startForeground 配套使用。
-            // 原先的 notificationManager.cancel() 对 startForeground 绑定的通知无效。
-            stopForeground(true);
         }
         if (!stopSelfResult(this.mStartID)) {
             LogUtil.e(TAG, "stopSelfResult() failed!");
@@ -952,58 +933,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
     }
 
-    /**
-     * 在 {@code onStartCommand} 中（Bind Count > 0 时）立即建立前台服务关联，
-     * 显示"正在连接"占位通知。
-     * <p>
-     * Flyme / MIUI / ColorOS 等 OEM ROM 的通知保活策略：只有在 Bind Count > 0 时调用过
-     * {@code startForeground} 的服务，其通知才能在后台（Bind Count = 0）持续显示。
-     * 后续 VPN 建立完成后通过 {@link NotificationManager#notify} 更新通知文本即可，
-     * <b>无需再次调用 {@code startForeground}</b>，避免 OEM ROM 在 Bind Count = 0
-     * 时因重新调用 {@code startForeground} 而清除图标。
-     */
-    private void startConnectingForeground() {
-        if (this.notificationManager == null) {
-            this.notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        }
-        if (Build.VERSION.SDK_INT >= 26) {
-            String channelName = getString(R.string.channel_name);
-            String description = getString(R.string.channel_description);
-            // 使用 IMPORTANCE_DEFAULT 以确保状态栏图标在所有厂商 ROM（含 MIUI/ColorOS 等）上
-            // 始终可见。IMPORTANCE_LOW 在国产 OEM 上通常被等同于 IMPORTANCE_MIN（无状态栏图标）。
-            // 通过显式关闭声音和震动保持静默，不影响省电效果。
-            var channel = new NotificationChannel(
-                    Constants.CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_DEFAULT);
-            channel.setDescription(description);
-            channel.setSound(null, null);
-            channel.enableVibration(false);
-            channel.setLockscreenVisibility(android.app.Notification.VISIBILITY_PUBLIC);
-            channel.setShowBadge(true);
-            this.notificationManager.createNotificationChannel(channel);
-        }
-        int pendingIntentFlag = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 31) {
-            pendingIntentFlag |= PendingIntent.FLAG_IMMUTABLE;
-        }
-        var pendingIntent = PendingIntent.getActivity(this, 0,
-                new Intent(this, NetworkListActivity.class)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP
-                                | Intent.FLAG_ACTIVITY_CLEAR_TOP),
-                pendingIntentFlag);
-        var notification = new NotificationCompat.Builder(this, Constants.CHANNEL_ID)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .setSmallIcon(R.drawable.ic_stat_notify)
-                .setContentTitle(getString(R.string.notification_title_connecting))
-                .setContentText(getString(R.string.notification_text_connecting))
-                .setColor(ContextCompat.getColor(getApplicationContext(), R.color.zerotier_orange))
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                .setContentIntent(pendingIntent).build();
-        startForeground(ZT_NOTIFICATION_TAG, notification);
-    }
-
     private boolean doUpdateTunnelConfig(Network network) {
         // 记录重建开始时间：用于抑制 VPN establish() 触发的虚假物理网络回调和 ZT node 回调
         lastRebuildTime = android.os.SystemClock.elapsedRealtime();
@@ -1299,35 +1228,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         this.tunTapAdapter.startThreads();
 
-        // 更新状态栏通知文本为已连接状态。
-        // 通道和 startForeground 已在 onStartCommand 的 startConnectingForeground() 中建立；
-        // 此处只需更新通知内容，使用 notify() 即可，无需重新调用 startForeground()。
-        int pendingIntentFlag = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 31) {
-            pendingIntentFlag |= PendingIntent.FLAG_IMMUTABLE;
-        }
-        var pendingIntent =
-                PendingIntent.getActivity(this, 0,
-                        new Intent(this, NetworkListActivity.class)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP
-                                        | Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                        , pendingIntentFlag);
-        var notification = new NotificationCompat.Builder(this, Constants.CHANNEL_ID)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .setSmallIcon(R.drawable.ic_stat_notify)
-                .setContentTitle(getString(R.string.notification_title_connected))
-                .setContentText(getString(R.string.notification_text_connected, network.getNetworkIdStr()))
-                .setColor(ContextCompat.getColor(getApplicationContext(), R.color.zerotier_orange))
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                .setContentIntent(pendingIntent).build();
-        // 使用 notificationManager.notify() 更新通知内容（标题/文本），
-        // 而不重新调用 startForeground()。前台服务关联已在 onStartCommand 中通过
-        // startConnectingForeground() 建立，重复调用 startForeground() 在 Bind Count=0
-        // 时会被 Flyme 等 OEM ROM 拒绝，导致状态栏图标消失。
-        this.notificationManager.notify(ZT_NOTIFICATION_TAG, notification);
         LogUtil.i(TAG, "ZeroTier One Connected");
 
         // 注册网络变化回调：当手机在 WiFi/4G/5G 之间切换时重新配置 VPN 路由
