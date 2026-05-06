@@ -182,6 +182,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /** 防止网络变化事件过于频繁触发重配的最小间隔（毫秒） */
     private static final long NETWORK_CHANGE_DEBOUNCE_MS = 3000;
     /**
+     * onNetworkReconfigure 物理网络切换窗口保护的额外扩展时间（毫秒）。
+     * 物理网络切换窗口 = NETWORK_CHANGE_DEBOUNCE_MS + NETWORK_CHANGE_WINDOW_EXTENSION_MS。
+     * 扩展时间用于覆盖 ZT SDK 触发 CONFIG_UPDATE 与 Android CM 触发 onLost/onAvailable 之间的时差。
+     */
+    private static final long NETWORK_CHANGE_WINDOW_EXTENSION_MS = 2000;
+    /**
+     * onNetworkReconfigure 触发重建前的延迟（毫秒）。
+     * 引入此延迟以解决竞态：ZT SDK 监测到底层 socket 断开的速度有时快于 Android CM 触发 onLost，
+     * 导致 sinceNetworkChange 读取到旧值。延迟 200ms 后 onLost 有充足时间写入 lastPhysicalNetworkChangeTime。
+     */
+    private static final long RECONFIGURE_REBUILD_DELAY_MS = 200;
+    /**
      * 自学习直连 IP 触发 VPN 重建的 Runnable。
      * 与 networkChangeRunnable 独立，避免互相取消。
      */
@@ -855,7 +867,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 LogUtil.d(TAG, "onNetworkReconfigure: VPN 重建稳定期内，跳过重建（距上次重建 "
                         + sinceRebuild + "ms）");
                 isChanged = false;
-            } else if (sinceNetworkChange < NETWORK_CHANGE_DEBOUNCE_MS + 2000) {
+            } else if (sinceNetworkChange < NETWORK_CHANGE_DEBOUNCE_MS + NETWORK_CHANGE_WINDOW_EXTENSION_MS) {
                 // 物理网络刚发生变化（onLost/onAvailable 已调度 3s debounce 重建），
                 // ZT SDK 会在数百毫秒内因 socket 连通性改变连锁触发 CONFIG_UPDATE。
                 // 此时直接重建会产生额外一次 establish()，OEM ROM 随即清除 VPN 图标；
@@ -865,10 +877,48 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 isChanged = false;
             }
         }
-        boolean configUpdated = isChanged && updateTunnelConfig(network);
         boolean networkIsOk = networkConfig.getStatus() == VirtualNetworkStatus.NETWORK_STATUS_OK;
 
-        if (configUpdated || !networkIsOk) {
+        if (isChanged) {
+            if (networkChangeHandler != null) {
+                // 通过 handler 延迟 RECONFIGURE_REBUILD_DELAY_MS 再执行重建，解决以下竞态：
+                // ZT SDK 监测到底层 socket 连通性断开的速度有时快于 Android CM 触发 onLost，
+                // 导致 onNetworkReconfigure 抵达时 lastPhysicalNetworkChangeTime 尚未更新，
+                // sinceNetworkChange 读取到旧值而绕过物理网络切换窗口保护，触发额外一次 establish()。
+                // 延迟后再次检查两个稳定期条件：
+                //   - 若 onLost 已在延迟内更新 lastPhysicalNetworkChangeTime → sinceNetworkChange < 5s → 丢弃；
+                //   - 若确实是 ZT 控制器分配新 IP（非物理切换）→ 两个条件均通过 → 正常重建。
+                final Network finalNetwork = network;
+                final VirtualNetworkConfig finalConfig = networkConfig;
+                networkChangeHandler.postDelayed(() -> {
+                    long now2 = android.os.SystemClock.elapsedRealtime();
+                    long delaySinceRebuild = now2 - lastRebuildTime;
+                    long delaySinceNetChange = now2 - lastPhysicalNetworkChangeTime;
+                    if (delaySinceRebuild < REBUILD_SETTLE_MS) {
+                        LogUtil.d(TAG, "onNetworkReconfigure (延迟): VPN 重建稳定期内，跳过（距上次重建 "
+                                + delaySinceRebuild + "ms）");
+                        return;
+                    }
+                    if (delaySinceNetChange < NETWORK_CHANGE_DEBOUNCE_MS + NETWORK_CHANGE_WINDOW_EXTENSION_MS) {
+                        LogUtil.d(TAG, "onNetworkReconfigure (延迟): 物理网络切换窗口内，跳过（距上次网络变化 "
+                                + delaySinceNetChange + "ms，debounce 重建已排队）");
+                        return;
+                    }
+                    boolean updated = updateTunnelConfig(finalNetwork);
+                    if (updated || finalConfig.getStatus() != VirtualNetworkStatus.NETWORK_STATUS_OK) {
+                        eventBus.post(new VirtualNetworkConfigChangedEvent(finalConfig));
+                    }
+                }, RECONFIGURE_REBUILD_DELAY_MS);
+            } else {
+                // networkChangeHandler 尚未就绪（首次 VPN 连接前），直接调用
+                boolean configUpdated = updateTunnelConfig(network);
+                if (configUpdated || !networkIsOk) {
+                    this.eventBus.post(new VirtualNetworkConfigChangedEvent(networkConfig));
+                }
+                return;
+            }
+        }
+        if (!networkIsOk) {
             this.eventBus.post(new VirtualNetworkConfigChangedEvent(networkConfig));
         }
     }

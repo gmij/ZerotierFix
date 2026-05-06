@@ -2,6 +2,7 @@ package net.kaaass.zerotierfix.model;
 
 import org.greenrobot.greendao.annotation.Entity;
 import org.greenrobot.greendao.annotation.Id;
+import org.greenrobot.greendao.annotation.Generated;
 
 /**
  * 应用路由配置
@@ -28,6 +29,19 @@ public class AppRouting {
      * false: 不通过 VPN (直连)
      */
     private boolean routeViaVpn;
+
+    @Generated(hash = 1369597810)
+    public AppRouting(Long id, Long networkId, String packageName,
+            boolean routeViaVpn) {
+        this.id = id;
+        this.networkId = networkId;
+        this.packageName = packageName;
+        this.routeViaVpn = routeViaVpn;
+    }
+
+    @Generated(hash = 958332540)
+    public AppRouting() {
+    }
 
     public Long getId() {
         return this.id;
