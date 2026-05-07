@@ -264,6 +264,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         return PreferenceManager.getDefaultSharedPreferences(this)
                 .getBoolean(Constants.PREF_NETWORK_DIAGNOSE_FORCE_DIRECT_GLOBAL, false);
     }
+    /** 仅用于问题定位：保留 CHINA_DIRECT 路径，但跳过大批量路由构建。 */
+    private boolean isDiagnoseSkipChinaRouteBulkEnabled() {
+        return PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(Constants.PREF_NETWORK_DIAGNOSE_SKIP_CHINA_ROUTE_BULK, false);
+    }
+    /** 仅用于问题定位：禁止 chnroutes 就绪后自动触发 onNetworkChanged() 重建。 */
+    private boolean isDiagnoseSkipChnroutesReadyRebuildEnabled() {
+        return PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(Constants.PREF_NETWORK_DIAGNOSE_SKIP_CHNROUTES_READY_REBUILD, false);
+    }
 
     /**
      * 确保网络变化 HandlerThread 与 Handler 已初始化。
@@ -2144,10 +2154,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             router.setOnChnroutesReadyListener(() -> {
                 LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
                 LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_TRIGGER] reason=chnroutes_ready");
+                if (isDiagnoseSkipChnroutesReadyRebuildEnabled()) {
+                    LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_SKIPPED] diagnose=true");
+                    return;
+                }
                 // chnroutes 新鲜加载完毕，重置一次性验证标志，使下次重建重新打印腾讯 CIDR 验证日志
                 tencentCidrsVerified = false;
                 onNetworkChanged();
             });
+            addGlobalRoutesToBuilder(builder, localSubnets);
+            return;
+        }
+
+        if (isDiagnoseSkipChinaRouteBulkEnabled()) {
+            LogUtil.i(TAG, "[ANCHOR][CHINA_DIRECT_BULK_ROUTE_SKIPPED] diagnose=true");
             addGlobalRoutesToBuilder(builder, localSubnets);
             return;
         }

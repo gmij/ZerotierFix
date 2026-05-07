@@ -70,6 +70,10 @@
     <string name="preferences_network_smart_routing_enabled_summary">When disabled, CHINA_DIRECT/GFW smart split is turned off and routing falls back closer to original fork behavior (reconnect required).</string>
     <string name="preferences_network_diagnose_force_direct_global">[Diagnose] Force direct-global route path</string>
     <string name="preferences_network_diagnose_force_direct_global_summary">For troubleshooting only: keep smart-routing switch ON but bypass CHINA_DIRECT and use normal global/Per-app route path (reconnect required).</string>
+    <string name="preferences_network_diagnose_skip_china_route_bulk">[Diagnose] CHINA_DIRECT skip bulk route build</string>
+    <string name="preferences_network_diagnose_skip_china_route_bulk_summary">For troubleshooting only: keep CHINA_DIRECT selected but skip large excludeRoute/addRoute construction and use temporary global fallback in CHINA_DIRECT stage (reconnect required).</string>
+    <string name="preferences_network_diagnose_skip_chnroutes_ready_rebuild">[Diagnose] CHINA_DIRECT skip chnroutes-ready rebuild</string>
+    <string name="preferences_network_diagnose_skip_chnroutes_ready_rebuild_summary">For troubleshooting only: when chnroutes becomes ready, do not auto-trigger onNetworkChanged() rebuild (reconnect required).</string>
     <string name="reset_planet">Reset Planet</string>
     <string name="settings">Settings</string>
     <string name="status_label">Status:</string>
