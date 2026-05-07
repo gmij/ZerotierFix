@@ -531,7 +531,11 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         long[] nextDeadline = new long[1];
         // 单次 ARP 查找：getMacForAddress 在未命中时返回 -1；多播包直接进入分支（不依赖 ARP 表）。
         // 此处消除了原来 hasMacForAddress + getMacForAddress 的双重 HashMap 查找。
-        long destMac = this.arpTable.getMacForAddress(destIP);
+        ARPTable arp = this.arpTable;
+        if (arp == null) {
+            return; // TUN 正在重建中，arpTable 已被 teardown
+        }
+        long destMac = arp.getMacForAddress(destIP);
         if (isMulticast || destMac != -1L) {
             // 已确定目标 MAC，直接发送
 
@@ -557,7 +561,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             // 目标 MAC 未知，进行 ARP 查询
             DebugLog.d(TAG, "Unknown dest MAC address.  Need to look it up. " + destIP);
             destMac = InetAddressUtils.BROADCAST_MAC_ADDRESS;
-            packetData = this.arpTable.getRequestPacket(localMac, localV4Address, destIP);
+            packetData = arp.getRequestPacket(localMac, localV4Address, destIP);
             var result = this.node.processVirtualNetworkFrame(System.currentTimeMillis(), this.networkId, localMac, destMac, ARP_PACKET, 0, packetData, nextDeadline);
             if (result != ResultCode.RESULT_OK) {
                 LogUtil.e(TAG, "Error sending ARP packet: " + result.toString());
@@ -760,7 +764,11 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         if (etherType == ARP_PACKET) {
             // 收到 ARP 包。更新 ARP 表，若需要则进行应答
             DebugLog.d(TAG, "收到ARP数据包");
-            var arpReply = this.arpTable.processARPPacket(frameData);
+            ARPTable arp = this.arpTable;
+            if (arp == null) {
+                return; // TUN 正在重建中，arpTable 已被 teardown
+            }
+            var arpReply = arp.processARPPacket(frameData);
             if (arpReply != null && arpReply.getDestMac() != 0 && arpReply.getDestAddress() != null) {
                 // 优先使用缓存的本地地址和 MAC，避免在每次 ARP 应答时调用
                 // this.node.networkConfig() JNI，防止在直播等高频场景下的延迟抖动。
@@ -781,7 +789,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 }
                 if (localV4Address != null && localMac != 0) {
                     var nextDeadline = new long[1];
-                    var packetData = this.arpTable.getReplyPacket(localMac,
+                    var packetData = arp.getReplyPacket(localMac,
                             localV4Address, arpReply.getDestMac(), arpReply.getDestAddress());
                     DebugLog.d(TAG, "发送ARP应答: 本地地址=" + localV4Address +
                             ", 目标地址=" + arpReply.getDestAddress() +
@@ -814,7 +822,10 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                             LogUtil.e(TAG, "多播订阅错误: " + result);
                         }
                     } else {
-                        this.arpTable.setAddress(sourceIP, srcMac);
+                        ARPTable arpRef = this.arpTable;
+                        if (arpRef != null) {
+                            arpRef.setAddress(sourceIP, srcMac);
+                        }
                         DebugLog.d(TAG, "更新ARP表: IP=" + sourceIP + ", MAC=" + StringUtils.macAddressToString(srcMac));
                     }
                 }

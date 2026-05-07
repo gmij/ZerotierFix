@@ -207,6 +207,24 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /** 自学习 IP 触发重建的防抖延迟（10 秒，确保批量 IP 一次重建） */
     private static final long LEARNED_IP_REBUILD_DEBOUNCE_MS = 10_000;
     /**
+     * 用户主动切换路由模式（全局/per-app）时的防抖延迟（毫秒）。
+     * 单次 toggle 操作会触发 doUpdatePerAppRouting + doUpdateSmartRoutingMode，
+     * 产生两个 NetworkConfigChangedByUserEvent；若不合并会导致两次 establish()，
+     * 第二次 establish() 生成新 TUN fd，OEM ROM 清除 VPN 钥匙图标。
+     * 500ms 足够合并同一用户操作内的多个事件，同时不引入明显延迟。
+     */
+    private static final long USER_CONFIG_CHANGE_DEBOUNCE_MS = 500;
+    /** 用户主动切换配置时待处理重建的 Network 引用 */
+    private volatile Network pendingUserConfigNetwork = null;
+    /** 用户主动切换配置的 debounce Runnable：合并短时间内多个配置变更事件为一次 VPN 重建 */
+    private final Runnable userConfigChangeRunnable = () -> {
+        Network network = pendingUserConfigNetwork;
+        if (network == null) return;
+        pendingUserConfigNetwork = null;
+        LogUtil.i(TAG, "用户配置变更 debounce 到期，执行 VPN 重建");
+        updateTunnelConfig(network);
+    };
+    /**
      * 上次触发重建时的链路地址快照。
      * 仅当链路地址发生变化（如 IP 切换）时才重配 VPN；
      * DNS 更新、MTU 变化等不改变地址的事件将被忽略，避免启动时的误报。
@@ -931,7 +949,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (network.getNetworkId() != this.networkId) {
             return;
         }
-        updateTunnelConfig(network);
+        // 使用 debounce 合并短时间内多个用户配置变更事件（如 toggle 全局模式时
+        // doUpdatePerAppRouting + doUpdateSmartRoutingMode 会连续触发两个事件）。
+        // 若不合并，第二个事件会命中 isConfiguringVpn CAS 锁并延迟 3s 重建，
+        // 或在极端时序下产生双重 establish()，OEM ROM 清除系统 VPN 图标。
+        if (networkChangeHandler != null) {
+            pendingUserConfigNetwork = network;
+            networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
+            networkChangeHandler.postDelayed(userConfigChangeRunnable, USER_CONFIG_CHANGE_DEBOUNCE_MS);
+        } else {
+            // networkChangeHandler 尚未就绪（VPN 首次连接前），直接执行
+            updateTunnelConfig(network);
+        }
     }
 
     /**
@@ -1439,6 +1468,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 清除可能由本次 VPN establish() 触发的旧 pending 重建任务。
         // establish() 调用完成后物理网络会在数毫秒内触发 onAvailable，若不清除将立即发起下一次重建。
         networkChangeHandler.removeCallbacks(networkChangeRunnable);
+        // 清除用户配置变更的 pending 重建：当前重建已在执行，待处理的用户配置重建不再需要。
+        networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
+        pendingUserConfigNetwork = null;
         try {
             this.networkCallback = new ConnectivityManager.NetworkCallback() {
                 @Override
@@ -1537,6 +1569,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (networkChangeHandler != null) {
             networkChangeHandler.removeCallbacks(networkChangeRunnable);
             networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
+            networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
             networkChangeHandler = null;
         }
         if (networkChangeThread != null) {
