@@ -17,6 +17,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.preference.PreferenceManager;
 import android.widget.Toast;
@@ -195,6 +196,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * ZT SDK 可能比 Android CM 早 800ms+ 感知到物理链路断开，200ms 不足以覆盖此时差。
      */
     private static final long RECONFIGURE_REBUILD_DELAY_MS = 1000;
+    /**
+     * 首次 VPN 建链时 onNetworkReconfigure (handler==null) 分支的延迟（毫秒）。
+     * 给系统足够时间处理 VPN consent 状态，避免 establish() 过早执行导致 VPN 图标不显示。
+     */
+    private static final long FIRST_ESTABLISH_DELAY_MS = 300;
+    /**
+     * 首次 establish 成功后的确认性重建延迟（毫秒）。
+     * 某些 OEM ROM 在首次 establish 后不立即显示 VPN 图标，
+     * 通过在短时间后触发一次额外 rebuild 刷新系统 VPN 图标状态。
+     */
+    private static final long FIRST_ESTABLISH_CONFIRM_REBUILD_MS = 1500;
     /**
      * 自学习直连 IP 触发 VPN 重建的 Runnable。
      * 与 networkChangeRunnable 独立，避免互相取消。
@@ -930,11 +942,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     }
                 }, RECONFIGURE_REBUILD_DELAY_MS);
             } else {
-                // networkChangeHandler 尚未就绪（首次 VPN 连接前），直接调用
-                boolean configUpdated = updateTunnelConfig(network, "onNetworkReconfigure(直接调用,handler未就绪)");
-                if (configUpdated || !networkIsOk) {
-                    this.eventBus.post(new VirtualNetworkConfigChangedEvent(networkConfig));
-                }
+                // networkChangeHandler 尚未就绪（首次 VPN 连接前），通过主线程 Handler 延迟执行。
+                // 延迟给系统足够时间处理 VPN consent 状态，避免 establish() 过早导致 VPN 图标不显示。
+                final Network finalNetwork2 = network;
+                final VirtualNetworkConfig finalConfig2 = networkConfig;
+                final boolean finalNetworkIsOk = networkIsOk;
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    boolean configUpdated = updateTunnelConfig(finalNetwork2, "onNetworkReconfigure(延迟首次调用,handler未就绪)");
+                    if (configUpdated || !finalNetworkIsOk) {
+                        this.eventBus.post(new VirtualNetworkConfigChangedEvent(finalConfig2));
+                    }
+                }, FIRST_ESTABLISH_DELAY_MS);
                 return;
             }
         }
@@ -1387,6 +1405,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 注册网络变化回调：当手机在 WiFi/4G/5G 之间切换时重新配置 VPN 路由
         registerNetworkChangeCallback();
+
+        // 首次 establish（oldVpnSocket == null）后，某些 OEM ROM 不立即显示 VPN 图标。
+        // 安排一次确认性重建，刷新系统 VPN 图标状态。
+        if (oldVpnSocket == null && networkChangeHandler != null) {
+            final Network confirmNetwork = network;
+            networkChangeHandler.postDelayed(() -> {
+                LogUtil.i(TAG, "首次 establish 确认性重建：刷新系统 VPN 图标状态");
+                updateTunnelConfig(confirmNetwork, "首次establish确认性重建");
+            }, FIRST_ESTABLISH_CONFIRM_REBUILD_MS);
+        }
 
         // 旧版本 Android 多播处理
         if (Build.VERSION.SDK_INT < 29) {
