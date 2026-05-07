@@ -267,6 +267,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     /** 首次 VPN establish 的延迟 Runnable，用于防止重复调度（ZT SDK 首次加入网络时可能连续触发多次 onNetworkReconfigure） */
     private Runnable pendingFirstEstablishRunnable;
+    /** VPN 重建请求序号，用于日志锚点关联同一次触发链路 */
+    private final java.util.concurrent.atomic.AtomicLong vpnRebuildRequestSeq =
+            new java.util.concurrent.atomic.AtomicLong(0);
     /**
      * VPN 最近一次重建开始的时间戳（{@link android.os.SystemClock#elapsedRealtime()} 毫秒）。
      * 用于抑制 VPN 建立后物理网络的虚假回调（Android 在 establish() 后会重新评估物理网络，
@@ -975,15 +978,21 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 final VirtualNetworkConfig finalConfig2 = networkConfig;
                 final boolean finalNetworkIsOk = networkIsOk;
                 if (pendingFirstEstablishRunnable != null) {
+                    LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_REPLACED] caller=onNetworkReconfigure, networkId="
+                            + finalNetwork2.getNetworkId());
                     mainHandler.removeCallbacks(pendingFirstEstablishRunnable);
                 }
                 pendingFirstEstablishRunnable = () -> {
                     pendingFirstEstablishRunnable = null;
+                    LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_FIRED] caller=onNetworkReconfigure, networkId="
+                            + finalNetwork2.getNetworkId());
                     boolean configUpdated = updateTunnelConfig(finalNetwork2, "onNetworkReconfigure(延迟首次调用,handler未就绪)");
                     if (configUpdated || !finalNetworkIsOk) {
                         this.eventBus.post(new VirtualNetworkConfigChangedEvent(finalConfig2));
                     }
                 };
+                LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_SCHEDULED] delayMs=" + FIRST_ESTABLISH_DELAY_MS
+                        + ", caller=onNetworkReconfigure, networkId=" + finalNetwork2.getNetworkId());
                 mainHandler.postDelayed(pendingFirstEstablishRunnable, FIRST_ESTABLISH_DELAY_MS);
                 return;
             }
@@ -1128,32 +1137,56 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     private boolean updateTunnelConfig(Network network, String caller) {
+        long requestSeq = vpnRebuildRequestSeq.incrementAndGet();
+        LogUtil.i(TAG, "[ANCHOR][VPN_REBUILD_REQUEST] seq=" + requestSeq
+                + ", caller=" + caller
+                + ", networkId=" + network.getNetworkId()
+                + ", sinceRebuildMs=" + (android.os.SystemClock.elapsedRealtime() - lastRebuildTime));
         // 防止并发执行：若已有 VPN 配置正在进行，延迟 3s 后由 networkChangeHandler 重试一次。
         if (!isConfiguringVpn.compareAndSet(false, true)) {
             LogUtil.d(TAG, "updateTunnelConfig[" + caller + "]: 已有配置正在进行，延迟 3s 重试");
+            LogUtil.w(TAG, "[ANCHOR][VPN_REBUILD_SKIPPED_BUSY] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", retryDelayMs=" + NETWORK_CHANGE_DEBOUNCE_MS);
             if (networkChangeHandler != null) {
                 networkChangeHandler.removeCallbacks(networkChangeRunnable);
                 networkChangeHandler.postDelayed(networkChangeRunnable, NETWORK_CHANGE_DEBOUNCE_MS);
+                LogUtil.i(TAG, "[ANCHOR][VPN_REBUILD_RETRY_SCHEDULED] seq=" + requestSeq
+                        + ", caller=" + caller
+                        + ", via=networkChangeRunnable");
             } else {
                 LogUtil.w(TAG, "updateTunnelConfig[" + caller + "]: networkChangeHandler 未就绪，重试请求已丢弃");
+                LogUtil.w(TAG, "[ANCHOR][VPN_REBUILD_RETRY_DROPPED] seq=" + requestSeq
+                        + ", caller=" + caller
+                        + ", reason=networkChangeHandler_null");
             }
             return false;
         }
         try {
             LogUtil.i(TAG, "▶ updateTunnelConfig 开始执行，触发路径: " + caller);
-            return doUpdateTunnelConfig(network);
+            LogUtil.i(TAG, "[ANCHOR][VPN_REBUILD_EXEC_BEGIN] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", thread=" + Thread.currentThread().getName());
+            boolean updated = doUpdateTunnelConfig(network, requestSeq, caller);
+            LogUtil.i(TAG, "[ANCHOR][VPN_REBUILD_EXEC_END] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", updated=" + updated);
+            return updated;
         } finally {
             isConfiguringVpn.set(false);
         }
     }
 
-    private boolean doUpdateTunnelConfig(Network network) {
+    private boolean doUpdateTunnelConfig(Network network, long requestSeq, String caller) {
         // 记录重建开始时间：用于抑制 VPN establish() 触发的虚假物理网络回调和 ZT node 回调
         lastRebuildTime = android.os.SystemClock.elapsedRealtime();
         long networkId = network.getNetworkId();
         var networkConfig = network.getNetworkConfig();
         var virtualNetworkConfig = getVirtualNetworkConfig(networkId);
         if (virtualNetworkConfig == null) {
+            LogUtil.w(TAG, "[ANCHOR][VPN_REBUILD_ABORT] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", reason=virtualNetworkConfig_null");
             return false;
         }
 
@@ -1371,10 +1404,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 捕获该异常并降级为全局路由（0.0.0.0/0），确保 VPN 至少能正常启动。
         LogUtil.w(TAG, "★ 即将调用 establish() 创建新 TUN fd，isRouteViaZeroTier=" + isRouteViaZeroTier
                 + ", perApp=" + isPerAppRouting + ", 距上次重建=" + (android.os.SystemClock.elapsedRealtime() - lastRebuildTime) + "ms");
+        LogUtil.w(TAG, "[ANCHOR][ESTABLISH_ATTEMPT] seq=" + requestSeq
+                + ", caller=" + caller
+                + ", hasOldTun=" + (oldVpnSocket != null)
+                + ", isRouteViaZeroTier=" + isRouteViaZeroTier
+                + ", isPerAppRouting=" + isPerAppRouting);
         try {
             this.vpnSocket = builder.establish();
+            LogUtil.i(TAG, "[ANCHOR][ESTABLISH_PRIMARY_SUCCESS] seq=" + requestSeq
+                    + ", caller=" + caller);
         } catch (RuntimeException e) {
             LogUtil.e(TAG, "establish() 失败（可能路由条数过多）：" + e.getMessage() + "，降级为全局路由重试", e);
+            LogUtil.w(TAG, "[ANCHOR][ESTABLISH_PRIMARY_FAILED] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", fallback=global_route");
             // 降级：重建 builder，仅使用 0.0.0.0/0 全局路由
             var fallbackBuilder = new VpnService.Builder();
             for (var vpnAddress : assignedAddresses) {
@@ -1399,13 +1442,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             fallbackBuilder.setSession(Constants.VPN_SESSION_NAME);
             fallbackBuilder.setConfigureIntent(getVpnConfigureIntent());
             this.vpnSocket = fallbackBuilder.establish();
+            LogUtil.i(TAG, "[ANCHOR][ESTABLISH_FALLBACK_SUCCESS] seq=" + requestSeq
+                    + ", caller=" + caller);
         }
         if (this.vpnSocket == null) {
             // establish() 失败，关闭旧资源并报告错误
             closeOldVpnResources(oldIn, oldOut, oldVpnSocket);
             this.eventBus.post(new VPNErrorEvent(getString(R.string.toast_vpn_application_not_prepared)));
+            LogUtil.e(TAG, "[ANCHOR][ESTABLISH_FAILED_NULL_SOCKET] seq=" + requestSeq
+                    + ", caller=" + caller);
             return false;
         }
+        LogUtil.i(TAG, "[ANCHOR][ESTABLISH_EFFECTIVE] seq=" + requestSeq
+                + ", caller=" + caller
+                + ", firstEstablish=" + (oldVpnSocket == null));
 
         // OEM ROM 兼容：首次 establish()（无旧 TUN fd）时，部分 OEM ROM 不显示 VPN 钥匙图标。
         // 原因：系统在"首次创建 VPN"代码路径中不触发图标绘制，但"更新已有 VPN"路径正常。
@@ -1414,14 +1464,24 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 注意：不能立即再次 establish()，OEM ROM 需要时间将首次 VPN 注册到系统中。
         if (oldVpnSocket == null) {
             final Network refreshNetwork = network;
+            final long parentRequestSeq = requestSeq;
             mainHandler.postDelayed(() -> {
                 if (this.vpnSocket == null) {
                     LogUtil.d(TAG, "首次 VPN 延迟刷新取消：VPN 已停止");
+                    LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_CANCELLED] seq=" + parentRequestSeq
+                            + ", caller=" + caller);
                     return;
                 }
                 LogUtil.i(TAG, "首次 VPN establish 延迟刷新：触发重建以激活 OEM ROM 系统 VPN 图标");
-                updateTunnelConfig(refreshNetwork, "firstEstablishDelayedRefresh(OEM图标修复)");
+                LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_TRIGGER] seq=" + parentRequestSeq
+                        + ", caller=" + caller
+                        + ", nextCaller=firstEstablishDelayedRefresh(OEM图标修复)");
+                updateTunnelConfig(refreshNetwork,
+                        "firstEstablishDelayedRefresh(OEM图标修复,parentSeq=" + parentRequestSeq + ")");
             }, FIRST_ESTABLISH_DELAY_MS);
+            LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_SCHEDULED] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", delayMs=" + FIRST_ESTABLISH_DELAY_MS);
         }
 
         // 新 TUN fd 创建成功，现在安全关闭旧的资源
