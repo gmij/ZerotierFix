@@ -66,6 +66,8 @@
     <string name="preferences_network_use_cell_data">Use Cellular Data</string>
     <string name="preferences_network_auto_rebuild">Enable auto rebuild on network change</string>
     <string name="preferences_network_auto_rebuild_summary">For troubleshooting: when disabled, Wi-Fi/4G switch will not auto-trigger VPN route rebuild. Reconnect or manually update config to apply changes.</string>
+    <string name="preferences_network_smart_routing_enabled">Enable smart routing enhancement</string>
+    <string name="preferences_network_smart_routing_enabled_summary">When disabled, CHINA_DIRECT/GFW smart split is turned off and routing falls back closer to original fork behavior (reconnect required).</string>
     <string name="reset_planet">Reset Planet</string>
     <string name="settings">Settings</string>
     <string name="status_label">Status:</string>

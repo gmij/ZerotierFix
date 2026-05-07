@@ -15,6 +15,7 @@ public class Constants {
 
     public static final String PREF_NETWORK_DISABLE_IPV6 = "network_disable_ipv6";
     public static final String PREF_NETWORK_AUTO_REBUILD = "network_auto_rebuild";
+    public static final String PREF_NETWORK_SMART_ROUTING_ENABLED = "network_smart_routing_enabled";
 
     public static final String PREF_GENERAL_START_ZEROTIER_ON_BOOT = "general_start_zerotier_on_boot";
 
