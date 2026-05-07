@@ -256,24 +256,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         return PreferenceManager.getDefaultSharedPreferences(this)
                 .getBoolean(Constants.PREF_NETWORK_SMART_ROUTING_ENABLED, true);
     }
-    /**
-     * 仅用于问题定位：在“智能路由增强=开”时强制走普通全局/Per-app 路由（绕过 CHINA_DIRECT）。
-     * 默认关闭，避免影响正常功能。
-     */
-    private boolean isDiagnoseForceDirectGlobalEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this)
-                .getBoolean(Constants.PREF_NETWORK_DIAGNOSE_FORCE_DIRECT_GLOBAL, false);
-    }
-    /** 仅用于问题定位：保留 CHINA_DIRECT 路径，但跳过大批量路由构建。 */
-    private boolean isDiagnoseSkipChinaRouteBulkEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this)
-                .getBoolean(Constants.PREF_NETWORK_DIAGNOSE_SKIP_CHINA_ROUTE_BULK, false);
-    }
-    /** 仅用于问题定位：禁止 chnroutes 就绪后自动触发 onNetworkChanged() 重建。 */
-    private boolean isDiagnoseSkipChnroutesReadyRebuildEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this)
-                .getBoolean(Constants.PREF_NETWORK_DIAGNOSE_SKIP_CHNROUTES_READY_REBUILD, false);
-    }
 
     /**
      * 确保网络变化 HandlerThread 与 Handler 已初始化。
@@ -1324,19 +1306,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         boolean shouldAddGlobalRoutes = isRouteViaZeroTier || isPerAppRouting;
         int smartRoutingMode = networkConfig.getSmartRoutingMode();
         boolean smartRoutingEnabled = isSmartRoutingEnabled();
-        boolean diagnoseForceDirectGlobal = smartRoutingEnabled && isDiagnoseForceDirectGlobalEnabled();
         if (shouldAddGlobalRoutes) {
             try {
-                if (smartRoutingEnabled && !diagnoseForceDirectGlobal) {
+                if (smartRoutingEnabled) {
                     // 智能路由增强开启：使用 CHINA_DIRECT 分流
                     LogUtil.i(TAG, "[ANCHOR][ROUTE_PATH_SELECTED] path=CHINA_DIRECT"
-                            + ", smartRoutingEnabled=true, diagnoseForceDirectGlobal=false");
+                            + ", smartRoutingEnabled=true");
                     configureChinaDirectRouting(builder, virtualNetworkConfig, assignedAddresses);
                 } else {
                     // 智能路由增强关闭：回退到普通全局/Per-app 路由
                     LogUtil.i(TAG, "[ANCHOR][ROUTE_PATH_SELECTED] path=DIRECT_GLOBAL"
-                            + ", smartRoutingEnabled=" + smartRoutingEnabled
-                            + ", diagnoseForceDirectGlobal=" + diagnoseForceDirectGlobal);
+                            + ", smartRoutingEnabled=" + smartRoutingEnabled);
                     configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses, isPerAppRouting);
                 }
                 
@@ -1570,7 +1550,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 新版本始终以 CHINA_DIRECT 运行，无需依赖 DB 中的 smartRoutingMode 值。
         // Per-app 模式：perAppRoutingActive=true，仅选定应用进入 TUN。
         int effectiveSmartRoutingMode = shouldAddGlobalRoutes
-                ? ((smartRoutingEnabled && !diagnoseForceDirectGlobal)
+                ? ((smartRoutingEnabled)
                         ? SmartRoutingManager.MODE_CHINA_DIRECT
                         : SmartRoutingManager.MODE_OFF)
                 : smartRoutingMode;
@@ -1579,7 +1559,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 注册自学习直连 IP 回调：DNS 嗅探发现直播 CDN 走 ZT 时，
         // 用 10 秒防抖重建 VPN，让新 IP 立即走物理直连，实现"越用越好用"。
-        if (smartRoutingEnabled && !diagnoseForceDirectGlobal && isNetworkAutoRebuildEnabled()) {
+        if (smartRoutingEnabled && isNetworkAutoRebuildEnabled()) {
             ensureNetworkChangeHandler();
             smartRouter.setOnNewLearnedIpListener(ip -> {
                 if (networkChangeHandler != null) {
@@ -2164,10 +2144,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             router.setOnChnroutesReadyListener(() -> {
                 LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
                 LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_TRIGGER] reason=chnroutes_ready");
-                if (isDiagnoseSkipChnroutesReadyRebuildEnabled()) {
-                    LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_SKIPPED] diagnose=true");
-                    return;
-                }
                 // 切回主线程串行处理，避免来自不同线程的回调并发修改延迟重建 Runnable。
                 mainHandler.post(() -> {
                     // chnroutes 新鲜加载完毕，重置一次性验证标志，使下次重建重新打印腾讯 CIDR 验证日志
@@ -2192,12 +2168,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_DELAYED] delayMs=" + FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
                 });
             });
-            addGlobalRoutesToBuilder(builder, localSubnets);
-            return;
-        }
-
-        if (isDiagnoseSkipChinaRouteBulkEnabled()) {
-            LogUtil.i(TAG, "[ANCHOR][CHINA_DIRECT_BULK_ROUTE_SKIPPED] diagnose=true");
             addGlobalRoutesToBuilder(builder, localSubnets);
             return;
         }

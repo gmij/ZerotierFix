@@ -30,21 +30,6 @@
             android:key="network_smart_routing_enabled"
             android:summary="@string/preferences_network_smart_routing_enabled_summary"
             android:title="@string/preferences_network_smart_routing_enabled" />
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:key="network_diagnose_force_direct_global"
-            android:summary="@string/preferences_network_diagnose_force_direct_global_summary"
-            android:title="@string/preferences_network_diagnose_force_direct_global" />
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:key="network_diagnose_skip_china_route_bulk"
-            android:summary="@string/preferences_network_diagnose_skip_china_route_bulk_summary"
-            android:title="@string/preferences_network_diagnose_skip_china_route_bulk" />
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:key="network_diagnose_skip_chnroutes_ready_rebuild"
-            android:summary="@string/preferences_network_diagnose_skip_chnroutes_ready_rebuild_summary"
-            android:title="@string/preferences_network_diagnose_skip_chnroutes_ready_rebuild" />
     </PreferenceCategory>
     
     <!-- 代理功能已移除 -->

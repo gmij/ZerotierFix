@@ -16,12 +16,6 @@ public class Constants {
     public static final String PREF_NETWORK_DISABLE_IPV6 = "network_disable_ipv6";
     public static final String PREF_NETWORK_AUTO_REBUILD = "network_auto_rebuild";
     public static final String PREF_NETWORK_SMART_ROUTING_ENABLED = "network_smart_routing_enabled";
-    /** 仅用于问题定位：开启后在“智能路由增强=开”时仍强制走普通全局/Per-app 路由（绕过 CHINA_DIRECT）。 */
-    public static final String PREF_NETWORK_DIAGNOSE_FORCE_DIRECT_GLOBAL = "network_diagnose_force_direct_global";
-    /** 仅用于问题定位：保留 CHINA_DIRECT 路径，但跳过大批量中国/非中国路由构建。 */
-    public static final String PREF_NETWORK_DIAGNOSE_SKIP_CHINA_ROUTE_BULK = "network_diagnose_skip_china_route_bulk";
-    /** 仅用于问题定位：禁止 chnroutes 就绪后自动触发 onNetworkChanged() 二次重建。 */
-    public static final String PREF_NETWORK_DIAGNOSE_SKIP_CHNROUTES_READY_REBUILD = "network_diagnose_skip_chnroutes_ready_rebuild";
 
     public static final String PREF_GENERAL_START_ZEROTIER_ON_BOOT = "general_start_zerotier_on_boot";
 
