@@ -91,12 +91,23 @@ public class AppRoutingFragment extends Fragment {
      */
     private void loadSelectedApps() {
         Executors.newSingleThreadExecutor().execute(() -> {
+            // 后台线程执行期间 Fragment 可能已脱离 Activity（如快速切换页面），
+            // 此时 requireContext()/requireActivity() 会抛出 IllegalStateException。
+            if (!isAdded()) {
+                LogUtil.w(TAG, "loadSelectedApps: fragment not attached, skip");
+                return;
+            }
+
             // 获取所有已安装的应用
             allApps = AppUtils.getAllInstalledApps(requireContext());
 
             // 从数据库加载已保存的路由设置
             DatabaseUtils.readLock.lock();
             try {
+                if (!isAdded()) {
+                    LogUtil.w(TAG, "loadSelectedApps: fragment detached during DB read, skip");
+                    return;
+                }
                 var daoSession = ((ZerotierFixApplication) requireActivity().getApplication()).getDaoSession();
                 var appRoutingDao = daoSession.getAppRoutingDao();
                 var savedRoutings = appRoutingDao.queryBuilder()
@@ -116,8 +127,14 @@ public class AppRoutingFragment extends Fragment {
                 DatabaseUtils.readLock.unlock();
             }
 
+            if (!isAdded()) {
+                LogUtil.w(TAG, "loadSelectedApps: fragment detached before UI update, skip");
+                return;
+            }
             requireActivity().runOnUiThread(() -> {
-                updateSelectedAppsList();
+                if (isAdded()) {
+                    updateSelectedAppsList();
+                }
             });
         });
     }
@@ -166,8 +183,13 @@ public class AppRoutingFragment extends Fragment {
         
         // 保存到数据库
         Executors.newSingleThreadExecutor().execute(() -> {
+            if (!isAdded()) {
+                LogUtil.w(TAG, "onAppRemoved: fragment not attached, skip DB write");
+                return;
+            }
             DatabaseUtils.writeLock.lock();
             try {
+                if (!isAdded()) return;
                 var daoSession = ((ZerotierFixApplication) requireActivity().getApplication()).getDaoSession();
                 var appRoutingDao = daoSession.getAppRoutingDao();
                 
