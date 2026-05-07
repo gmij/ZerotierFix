@@ -1686,6 +1686,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 系统回调线程立即返回，不会被 VPN 重建阻塞。
      */
     private void onNetworkChanged() {
+        // 防御性检查：除系统网络回调外，该方法也可能由其他路径（如 chnroutes 就绪触发）
+        // 间接调用；当“网络自动重建”开关关闭时必须统一短路。
         if (!isNetworkAutoRebuildEnabled()) return;
         if (networkChangeHandler == null) return;
         // 记录物理网络变化时刻，供 onNetworkReconfigure 判断是否为连锁触发。
@@ -1698,6 +1700,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 实际执行 VPN 路由重建的逻辑，由 {@link #networkChangeRunnable} 在后台线程调用。
      */
     private void doNetworkChangedUpdate() {
+        // 防御性检查：除了 networkChangeRunnable，learnedIpRebuildRunnable 也会调用此方法；
+        // 且开关关闭前已排队的旧 runnable 仍可能在稍后执行，因此此处必须再次判定开关。
         if (!isNetworkAutoRebuildEnabled()) {
             LogUtil.i(TAG, "网络自动重建已禁用，跳过 doNetworkChangedUpdate");
             return;
