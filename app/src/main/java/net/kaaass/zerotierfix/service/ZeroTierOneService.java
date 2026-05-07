@@ -1,5 +1,8 @@
 package net.kaaass.zerotierfix.service;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
@@ -201,12 +204,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 给系统足够时间处理 VPN consent 状态，避免 establish() 过早执行导致 VPN 图标不显示。
      */
     private static final long FIRST_ESTABLISH_DELAY_MS = 300;
-    /**
-     * 首次 establish 成功后的确认性重建延迟（毫秒）。
-     * 某些 OEM ROM 在首次 establish 后不立即显示 VPN 图标，
-     * 通过在短时间后触发一次额外 rebuild 刷新系统 VPN 图标状态。
-     */
-    private static final long FIRST_ESTABLISH_CONFIRM_REBUILD_MS = 1500;
     /**
      * 自学习直连 IP 触发 VPN 重建的 Runnable。
      * 与 networkChangeRunnable 独立，避免互相取消。
@@ -429,6 +426,46 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         return PendingIntent.getActivity(this, 0, notificationIntent, flags);
     }
 
+    /** 前台通知 ID */
+    private static final int VPN_NOTIFICATION_ID = 9994;
+
+    /**
+     * 将 VPN 服务提升为前台服务。
+     * <p>
+     * 使用 IMPORTANCE_MIN 通道：通知本身不在状态栏产生图标（仅在下拉通知栏中安静显示），
+     * 但服务处于前台状态后，系统会正确显示原生 VPN 钥匙图标。
+     * 这在 MIUI/ColorOS/Flyme 等 OEM ROM 上是必须的。
+     */
+    private void startVpnForeground() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null && nm.getNotificationChannel(Constants.CHANNEL_ID) == null) {
+                NotificationChannel channel = new NotificationChannel(
+                        Constants.CHANNEL_ID,
+                        "ZeroTier VPN",
+                        NotificationManager.IMPORTANCE_MIN); // 静默通知，不在状态栏显示图标
+                channel.setDescription("VPN 服务运行状态");
+                channel.setShowBadge(false);
+                nm.createNotificationChannel(channel);
+            }
+        }
+
+        Notification.Builder nb;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            nb = new Notification.Builder(this, Constants.CHANNEL_ID);
+        } else {
+            nb = new Notification.Builder(this);
+            nb.setPriority(Notification.PRIORITY_MIN);
+        }
+        nb.setContentTitle("ZeroTier")
+                .setContentText("VPN 已连接")
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setOngoing(true)
+                .setContentIntent(getVpnConfigureIntent());
+
+        startForeground(VPN_NOTIFICATION_ID, nb.build());
+    }
+
     public IBinder onBind(Intent intent) {
         LogUtil.d(TAG, "Bound by: " + getPackageManager().getNameForUid(Binder.getCallingUid()));
         this.bindCount++;
@@ -466,8 +503,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         this.mStartID = startId;
 
-        // 注意：本服务不调用 startForeground()。Android 的 VpnService 在 establish() 创建 TUN 后，
-        // 系统会自动在状态栏显示原生 VPN 钥匙图标；启动前台通知反而会把系统图标盖住。
+        // 在 OEM ROM（MIUI/ColorOS/Flyme 等）上，VpnService 必须处于前台状态，
+        // 系统才会在状态栏显示原生 VPN 钥匙图标。使用 IMPORTANCE_MIN 通道使通知本身
+        // 不在状态栏产生额外图标（仅在下拉通知栏中可见），而 VPN 钥匙图标正常显示。
+        startVpnForeground();
 
         // 注册事件总线监听器
         if (!this.eventBus.isRegistered(this)) {
@@ -619,6 +658,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     public void stopZeroTier() {
+        // 移除前台通知
+        stopForeground(true);
+
         // 取消网络变化回调
         unregisterNetworkChangeCallback();
 
@@ -1407,21 +1449,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 注册网络变化回调：当手机在 WiFi/4G/5G 之间切换时重新配置 VPN 路由
         registerNetworkChangeCallback();
-
-        // 首次 establish（oldVpnSocket == null）后，某些 OEM ROM 不立即显示 VPN 图标。
-        // 安排一次确认性重建，刷新系统 VPN 图标状态。
-        if (oldVpnSocket == null && networkChangeHandler != null) {
-            final Network confirmNetwork = network;
-            networkChangeHandler.postDelayed(() -> {
-                // 确认当前 VPN 仍然活跃且未被停止
-                if (this.vpnSocket == null) {
-                    LogUtil.d(TAG, "首次 establish 确认性重建：VPN 已停止，跳过");
-                    return;
-                }
-                LogUtil.i(TAG, "首次 establish 确认性重建：刷新系统 VPN 图标状态");
-                updateTunnelConfig(confirmNetwork, "首次establish确认性重建");
-            }, FIRST_ESTABLISH_CONFIRM_REBUILD_MS);
-        }
 
         // 旧版本 Android 多播处理
         if (Build.VERSION.SDK_INT < 29) {
