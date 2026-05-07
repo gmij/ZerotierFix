@@ -60,6 +60,8 @@
     <string name="preferences_network_disable_ipv6">禁用 IPv6</string>
     <string name="preferences_network_disable_ipv6_summary">需要手动断开、重连使配置生效</string>
     <string name="preferences_network_use_cell_data">允许移动网络下使用</string>
+    <string name="preferences_network_auto_rebuild">网络变化时自动重建 VPN</string>
+    <string name="preferences_network_auto_rebuild_summary">用于排障：关闭后，Wi-Fi/4G 切换不会自动触发 VPN 路由重建。需手动重连或手动更新配置后生效。</string>
     <string name="reset_planet">重置 Planet</string>
     <string name="settings">设置</string>
     <string name="status_label">状态:</string>

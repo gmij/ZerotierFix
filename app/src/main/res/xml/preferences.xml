@@ -20,6 +20,11 @@
             android:key="network_disable_ipv6"
             android:summary="@string/preferences_network_disable_ipv6_summary"
             android:title="@string/preferences_network_disable_ipv6" />
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:key="network_auto_rebuild"
+            android:summary="@string/preferences_network_auto_rebuild_summary"
+            android:title="@string/preferences_network_auto_rebuild" />
     </PreferenceCategory>
     
     <!-- 代理功能已移除 -->

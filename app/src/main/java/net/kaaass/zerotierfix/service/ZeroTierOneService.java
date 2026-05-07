@@ -230,6 +230,26 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.i(TAG, "用户配置变更 debounce 到期，执行 VPN 重建");
         updateTunnelConfig(network, "userConfigChangeRunnable(用户切换配置)");
     };
+
+    /**
+     * 是否启用“网络变化自动重建 VPN”。
+     * 默认关闭，便于逐步排查网络切换相关重建问题。
+     */
+    private boolean isNetworkAutoRebuildEnabled() {
+        return PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(Constants.PREF_NETWORK_AUTO_REBUILD, false);
+    }
+
+    /**
+     * 确保网络变化 HandlerThread 与 Handler 已初始化。
+     */
+    private void ensureNetworkChangeHandler() {
+        if (networkChangeThread == null) {
+            networkChangeThread = new HandlerThread("ZT-NetworkChange");
+            networkChangeThread.start();
+            networkChangeHandler = new Handler(networkChangeThread.getLooper());
+        }
+    }
     /**
      * 上次触发重建时的链路地址快照。
      * 仅当链路地址发生变化（如 IP 切换）时才重配 VPN；
@@ -988,8 +1008,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
             networkChangeHandler.postDelayed(userConfigChangeRunnable, USER_CONFIG_CHANGE_DEBOUNCE_MS);
         } else {
-            // networkChangeHandler 尚未就绪（VPN 首次连接前），直接执行
-            updateTunnelConfig(network, "onNetworkConfigChangedByUser(直接调用,handler未就绪)");
+            // networkChangeHandler 尚未就绪（例如禁用网络自动重建时），创建后继续做用户配置防抖。
+            ensureNetworkChangeHandler();
+            if (networkChangeHandler != null) {
+                pendingUserConfigNetwork = network;
+                networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
+                networkChangeHandler.postDelayed(userConfigChangeRunnable, USER_CONFIG_CHANGE_DEBOUNCE_MS);
+            } else {
+                updateTunnelConfig(network, "onNetworkConfigChangedByUser(直接调用,handler未就绪)");
+            }
         }
     }
 
@@ -1420,19 +1447,24 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 注册自学习直连 IP 回调：DNS 嗅探发现直播 CDN 走 ZT 时，
         // 用 10 秒防抖重建 VPN，让新 IP 立即走物理直连，实现"越用越好用"。
-        smartRouter.setOnNewLearnedIpListener(ip -> {
-            if (networkChangeHandler != null) {
-                networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
-                networkChangeHandler.postDelayed(learnedIpRebuildRunnable,
-                        LEARNED_IP_REBUILD_DEBOUNCE_MS);
-            }
-        });
+        if (isNetworkAutoRebuildEnabled()) {
+            ensureNetworkChangeHandler();
+            smartRouter.setOnNewLearnedIpListener(ip -> {
+                if (networkChangeHandler != null) {
+                    networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
+                    networkChangeHandler.postDelayed(learnedIpRebuildRunnable,
+                            LEARNED_IP_REBUILD_DEBOUNCE_MS);
+                }
+            });
+        } else {
+            smartRouter.setOnNewLearnedIpListener(null);
+        }
 
         this.tunTapAdapter.startThreads();
 
         LogUtil.i(TAG, "ZeroTier One Connected");
 
-        // 注册网络变化回调：当手机在 WiFi/4G/5G 之间切换时重新配置 VPN 路由
+        // 注册网络变化回调（可通过设置项开关控制）：当手机在 WiFi/4G/5G 之间切换时重新配置 VPN 路由
         registerNetworkChangeCallback();
 
         // 旧版本 Android 多播处理
@@ -1519,24 +1551,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             // API 24 以下不支持 registerNetworkCallback
             return;
         }
-        // 仅在 HandlerThread 不存在时创建。VPN 重建时本方法可能在 networkChangeThread 上被调用，
-        // 此时 thread != null，直接复用已有 thread 和 handler，不销毁再重建。
-        if (networkChangeThread == null) {
-            networkChangeThread = new HandlerThread("ZT-NetworkChange");
-            networkChangeThread.start();
-            networkChangeHandler = new Handler(networkChangeThread.getLooper());
+        ensureNetworkChangeHandler();
+        if (!isNetworkAutoRebuildEnabled()) {
+            unregisterConnectivityNetworkCallback();
+            if (networkChangeHandler != null) {
+                networkChangeHandler.removeCallbacks(networkChangeRunnable);
+                networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
+            }
+            LogUtil.i(TAG, "网络自动重建已禁用：跳过物理网络变化回调注册");
+            return;
         }
         ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
         if (cm == null) return;
         // 仅注销旧的 ConnectivityManager 回调（不销毁 HandlerThread），避免自毁 handler。
-        if (this.networkCallback != null) {
-            try {
-                cm.unregisterNetworkCallback(this.networkCallback);
-            } catch (Exception e) {
-                LogUtil.d(TAG, "取消旧网络回调时出错: " + e.getMessage());
-            }
-            this.networkCallback = null;
-        }
+        unregisterConnectivityNetworkCallback();
         this.lastLinkAddresses = null;
         // 清除可能由本次 VPN establish() 触发的旧 pending 重建任务。
         // establish() 调用完成后物理网络会在数毫秒内触发 onAvailable，若不清除将立即发起下一次重建。
@@ -1624,9 +1652,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     /**
-     * 取消网络变化回调
+     * 仅取消 ConnectivityManager 网络回调，不销毁 HandlerThread。
      */
-    private void unregisterNetworkChangeCallback() {
+    private void unregisterConnectivityNetworkCallback() {
         if (this.networkCallback == null) return;
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -1638,6 +1666,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         this.networkCallback = null;
         this.lastLinkAddresses = null;
+    }
+
+    /**
+     * 取消网络变化回调
+     */
+    private void unregisterNetworkChangeCallback() {
+        unregisterConnectivityNetworkCallback();
         // 停止 HandlerThread（取消所有待执行的重建任务）
         if (networkChangeHandler != null) {
             networkChangeHandler.removeCallbacks(networkChangeRunnable);
@@ -1657,6 +1692,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 系统回调线程立即返回，不会被 VPN 重建阻塞。
      */
     private void onNetworkChanged() {
+        if (!isNetworkAutoRebuildEnabled()) return;
         if (networkChangeHandler == null) return;
         // 记录物理网络变化时刻，供 onNetworkReconfigure 判断是否为连锁触发。
         lastPhysicalNetworkChangeTime = android.os.SystemClock.elapsedRealtime();
@@ -1668,6 +1704,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 实际执行 VPN 路由重建的逻辑，由 {@link #networkChangeRunnable} 在后台线程调用。
      */
     private void doNetworkChangedUpdate() {
+        if (!isNetworkAutoRebuildEnabled()) {
+            LogUtil.i(TAG, "网络自动重建已禁用，跳过 doNetworkChangedUpdate");
+            return;
+        }
         // 防御性检查：若 VPN 刚刚重建完成（settle 窗口内），直接丢弃本次事件。
         // 多个回调路径（onAvailable / onLost / onLinkPropertiesChanged / onNetworkReconfigure 等）
         // 都可能在 establish() 后被系统虚假触发；若在此处"延迟重试"而非直接丢弃，

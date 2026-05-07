@@ -64,6 +64,8 @@
     <string name="preferences_network_disable_ipv6">Disable IPv6</string>
     <string name="preferences_network_disable_ipv6_summary">You will need to disconnect &amp; reconnect for this setting to take effect.</string>
     <string name="preferences_network_use_cell_data">Use Cellular Data</string>
+    <string name="preferences_network_auto_rebuild">Enable auto rebuild on network change</string>
+    <string name="preferences_network_auto_rebuild_summary">For troubleshooting: when disabled, Wi-Fi/4G switch will not auto-trigger VPN route rebuild. Reconnect or manually update config to apply changes.</string>
     <string name="reset_planet">Reset Planet</string>
     <string name="settings">Settings</string>
     <string name="status_label">Status:</string>
