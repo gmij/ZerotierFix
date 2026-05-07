@@ -201,7 +201,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 首次 VPN 建链时 onNetworkReconfigure (handler==null) 分支的延迟（毫秒）。
      * 给系统足够时间处理 VPN consent 状态，避免 establish() 过早执行导致 VPN 图标不显示。
      */
-    private static final long FIRST_ESTABLISH_DELAY_MS = 500;
+    private static final long FIRST_ESTABLISH_PENDING_DELAY_MS = 500;
+    /**
+     * 首次 VPN establish 成功后，触发 OEM 图标修复重建前的延迟（毫秒）。
+     * 500ms 在部分 OEM ROM 上仍然过早：系统尚未完全登记首次创建的 VPN，
+     * 第二次 establish() 依旧可能落在“首次建链”窗口内，导致系统图标不出现。
+     * 提高到 3000ms 后，重建时序更接近用户稍后手动切换一次路由模式的场景，兼容性更好。
+     */
+    private static final long FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS = 3000;
     /**
      * 自学习直连 IP 触发 VPN 重建的 Runnable。
      * 与 networkChangeRunnable 独立，避免互相取消。
@@ -997,9 +1004,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     }
                 };
                 LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_SCHEDULED] seq=" + pendingRequestSeq
-                        + ", delayMs=" + FIRST_ESTABLISH_DELAY_MS
+                        + ", delayMs=" + FIRST_ESTABLISH_PENDING_DELAY_MS
                         + ", caller=onNetworkReconfigure, networkId=" + finalNetwork2.getNetworkId());
-                mainHandler.postDelayed(pendingFirstEstablishRunnable, FIRST_ESTABLISH_DELAY_MS);
+                mainHandler.postDelayed(pendingFirstEstablishRunnable, FIRST_ESTABLISH_PENDING_DELAY_MS);
                 return;
             }
         }
@@ -1476,9 +1483,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // OEM ROM 兼容：首次 establish()（无旧 TUN fd）时，部分 OEM ROM 不显示 VPN 钥匙图标。
         // 原因：系统在"首次创建 VPN"代码路径中不触发图标绘制，但"更新已有 VPN"路径正常。
-        // 解决：首次 establish 成功后，延迟 500ms 再触发一次完整 VPN 重建。此时 vpnSocket 已非空，
+        // 解决：首次 establish 成功后，延迟一段时间再触发一次完整 VPN 重建。此时 vpnSocket 已非空，
         // establish() 走"更新现有 VPN"路径 → 系统显示 VPN 钥匙图标。
-        // 注意：不能立即再次 establish()，OEM ROM 需要时间将首次 VPN 注册到系统中。
+        // 注意：不能立即再次 establish()；部分 OEM ROM 需要更久时间将首次 VPN 注册到系统中。
         if (oldVpnSocket == null) {
             final Network refreshNetwork = network;
             final long parentRequestSeq = requestSeq;
@@ -1495,10 +1502,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         + ", nextCaller=firstEstablishDelayedRefresh(OEM图标修复)");
                 updateTunnelConfig(refreshNetwork,
                         "firstEstablishDelayedRefresh(OEM图标修复,parentSeq=" + parentRequestSeq + ")");
-            }, FIRST_ESTABLISH_DELAY_MS);
+            }, FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
             LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_SCHEDULED] seq=" + requestSeq
                     + ", caller=" + caller
-                    + ", delayMs=" + FIRST_ESTABLISH_DELAY_MS);
+                    + ", delayMs=" + FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
         }
 
         // 新 TUN fd 创建成功，现在安全关闭旧的资源
