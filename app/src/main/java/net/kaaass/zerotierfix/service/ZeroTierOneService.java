@@ -1,8 +1,5 @@
 package net.kaaass.zerotierfix.service;
 
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
@@ -426,45 +423,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         return PendingIntent.getActivity(this, 0, notificationIntent, flags);
     }
 
-    /** 前台通知 ID */
-    private static final int VPN_NOTIFICATION_ID = 9994;
 
-    /**
-     * 将 VPN 服务提升为前台服务。
-     * <p>
-     * 使用 IMPORTANCE_MIN 通道：通知本身不在状态栏产生图标（仅在下拉通知栏中安静显示），
-     * 但服务处于前台状态后，系统会正确显示原生 VPN 钥匙图标。
-     * 这在 MIUI/ColorOS/Flyme 等 OEM ROM 上是必须的。
-     */
-    private void startVpnForeground() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null && nm.getNotificationChannel(Constants.CHANNEL_ID) == null) {
-                NotificationChannel channel = new NotificationChannel(
-                        Constants.CHANNEL_ID,
-                        "ZeroTier VPN",
-                        NotificationManager.IMPORTANCE_MIN); // 静默通知，不在状态栏显示图标
-                channel.setDescription("VPN 服务运行状态");
-                channel.setShowBadge(false);
-                nm.createNotificationChannel(channel);
-            }
-        }
-
-        Notification.Builder nb;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nb = new Notification.Builder(this, Constants.CHANNEL_ID);
-        } else {
-            nb = new Notification.Builder(this);
-            nb.setPriority(Notification.PRIORITY_MIN);
-        }
-        nb.setContentTitle("ZeroTier")
-                .setContentText("VPN 已连接")
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setOngoing(true)
-                .setContentIntent(getVpnConfigureIntent());
-
-        startForeground(VPN_NOTIFICATION_ID, nb.build());
-    }
 
     public IBinder onBind(Intent intent) {
         LogUtil.d(TAG, "Bound by: " + getPackageManager().getNameForUid(Binder.getCallingUid()));
@@ -503,10 +462,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         this.mStartID = startId;
 
-        // 在 OEM ROM（MIUI/ColorOS/Flyme 等）上，VpnService 必须处于前台状态，
-        // 系统才会在状态栏显示原生 VPN 钥匙图标。使用 IMPORTANCE_MIN 通道使通知本身
-        // 不在状态栏产生额外图标（仅在下拉通知栏中可见），而 VPN 钥匙图标正常显示。
-        startVpnForeground();
+
 
         // 注册事件总线监听器
         if (!this.eventBus.isRegistered(this)) {
@@ -658,9 +614,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     public void stopZeroTier() {
-        // 移除前台通知
-        stopForeground(true);
-
         // 取消网络变化回调
         unregisterNetworkChangeCallback();
 
