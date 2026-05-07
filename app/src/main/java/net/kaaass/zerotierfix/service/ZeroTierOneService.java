@@ -200,7 +200,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 首次 VPN 建链时 onNetworkReconfigure (handler==null) 分支的延迟（毫秒）。
      * 给系统足够时间处理 VPN consent 状态，避免 establish() 过早执行导致 VPN 图标不显示。
      */
-    private static final long FIRST_ESTABLISH_DELAY_MS = 300;
+    private static final long FIRST_ESTABLISH_DELAY_MS = 500;
     /**
      * 自学习直连 IP 触发 VPN 重建的 Runnable。
      * 与 networkChangeRunnable 独立，避免互相取消。
@@ -245,6 +245,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             new java.util.concurrent.atomic.AtomicBoolean(false);
     /** 主线程 Handler，用于首次 establish 前的延迟调度 */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    /** 首次 VPN establish 的延迟 Runnable，用于防止重复调度（ZT SDK 首次加入网络时可能连续触发多次 onNetworkReconfigure） */
+    private Runnable pendingFirstEstablishRunnable;
     /**
      * VPN 最近一次重建开始的时间戳（{@link android.os.SystemClock#elapsedRealtime()} 毫秒）。
      * 用于抑制 VPN 建立后物理网络的虚假回调（Android 在 establish() 后会重新评估物理网络，
@@ -617,6 +619,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 取消网络变化回调
         unregisterNetworkChangeCallback();
 
+        // 取消首次 establish 的 pending runnable（避免 VPN 停止后仍触发 establish）
+        if (pendingFirstEstablishRunnable != null) {
+            mainHandler.removeCallbacks(pendingFirstEstablishRunnable);
+            pendingFirstEstablishRunnable = null;
+        }
+
         if (this.svrSocket != null) {
             this.svrSocket.close();
             this.svrSocket = null;
@@ -941,15 +949,22 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             } else {
                 // networkChangeHandler 尚未就绪（首次 VPN 连接前），通过主线程 Handler 延迟执行。
                 // 延迟给系统足够时间处理 VPN consent 状态，避免 establish() 过早导致 VPN 图标不显示。
+                // 注意：ZT SDK 首次加入网络时可能连续触发多次 onNetworkReconfigure（isChanged=true），
+                // 若不取消前一个 pending runnable 会导致多次 establish()，OEM ROM 清除 VPN 图标。
                 final Network finalNetwork2 = network;
                 final VirtualNetworkConfig finalConfig2 = networkConfig;
                 final boolean finalNetworkIsOk = networkIsOk;
-                mainHandler.postDelayed(() -> {
+                if (pendingFirstEstablishRunnable != null) {
+                    mainHandler.removeCallbacks(pendingFirstEstablishRunnable);
+                }
+                pendingFirstEstablishRunnable = () -> {
+                    pendingFirstEstablishRunnable = null;
                     boolean configUpdated = updateTunnelConfig(finalNetwork2, "onNetworkReconfigure(延迟首次调用,handler未就绪)");
                     if (configUpdated || !finalNetworkIsOk) {
                         this.eventBus.post(new VirtualNetworkConfigChangedEvent(finalConfig2));
                     }
-                }, FIRST_ESTABLISH_DELAY_MS);
+                };
+                mainHandler.postDelayed(pendingFirstEstablishRunnable, FIRST_ESTABLISH_DELAY_MS);
                 return;
             }
         }
