@@ -1384,6 +1384,25 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return false;
         }
 
+        // OEM ROM 兼容：首次 establish()（无旧 TUN fd）时，部分 OEM ROM 不显示 VPN 钥匙图标。
+        // 这是因为系统在"首次创建 VPN"的代码路径中存在 bug，但"更新已有 VPN"路径正常。
+        // 解决方法：首次创建后立即再次调用 establish()（同一 builder），使系统走"更新"路径，
+        // 第二次 establish() 返回的新 fd 替代第一次的，旧 fd 显式关闭。
+        if (oldVpnSocket == null) {
+            LogUtil.i(TAG, "首次 VPN establish：再次调用 establish() 以确保 OEM ROM 显示 VPN 图标");
+            try {
+                ParcelFileDescriptor refreshSocket = builder.establish();
+                if (refreshSocket != null) {
+                    // 关闭第一次 establish() 返回的 fd，使用第二次的
+                    this.vpnSocket.close();
+                    this.vpnSocket = refreshSocket;
+                }
+            } catch (Exception e) {
+                // refresh 失败时保留第一次 establish() 的 fd，VPN 功能正常但图标可能不显示
+                LogUtil.w(TAG, "首次 refresh establish 失败（保留原 fd）: " + e.getMessage());
+            }
+        }
+
         // 新 TUN fd 创建成功，现在安全关闭旧的资源
         closeOldVpnResources(oldIn, oldOut, oldVpnSocket);
 
