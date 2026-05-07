@@ -1010,13 +1010,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         } else {
             // networkChangeHandler 尚未就绪（例如禁用网络自动重建时），创建后继续做用户配置防抖。
             ensureNetworkChangeHandler();
-            if (networkChangeHandler != null) {
-                pendingUserConfigNetwork = network;
-                networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
-                networkChangeHandler.postDelayed(userConfigChangeRunnable, USER_CONFIG_CHANGE_DEBOUNCE_MS);
-            } else {
-                updateTunnelConfig(network, "onNetworkConfigChangedByUser(直接调用,handler未就绪)");
-            }
+            pendingUserConfigNetwork = network;
+            networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
+            networkChangeHandler.postDelayed(userConfigChangeRunnable, USER_CONFIG_CHANGE_DEBOUNCE_MS);
         }
     }
 
@@ -1554,10 +1550,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         ensureNetworkChangeHandler();
         if (!isNetworkAutoRebuildEnabled()) {
             unregisterConnectivityNetworkCallback();
-            if (networkChangeHandler != null) {
-                networkChangeHandler.removeCallbacks(networkChangeRunnable);
-                networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
-            }
+            networkChangeHandler.removeCallbacks(networkChangeRunnable);
+            networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
             LogUtil.i(TAG, "网络自动重建已禁用：跳过物理网络变化回调注册");
             return;
         }
