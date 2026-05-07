@@ -16,6 +16,8 @@ public class Constants {
     public static final String PREF_NETWORK_DISABLE_IPV6 = "network_disable_ipv6";
     public static final String PREF_NETWORK_AUTO_REBUILD = "network_auto_rebuild";
     public static final String PREF_NETWORK_SMART_ROUTING_ENABLED = "network_smart_routing_enabled";
+    /** 仅用于问题定位：开启后在“智能路由增强=开”时仍强制走普通全局/Per-app 路由（绕过 CHINA_DIRECT）。 */
+    public static final String PREF_NETWORK_DIAGNOSE_FORCE_DIRECT_GLOBAL = "network_diagnose_force_direct_global";
 
     public static final String PREF_GENERAL_START_ZEROTIER_ON_BOOT = "general_start_zerotier_on_boot";
 

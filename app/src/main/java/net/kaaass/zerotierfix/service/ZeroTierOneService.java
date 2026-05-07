@@ -256,6 +256,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         return PreferenceManager.getDefaultSharedPreferences(this)
                 .getBoolean(Constants.PREF_NETWORK_SMART_ROUTING_ENABLED, true);
     }
+    /**
+     * 仅用于问题定位：在“智能路由增强=开”时强制走普通全局/Per-app 路由（绕过 CHINA_DIRECT）。
+     * 默认关闭，避免影响正常功能。
+     */
+    private boolean isDiagnoseForceDirectGlobalEnabled() {
+        return PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(Constants.PREF_NETWORK_DIAGNOSE_FORCE_DIRECT_GLOBAL, false);
+    }
 
     /**
      * 确保网络变化 HandlerThread 与 Handler 已初始化。
@@ -1296,13 +1304,19 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         boolean shouldAddGlobalRoutes = isRouteViaZeroTier || isPerAppRouting;
         int smartRoutingMode = networkConfig.getSmartRoutingMode();
         boolean smartRoutingEnabled = isSmartRoutingEnabled();
+        boolean diagnoseForceDirectGlobal = smartRoutingEnabled && isDiagnoseForceDirectGlobalEnabled();
         if (shouldAddGlobalRoutes) {
             try {
-                if (smartRoutingEnabled) {
+                if (smartRoutingEnabled && !diagnoseForceDirectGlobal) {
                     // 智能路由增强开启：使用 CHINA_DIRECT 分流
+                    LogUtil.i(TAG, "[ANCHOR][ROUTE_PATH_SELECTED] path=CHINA_DIRECT"
+                            + ", smartRoutingEnabled=true, diagnoseForceDirectGlobal=false");
                     configureChinaDirectRouting(builder, virtualNetworkConfig, assignedAddresses);
                 } else {
                     // 智能路由增强关闭：回退到普通全局/Per-app 路由
+                    LogUtil.i(TAG, "[ANCHOR][ROUTE_PATH_SELECTED] path=DIRECT_GLOBAL"
+                            + ", smartRoutingEnabled=" + smartRoutingEnabled
+                            + ", diagnoseForceDirectGlobal=" + diagnoseForceDirectGlobal);
                     configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses, isPerAppRouting);
                 }
                 
@@ -1536,17 +1550,21 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 新版本始终以 CHINA_DIRECT 运行，无需依赖 DB 中的 smartRoutingMode 值。
         // Per-app 模式：perAppRoutingActive=true，仅选定应用进入 TUN。
         int effectiveSmartRoutingMode = shouldAddGlobalRoutes
-                ? (smartRoutingEnabled ? SmartRoutingManager.MODE_CHINA_DIRECT : SmartRoutingManager.MODE_OFF)
+                ? ((smartRoutingEnabled && !diagnoseForceDirectGlobal)
+                        ? SmartRoutingManager.MODE_CHINA_DIRECT
+                        : SmartRoutingManager.MODE_OFF)
                 : smartRoutingMode;
         SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
         this.tunTapAdapter.setSmartRouting(smartRouter, effectiveSmartRoutingMode, isPerAppRouting);
 
         // 注册自学习直连 IP 回调：DNS 嗅探发现直播 CDN 走 ZT 时，
         // 用 10 秒防抖重建 VPN，让新 IP 立即走物理直连，实现"越用越好用"。
-        if (smartRoutingEnabled && isNetworkAutoRebuildEnabled()) {
+        if (smartRoutingEnabled && !diagnoseForceDirectGlobal && isNetworkAutoRebuildEnabled()) {
             ensureNetworkChangeHandler();
             smartRouter.setOnNewLearnedIpListener(ip -> {
                 if (networkChangeHandler != null) {
+                    LogUtil.i(TAG, "[ANCHOR][LEARNED_IP_REBUILD_SCHEDULED] ip=" + ip
+                            + ", debounceMs=" + LEARNED_IP_REBUILD_DEBOUNCE_MS);
                     networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
                     networkChangeHandler.postDelayed(learnedIpRebuildRunnable,
                             LEARNED_IP_REBUILD_DEBOUNCE_MS);
@@ -2125,6 +2143,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.w(TAG, "CHINA_DIRECT 模式：chnroutes 尚未加载，临时全局路由，就绪后重建");
             router.setOnChnroutesReadyListener(() -> {
                 LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
+                LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_TRIGGER] reason=chnroutes_ready");
                 // chnroutes 新鲜加载完毕，重置一次性验证标志，使下次重建重新打印腾讯 CIDR 验证日志
                 tencentCidrsVerified = false;
                 onNetworkChanged();
