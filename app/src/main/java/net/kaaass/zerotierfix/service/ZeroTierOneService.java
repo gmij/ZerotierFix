@@ -222,7 +222,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (network == null) return;
         pendingUserConfigNetwork = null;
         LogUtil.i(TAG, "用户配置变更 debounce 到期，执行 VPN 重建");
-        updateTunnelConfig(network);
+        updateTunnelConfig(network, "userConfigChangeRunnable(用户切换配置)");
     };
     /**
      * 上次触发重建时的链路地址快照。
@@ -924,14 +924,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                                 + delaySinceNetChange + "ms，debounce 重建已排队）");
                         return;
                     }
-                    boolean updated = updateTunnelConfig(finalNetwork);
+                    boolean updated = updateTunnelConfig(finalNetwork, "onNetworkReconfigure(延迟回调)");
                     if (updated || finalConfig.getStatus() != VirtualNetworkStatus.NETWORK_STATUS_OK) {
                         eventBus.post(new VirtualNetworkConfigChangedEvent(finalConfig));
                     }
                 }, RECONFIGURE_REBUILD_DELAY_MS);
             } else {
                 // networkChangeHandler 尚未就绪（首次 VPN 连接前），直接调用
-                boolean configUpdated = updateTunnelConfig(network);
+                boolean configUpdated = updateTunnelConfig(network, "onNetworkReconfigure(直接调用,handler未就绪)");
                 if (configUpdated || !networkIsOk) {
                     this.eventBus.post(new VirtualNetworkConfigChangedEvent(networkConfig));
                 }
@@ -959,7 +959,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             networkChangeHandler.postDelayed(userConfigChangeRunnable, USER_CONFIG_CHANGE_DEBOUNCE_MS);
         } else {
             // networkChangeHandler 尚未就绪（VPN 首次连接前），直接执行
-            updateTunnelConfig(network);
+            updateTunnelConfig(network, "onNetworkConfigChangedByUser(直接调用,handler未就绪)");
         }
     }
 
@@ -1071,18 +1071,23 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     private boolean updateTunnelConfig(Network network) {
+        return updateTunnelConfig(network, "unknown");
+    }
+
+    private boolean updateTunnelConfig(Network network, String caller) {
         // 防止并发执行：若已有 VPN 配置正在进行，延迟 3s 后由 networkChangeHandler 重试一次。
         if (!isConfiguringVpn.compareAndSet(false, true)) {
-            LogUtil.d(TAG, "updateTunnelConfig: 已有配置正在进行，延迟 3s 重试");
+            LogUtil.d(TAG, "updateTunnelConfig[" + caller + "]: 已有配置正在进行，延迟 3s 重试");
             if (networkChangeHandler != null) {
                 networkChangeHandler.removeCallbacks(networkChangeRunnable);
                 networkChangeHandler.postDelayed(networkChangeRunnable, NETWORK_CHANGE_DEBOUNCE_MS);
             } else {
-                LogUtil.w(TAG, "updateTunnelConfig: networkChangeHandler 未就绪，重试请求已丢弃");
+                LogUtil.w(TAG, "updateTunnelConfig[" + caller + "]: networkChangeHandler 未就绪，重试请求已丢弃");
             }
             return false;
         }
         try {
+            LogUtil.i(TAG, "▶ updateTunnelConfig 开始执行，触发路径: " + caller);
             return doUpdateTunnelConfig(network);
         } finally {
             isConfiguringVpn.set(false);
@@ -1327,6 +1332,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 建立 VPN 连接
         // establish() 通过 Binder 传输路由表，若路由条数过多可能抛出 TransactionTooLargeException。
         // 捕获该异常并降级为全局路由（0.0.0.0/0），确保 VPN 至少能正常启动。
+        LogUtil.w(TAG, "★ 即将调用 establish() 创建新 TUN fd，isRouteViaZeroTier=" + isRouteViaZeroTier
+                + ", perApp=" + isPerAppRouting + ", 距上次重建=" + (android.os.SystemClock.elapsedRealtime() - lastRebuildTime) + "ms");
         try {
             this.vpnSocket = builder.establish();
         } catch (RuntimeException e) {
@@ -1622,7 +1629,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         .list();
                 if (networks.size() == 1) {
                     Network network = networks.get(0);
-                    updateTunnelConfig(network);
+                    updateTunnelConfig(network, "doNetworkChangedUpdate(物理网络变化debounce)");
                 }
             } catch (Exception e) {
                 LogUtil.e(TAG, "网络变化后重配 VPN 失败: " + e.getMessage(), e);
