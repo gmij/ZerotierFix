@@ -302,6 +302,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     /** 首次 VPN establish 的延迟 Runnable，用于防止重复调度（ZT SDK 首次加入网络时可能连续触发多次 onNetworkReconfigure） */
     private Runnable pendingFirstEstablishRunnable;
+    /** chnroutes 就绪后的延迟重建 Runnable，用于避免立即大路由重建导致 OEM VPN 图标抖动 */
+    private Runnable pendingChnroutesReadyRebuildRunnable;
     /** VPN 重建请求序号，用于日志锚点关联同一次触发链路 */
     private final AtomicLong vpnRebuildRequestSeq = new AtomicLong(0);
     /**
@@ -680,10 +682,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 取消网络变化回调
         unregisterNetworkChangeCallback();
 
+        // 清除 SmartRouting chnroutes 就绪回调，避免服务停止后触发跨 session 的陈旧重建
+        SmartRoutingManager.getInstance(this).setOnChnroutesReadyListener(null);
+
         // 取消首次 establish 的 pending runnable（避免 VPN 停止后仍触发 establish）
         if (pendingFirstEstablishRunnable != null) {
             mainHandler.removeCallbacks(pendingFirstEstablishRunnable);
             pendingFirstEstablishRunnable = null;
+        }
+        // 取消 chnroutes 就绪后的延迟重建
+        if (pendingChnroutesReadyRebuildRunnable != null) {
+            mainHandler.removeCallbacks(pendingChnroutesReadyRebuildRunnable);
+            pendingChnroutesReadyRebuildRunnable = null;
         }
 
         if (this.svrSocket != null) {
@@ -2160,7 +2170,24 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 }
                 // chnroutes 新鲜加载完毕，重置一次性验证标志，使下次重建重新打印腾讯 CIDR 验证日志
                 tencentCidrsVerified = false;
-                onNetworkChanged();
+                if (this.vpnSocket == null) {
+                    LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_SKIPPED] reason=vpn_not_established");
+                    return;
+                }
+                if (pendingChnroutesReadyRebuildRunnable != null) {
+                    mainHandler.removeCallbacks(pendingChnroutesReadyRebuildRunnable);
+                }
+                pendingChnroutesReadyRebuildRunnable = () -> {
+                    pendingChnroutesReadyRebuildRunnable = null;
+                    if (this.vpnSocket == null) {
+                        LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_CANCELLED] reason=vpn_stopped_before_delay");
+                        return;
+                    }
+                    LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_EXECUTE] delayMs=" + FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
+                    onNetworkChanged();
+                };
+                mainHandler.postDelayed(pendingChnroutesReadyRebuildRunnable, FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
+                LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_DELAYED] delayMs=" + FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
             });
             addGlobalRoutesToBuilder(builder, localSubnets);
             return;
