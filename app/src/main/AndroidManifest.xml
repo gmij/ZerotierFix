@@ -58,6 +58,11 @@
         <activity
             android:name=".ui.AppRoutingActivity"
             android:label="@string/app_routing" />
+        <activity
+            android:name=".ui.CrashDialogActivity"
+            android:label="应用崩溃"
+            android:theme="@style/Theme.ZerotierFix"
+            android:exported="false" />
 
         <receiver
             android:name=".service.StartupReceiver"

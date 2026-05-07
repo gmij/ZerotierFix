@@ -12,6 +12,7 @@ import androidx.multidex.MultiDexApplication;
 import net.kaaass.zerotierfix.model.DaoMaster;
 import net.kaaass.zerotierfix.model.DaoSession;
 import net.kaaass.zerotierfix.model.ZTOpenHelper;
+import net.kaaass.zerotierfix.util.CrashHandler;
 import net.kaaass.zerotierfix.util.LogManager;
 
 /**
@@ -28,6 +29,9 @@ public class ZerotierFixApplication extends MultiDexApplication {
     public void onCreate() {
         super.onCreate();
         Log.i(TAG, "Starting Application");
+        
+        // 安装全局崩溃处理器（崩溃时弹出错误信息供用户复制）
+        CrashHandler.install(this);
         
         // 创建 DAO 会话
         this.mDaoSession = new DaoMaster(
