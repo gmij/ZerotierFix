@@ -92,23 +92,26 @@ public class AppRoutingFragment extends Fragment {
     private void loadSelectedApps() {
         Executors.newSingleThreadExecutor().execute(() -> {
             // 后台线程执行期间 Fragment 可能已脱离 Activity（如快速切换页面），
-            // 此时 requireContext()/requireActivity() 会抛出 IllegalStateException。
-            if (!isAdded()) {
+            // isAdded() 与 getContext()/getActivity() 之间存在 TOCTOU 竞争，
+            // 因此直接使用 getContext()/getActivity() 并判空，避免 IllegalStateException。
+            var context = getContext();
+            if (context == null) {
                 LogUtil.w(TAG, "loadSelectedApps: fragment not attached, skip");
                 return;
             }
 
             // 获取所有已安装的应用
-            allApps = AppUtils.getAllInstalledApps(requireContext());
+            allApps = AppUtils.getAllInstalledApps(context);
 
             // 从数据库加载已保存的路由设置
             DatabaseUtils.readLock.lock();
             try {
-                if (!isAdded()) {
+                var activity = getActivity();
+                if (activity == null) {
                     LogUtil.w(TAG, "loadSelectedApps: fragment detached during DB read, skip");
                     return;
                 }
-                var daoSession = ((ZerotierFixApplication) requireActivity().getApplication()).getDaoSession();
+                var daoSession = ((ZerotierFixApplication) activity.getApplication()).getDaoSession();
                 var appRoutingDao = daoSession.getAppRoutingDao();
                 var savedRoutings = appRoutingDao.queryBuilder()
                         .where(AppRoutingDao.Properties.NetworkId.eq(networkId))
@@ -127,11 +130,12 @@ public class AppRoutingFragment extends Fragment {
                 DatabaseUtils.readLock.unlock();
             }
 
-            if (!isAdded()) {
+            var activity = getActivity();
+            if (activity == null) {
                 LogUtil.w(TAG, "loadSelectedApps: fragment detached before UI update, skip");
                 return;
             }
-            requireActivity().runOnUiThread(() -> {
+            activity.runOnUiThread(() -> {
                 if (isAdded()) {
                     updateSelectedAppsList();
                 }

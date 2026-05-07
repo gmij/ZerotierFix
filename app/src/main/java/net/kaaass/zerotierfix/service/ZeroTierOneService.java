@@ -1104,7 +1104,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return false;
         }
 
-        // 重启 TUN TAP
+        // 停止 TUN TAP 读写线程（但暂不关闭旧 TUN fd，保持系统 VPN 图标）
         if (this.tunTapAdapter.isRunning()) {
             this.tunTapAdapter.interrupt();
             try {
@@ -1114,31 +1114,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         this.tunTapAdapter.clearRouteMap();
 
-        // 重启 VPN Socket
-        if (this.in != null) {
-            try {
-                this.in.close();
-            } catch (Exception e) {
-                LogUtil.e(TAG, "Error closing VPN input stream: " + e, e);
-            }
-            this.in = null;
-        }
-        if (this.out != null) {
-            try {
-                this.out.close();
-            } catch (Exception e) {
-                LogUtil.e(TAG, "Error closing VPN output stream: " + e, e);
-            }
-            this.out = null;
-        }
-        if (this.vpnSocket != null) {
-            try {
-                this.vpnSocket.close();
-            } catch (Exception e) {
-                LogUtil.e(TAG, "Error closing VPN socket: " + e, e);
-            }
-            this.vpnSocket = null;
-        }
+        // 保存旧的 VPN 资源引用，延迟到新 establish() 成功后再关闭。
+        // 根据 Google VPN 开发文档，旧 TUN fd 在新 establish() 返回前必须保持打开，
+        // 否则系统会在无活跃 TUN 接口期间移除状态栏 VPN 钥匙图标。
+        var oldIn = this.in;
+        var oldOut = this.out;
+        var oldVpnSocket = this.vpnSocket;
+        this.in = null;
+        this.out = null;
+        this.vpnSocket = null;
 
         // 配置 VPN
         LogUtil.d(TAG, "Configuring VpnService.Builder");
@@ -1364,9 +1348,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             this.vpnSocket = fallbackBuilder.establish();
         }
         if (this.vpnSocket == null) {
+            // establish() 失败，关闭旧资源并报告错误
+            closeOldVpnResources(oldIn, oldOut, oldVpnSocket);
             this.eventBus.post(new VPNErrorEvent(getString(R.string.toast_vpn_application_not_prepared)));
             return false;
         }
+
+        // 新 TUN fd 创建成功，现在安全关闭旧的资源
+        closeOldVpnResources(oldIn, oldOut, oldVpnSocket);
+
         this.in = new FileInputStream(this.vpnSocket.getFileDescriptor());
         this.out = new FileOutputStream(this.vpnSocket.getFileDescriptor());
         this.tunTapAdapter.setVpnSocket(this.vpnSocket);
@@ -1408,6 +1398,35 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
         return true;
+    }
+
+    /**
+     * 关闭旧的 VPN 资源（流和 TUN fd）。
+     * 在新 establish() 成功创建新 TUN fd 之后调用，确保系统 VPN 图标无缝切换。
+     */
+    private void closeOldVpnResources(FileInputStream oldIn, FileOutputStream oldOut,
+                                       ParcelFileDescriptor oldVpnSocket) {
+        if (oldIn != null) {
+            try {
+                oldIn.close();
+            } catch (Exception e) {
+                LogUtil.d(TAG, "Error closing old VPN input stream: " + e.getMessage());
+            }
+        }
+        if (oldOut != null) {
+            try {
+                oldOut.close();
+            } catch (Exception e) {
+                LogUtil.d(TAG, "Error closing old VPN output stream: " + e.getMessage());
+            }
+        }
+        if (oldVpnSocket != null) {
+            try {
+                oldVpnSocket.close();
+            } catch (Exception e) {
+                LogUtil.d(TAG, "Error closing old VPN socket: " + e.getMessage());
+            }
+        }
     }
     
     /**
