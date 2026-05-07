@@ -1370,6 +1370,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     );
 
                     if (!isDisabledV6Route && shouldRouteToZerotier) {
+                        if (shouldAddGlobalRoutes
+                                && shouldSkipManagedIpv4RouteForChinaDirect(viaAddress, targetPort)) {
+                            LogUtil.i(LogUtil.ROUTE_TAG, "CHINA_DIRECT: 跳过 ZeroTier 下发公网路由 "
+                                    + viaAddress.getHostAddress() + "/" + targetPort
+                                    + "，避免覆盖国内直连策略");
+                            continue;
+                        }
                         builder.addRoute(viaAddress, targetPort);
                         Route route = new Route(viaAddress, targetPort);
                         if (via != null) {
@@ -2478,6 +2485,27 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (prefix == 0) return true;
         long mask = (~0L << (32 - prefix)) & 0xFFFFFFFFL;
         return (network & mask) == (ipLong & mask);
+    }
+
+    /**
+     * CHINA_DIRECT 已自行构建公网 IPv4 分流规则；若继续接收 ZeroTier 控制器下发的公网 IPv4 路由
+     * （如 /1、/2 等默认路由分片），会重新把国内地址覆盖回 TUN，导致直播 CDN 绕路。
+     * 仅保留私有/本地用途的 IPv4 managed route，公网部分统一交由 configureChinaDirectRouting 处理。
+     */
+    static boolean shouldSkipManagedIpv4RouteForChinaDirect(InetAddress routeAddress, int prefix) {
+        if (!(routeAddress instanceof Inet4Address) || prefix < 0 || prefix > 32) {
+            return false;
+        }
+        long ipLong = ipv4BytesToLong(routeAddress.getAddress());
+        if ((ipLong & 0xFF000000L) == 0x0A000000L) return false;        // 10.0.0.0/8
+        if ((ipLong & 0xFFF00000L) == 0xAC100000L) return false;        // 172.16.0.0/12
+        if ((ipLong & 0xFFFF0000L) == 0xC0A80000L) return false;        // 192.168.0.0/16
+        if ((ipLong & 0xFF000000L) == 0x7F000000L) return false;        // 127.0.0.0/8
+        if ((ipLong & 0xFFFF0000L) == LINK_LOCAL_PREFIX) return false;  // 169.254.0.0/16
+        if ((ipLong & CGN_MASK) == CGN_PREFIX) return false;            // 100.64.0.0/10
+        if ((ipLong & 0xF0000000L) == 0xE0000000L) return false;        // 224.0.0.0/4 multicast
+        if ((ipLong & 0xF0000000L) == 0xF0000000L) return false;        // 240.0.0.0/4 reserved
+        return true;
     }
 
     /**
