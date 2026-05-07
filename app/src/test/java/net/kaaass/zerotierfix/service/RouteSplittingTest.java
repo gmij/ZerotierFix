@@ -130,17 +130,19 @@ public class RouteSplittingTest {
     @Test
     public void chinaDirect_skipsManagedPublicIpv4Routes_only() throws Exception {
         assertTrue(ZeroTierOneService.shouldSkipManagedIpv4RouteForChinaDirect(
-                java.net.InetAddress.getByName("0.0.0.0"), 1));
+                java.net.InetAddress.getByName("0.0.0.0")));
         assertTrue(ZeroTierOneService.shouldSkipManagedIpv4RouteForChinaDirect(
-                java.net.InetAddress.getByName("128.0.0.0"), 1));
+                java.net.InetAddress.getByName("128.0.0.0")));
         assertTrue(ZeroTierOneService.shouldSkipManagedIpv4RouteForChinaDirect(
-                java.net.InetAddress.getByName("106.11.23.0"), 24));
+                java.net.InetAddress.getByName("106.11.23.0")));
+        assertTrue(ZeroTierOneService.shouldSkipManagedIpv4RouteForChinaDirect(
+                java.net.InetAddress.getByName("8.8.8.8")));
 
         assertFalse(ZeroTierOneService.shouldSkipManagedIpv4RouteForChinaDirect(
-                java.net.InetAddress.getByName("10.0.0.0"), 8));
+                java.net.InetAddress.getByName("10.0.0.0")));
         assertFalse(ZeroTierOneService.shouldSkipManagedIpv4RouteForChinaDirect(
-                java.net.InetAddress.getByName("192.168.0.0"), 16));
+                java.net.InetAddress.getByName("192.168.0.0")));
         assertFalse(ZeroTierOneService.shouldSkipManagedIpv4RouteForChinaDirect(
-                java.net.InetAddress.getByName("100.64.0.0"), 10));
+                java.net.InetAddress.getByName("100.64.0.0")));
     }
 }

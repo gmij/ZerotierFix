@@ -1371,7 +1371,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
                     if (!isDisabledV6Route && shouldRouteToZerotier) {
                         if (shouldAddGlobalRoutes
-                                && shouldSkipManagedIpv4RouteForChinaDirect(viaAddress, targetPort)) {
+                                && shouldSkipManagedIpv4RouteForChinaDirect(viaAddress)) {
                             LogUtil.i(LogUtil.ROUTE_TAG, "CHINA_DIRECT: 跳过 ZeroTier 下发公网路由 "
                                     + viaAddress.getHostAddress() + "/" + targetPort
                                     + "，避免覆盖国内直连策略");
@@ -2492,8 +2492,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * （如 /1、/2 等默认路由分片），会重新把国内地址覆盖回 TUN，导致直播 CDN 绕路。
      * 仅保留私有/本地用途的 IPv4 managed route，公网部分统一交由 configureChinaDirectRouting 处理。
      */
-    static boolean shouldSkipManagedIpv4RouteForChinaDirect(InetAddress routeAddress, int prefix) {
-        if (!(routeAddress instanceof Inet4Address) || prefix < 0 || prefix > 32) {
+    static boolean shouldSkipManagedIpv4RouteForChinaDirect(InetAddress routeAddress) {
+        if (!(routeAddress instanceof Inet4Address)) {
             return false;
         }
         long ipLong = ipv4BytesToLong(routeAddress.getAddress());
