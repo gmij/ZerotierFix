@@ -204,11 +204,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private static final long FIRST_ESTABLISH_PENDING_DELAY_MS = 500;
     /**
      * 首次 VPN establish 成功后，触发 OEM 图标修复重建前的延迟（毫秒）。
-     * 500ms 在部分 OEM ROM 上仍然过早：系统尚未完全登记首次创建的 VPN，
-     * 第二次 establish() 依旧可能落在“首次建链”窗口内，导致系统图标不出现。
-     * 提高到 3000ms 后，重建时序更接近用户稍后手动切换一次路由模式的场景，兼容性更好。
+     * 首页开关启动时 UI 会在短时间内发生多次 bind/unbind，若重建过早容易落在系统
+     * VPN 注册的竞争窗口内，导致第二次 establish 仍不触发图标。
      */
-    private static final long FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS = 3000;
+    private static final long FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS = 5000;
+    /** 首次图标修复重建在 UI 仍绑定服务时的重试间隔（毫秒）。 */
+    private static final long FIRST_ESTABLISH_ICON_REFRESH_RETRY_DELAY_MS = 1000;
+    /** 首次图标修复重建最大重试次数。 */
+    private static final int FIRST_ESTABLISH_ICON_REFRESH_MAX_RETRIES = 3;
     /**
      * 自学习直连 IP 触发 VPN 重建的 Runnable。
      * 与 networkChangeRunnable 独立，避免互相取消。
@@ -1519,20 +1522,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (oldVpnSocket == null) {
             final Network refreshNetwork = network;
             final long parentRequestSeq = requestSeq;
-            mainHandler.postDelayed(() -> {
-                if (this.vpnSocket == null) {
-                    LogUtil.d(TAG, "首次 VPN 延迟刷新取消：VPN 已停止");
-                    LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_CANCELLED] seq=" + parentRequestSeq
-                            + ", caller=" + caller);
-                    return;
-                }
-                LogUtil.i(TAG, "首次 VPN establish 延迟刷新：触发重建以激活 OEM ROM 系统 VPN 图标");
-                LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_TRIGGER] seq=" + parentRequestSeq
-                        + ", caller=" + caller
-                        + ", nextCaller=firstEstablishDelayedRefresh(OEM图标修复)");
-                updateTunnelConfig(refreshNetwork,
-                        "firstEstablishDelayedRefresh(OEM图标修复,parentSeq=" + parentRequestSeq + ")");
-            }, FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
+            scheduleFirstEstablishIconRefresh(refreshNetwork, parentRequestSeq, caller, 0);
             LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_SCHEDULED] seq=" + requestSeq
                     + ", caller=" + caller
                     + ", delayMs=" + FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
@@ -1620,6 +1610,40 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 LogUtil.d(TAG, "Error closing old VPN socket: " + e.getMessage());
             }
         }
+    }
+
+    /**
+     * 首次 establish 后延迟触发一次重建，用于走“更新已有 VPN”路径激活 OEM ROM 系统图标。
+     * 若此时 UI 仍持有 service 绑定（bindCount > 0），短暂重试，避开首页开关启动的绑定抖动窗口。
+     */
+    private void scheduleFirstEstablishIconRefresh(Network refreshNetwork, long parentRequestSeq,
+                                                   String caller, int attempt) {
+        mainHandler.postDelayed(() -> {
+            if (this.vpnSocket == null) {
+                LogUtil.d(TAG, "首次 VPN 延迟刷新取消：VPN 已停止");
+                LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_CANCELLED] seq=" + parentRequestSeq
+                        + ", caller=" + caller);
+                return;
+            }
+            if (this.bindCount > 0 && attempt < FIRST_ESTABLISH_ICON_REFRESH_MAX_RETRIES) {
+                int nextAttempt = attempt + 1;
+                LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_RETRY] seq=" + parentRequestSeq
+                        + ", caller=" + caller
+                        + ", bindCount=" + this.bindCount
+                        + ", nextAttempt=" + nextAttempt);
+                scheduleFirstEstablishIconRefresh(refreshNetwork, parentRequestSeq, caller, nextAttempt);
+                return;
+            }
+            LogUtil.i(TAG, "首次 VPN establish 延迟刷新：触发重建以激活 OEM ROM 系统 VPN 图标");
+            LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_TRIGGER] seq=" + parentRequestSeq
+                    + ", caller=" + caller
+                    + ", attempt=" + attempt
+                    + ", nextCaller=firstEstablishDelayedRefresh(OEM图标修复)");
+            updateTunnelConfig(refreshNetwork,
+                    "firstEstablishDelayedRefresh(OEM图标修复,parentSeq=" + parentRequestSeq
+                            + ",attempt=" + attempt + ")");
+        }, attempt == 0 ? FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS
+                : FIRST_ESTABLISH_ICON_REFRESH_RETRY_DELAY_MS);
     }
     
     /**
