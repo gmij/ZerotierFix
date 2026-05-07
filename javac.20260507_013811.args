@@ -1,7 +1,0 @@
--d
-/tmp/check
--sourcepath
-app/src/main/java
--classpath
-/dev/null
-app/src/main/java/net/kaaass/zerotierfix/service/ZeroTierOneService.java
