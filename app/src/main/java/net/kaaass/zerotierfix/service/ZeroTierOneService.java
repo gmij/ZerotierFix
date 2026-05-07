@@ -249,6 +249,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private final java.util.concurrent.atomic.AtomicBoolean isConfiguringVpn =
             new java.util.concurrent.atomic.AtomicBoolean(false);
+    /** 主线程 Handler，用于首次 establish 前的延迟调度 */
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     /**
      * VPN 最近一次重建开始的时间戳（{@link android.os.SystemClock#elapsedRealtime()} 毫秒）。
      * 用于抑制 VPN 建立后物理网络的虚假回调（Android 在 establish() 后会重新评估物理网络，
@@ -947,7 +949,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 final Network finalNetwork2 = network;
                 final VirtualNetworkConfig finalConfig2 = networkConfig;
                 final boolean finalNetworkIsOk = networkIsOk;
-                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                mainHandler.postDelayed(() -> {
                     boolean configUpdated = updateTunnelConfig(finalNetwork2, "onNetworkReconfigure(延迟首次调用,handler未就绪)");
                     if (configUpdated || !finalNetworkIsOk) {
                         this.eventBus.post(new VirtualNetworkConfigChangedEvent(finalConfig2));
@@ -1411,6 +1413,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (oldVpnSocket == null && networkChangeHandler != null) {
             final Network confirmNetwork = network;
             networkChangeHandler.postDelayed(() -> {
+                // 确认当前 VPN 仍然活跃且未被停止
+                if (this.vpnSocket == null) {
+                    LogUtil.d(TAG, "首次 establish 确认性重建：VPN 已停止，跳过");
+                    return;
+                }
                 LogUtil.i(TAG, "首次 establish 确认性重建：刷新系统 VPN 图标状态");
                 updateTunnelConfig(confirmNetwork, "首次establish确认性重建");
             }, FIRST_ESTABLISH_CONFIRM_REBUILD_MS);
