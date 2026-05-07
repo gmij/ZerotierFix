@@ -190,9 +190,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /**
      * onNetworkReconfigure 触发重建前的延迟（毫秒）。
      * 引入此延迟以解决竞态：ZT SDK 监测到底层 socket 断开的速度有时快于 Android CM 触发 onLost，
-     * 导致 sinceNetworkChange 读取到旧值。延迟 200ms 后 onLost 有充足时间写入 lastPhysicalNetworkChangeTime。
+     * 导致 sinceNetworkChange 读取到旧值。延迟 1000ms 后 onLost 有充足时间写入 lastPhysicalNetworkChangeTime。
+     * 设置为 1000ms（而非更短的 200ms）是因为在低端设备或高负载下，
+     * ZT SDK 可能比 Android CM 早 800ms+ 感知到物理链路断开，200ms 不足以覆盖此时差。
      */
-    private static final long RECONFIGURE_REBUILD_DELAY_MS = 200;
+    private static final long RECONFIGURE_REBUILD_DELAY_MS = 1000;
     /**
      * 自学习直连 IP 触发 VPN 重建的 Runnable。
      * 与 networkChangeRunnable 独立，避免互相取消。
@@ -864,7 +866,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             // 抑制 VPN 重建后 ZT 节点的虚假回调：establish() 创建新 TUN 接口后，ZT 节点会立刻上报
             // 配置变化（isChanged=true），若不过滤会立即触发第二次完整重建，形成双重重建循环。
             if (sinceRebuild < REBUILD_SETTLE_MS) {
-                LogUtil.d(TAG, "onNetworkReconfigure: VPN 重建稳定期内，跳过重建（距上次重建 "
+                LogUtil.i(TAG, "onNetworkReconfigure: VPN 重建稳定期内，跳过重建（距上次重建 "
                         + sinceRebuild + "ms）");
                 isChanged = false;
             } else if (sinceNetworkChange < NETWORK_CHANGE_DEBOUNCE_MS + NETWORK_CHANGE_WINDOW_EXTENSION_MS) {
@@ -872,7 +874,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 // ZT SDK 会在数百毫秒内因 socket 连通性改变连锁触发 CONFIG_UPDATE。
                 // 此时直接重建会产生额外一次 establish()，OEM ROM 随即清除 VPN 图标；
                 // 丢弃此事件，让 debounce 路径统一处理物理网络切换。
-                LogUtil.d(TAG, "onNetworkReconfigure: 物理网络切换窗口内，跳过（距上次网络变化 "
+                LogUtil.i(TAG, "onNetworkReconfigure: 物理网络切换窗口内，跳过（距上次网络变化 "
                         + sinceNetworkChange + "ms，debounce 重建已排队）");
                 isChanged = false;
             }
@@ -895,12 +897,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     long delaySinceRebuild = now2 - lastRebuildTime;
                     long delaySinceNetChange = now2 - lastPhysicalNetworkChangeTime;
                     if (delaySinceRebuild < REBUILD_SETTLE_MS) {
-                        LogUtil.d(TAG, "onNetworkReconfigure (延迟): VPN 重建稳定期内，跳过（距上次重建 "
+                        LogUtil.i(TAG, "onNetworkReconfigure (延迟): VPN 重建稳定期内，跳过（距上次重建 "
                                 + delaySinceRebuild + "ms）");
                         return;
                     }
                     if (delaySinceNetChange < NETWORK_CHANGE_DEBOUNCE_MS + NETWORK_CHANGE_WINDOW_EXTENSION_MS) {
-                        LogUtil.d(TAG, "onNetworkReconfigure (延迟): 物理网络切换窗口内，跳过（距上次网络变化 "
+                        LogUtil.i(TAG, "onNetworkReconfigure (延迟): 物理网络切换窗口内，跳过（距上次网络变化 "
                                 + delaySinceNetChange + "ms，debounce 重建已排队）");
                         return;
                     }
@@ -1567,7 +1569,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 真正的物理网络变化（WiFi→4G 切换等）会在 settle 窗口外重新触发独立回调，不会被此处遗漏。
         long sinceRebuild = android.os.SystemClock.elapsedRealtime() - lastRebuildTime;
         if (sinceRebuild < REBUILD_SETTLE_MS) {
-            LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，丢弃本次事件（距上次重建 " + sinceRebuild + "ms）");
+            LogUtil.i(TAG, "网络变化: VPN 重建稳定期内，丢弃本次事件（距上次重建 " + sinceRebuild + "ms）");
             return;
         }
 

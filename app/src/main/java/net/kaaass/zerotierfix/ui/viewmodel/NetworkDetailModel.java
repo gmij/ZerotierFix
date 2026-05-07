@@ -97,6 +97,10 @@ public class NetworkDetailModel extends AndroidViewModel {
             Log.e(TAG, "Network config not found!");
             return;
         }
+        // 幂等检查：值未变化时不触发事件，防止程序更新 UI 时误触发 VPN 重建
+        if (networkConfig.getRouteViaZeroTier() == routeViaZeroTier) {
+            return;
+        }
 
         // 更新数据库
         networkConfig.setRouteViaZeroTier(routeViaZeroTier);
@@ -113,6 +117,10 @@ public class NetworkDetailModel extends AndroidViewModel {
         var networkConfig = this.networkConfig.getValue();
         if (networkConfig == null) {
             Log.e(TAG, "Network config not found!");
+            return;
+        }
+        // 幂等检查：值未变化时不触发事件，防止程序更新 UI 时误触发 VPN 重建
+        if (networkConfig.getPerAppRouting() == perAppRouting) {
             return;
         }
 
@@ -134,6 +142,10 @@ public class NetworkDetailModel extends AndroidViewModel {
         var networkConfig = this.networkConfig.getValue();
         if (networkConfig == null) {
             Log.e(TAG, "Network config not found!");
+            return;
+        }
+        // 幂等检查：值未变化时不触发事件，防止程序更新 UI 时误触发 VPN 重建
+        if (networkConfig.getSmartRoutingMode() == mode) {
             return;
         }
         networkConfig.setSmartRoutingMode(mode);

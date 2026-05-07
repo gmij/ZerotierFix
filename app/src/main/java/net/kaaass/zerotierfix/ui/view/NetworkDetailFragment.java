@@ -60,6 +60,8 @@ public class NetworkDetailFragment extends Fragment {
 
     private long networkId;
     private AppRoutingFragment appRoutingFragment;
+    /** 路由模式 CheckBox 的监听器引用，用于在程序更新 UI 时临时移除以防误触发 VPN 重建 */
+    private CheckBox.OnCheckedChangeListener routingAllChangeListener;
 
 
     @Override
@@ -101,7 +103,7 @@ public class NetworkDetailFragment extends Fragment {
         // When checked: global routing (per-app routing disabled, app list hidden)
         //               Smart routing automatically set to COMBINED mode
         // When unchecked: per-app routing (app list shown)
-        CheckBox.OnCheckedChangeListener routingAllChangeListener = (buttonView, isChecked) -> {
+        routingAllChangeListener = (buttonView, isChecked) -> {
             if (isChecked) {
                 // Global routing mode: all traffic through ZeroTier with COMBINED smart routing
                 viewModel.doUpdateRouteViaZeroTier(true);
@@ -195,7 +197,11 @@ public class NetworkDetailFragment extends Fragment {
         boolean perAppRouting = networkConfig.getPerAppRouting();
 
         boolean isGlobalMode = routeViaZt && !perAppRouting;
+        // 程序更新 CheckBox 时临时移除监听器，防止 setChecked 误触发 routingAllChangeListener
+        // 导致向 VPN 服务发送虚假的 NetworkConfigChangedByUserEvent，引起不必要的 VPN 重建。
+        this.routingAllView.setOnCheckedChangeListener(null);
         this.routingAllView.setChecked(isGlobalMode);
+        this.routingAllView.setOnCheckedChangeListener(routingAllChangeListener);
 
         // Show/hide app routing fragment based on routing mode
         if (perAppRouting) {
