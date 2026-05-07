@@ -99,6 +99,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 // TODO: clear up
@@ -268,8 +269,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /** 首次 VPN establish 的延迟 Runnable，用于防止重复调度（ZT SDK 首次加入网络时可能连续触发多次 onNetworkReconfigure） */
     private Runnable pendingFirstEstablishRunnable;
     /** VPN 重建请求序号，用于日志锚点关联同一次触发链路 */
-    private final java.util.concurrent.atomic.AtomicLong vpnRebuildRequestSeq =
-            new java.util.concurrent.atomic.AtomicLong(0);
+    private final AtomicLong vpnRebuildRequestSeq = new AtomicLong(0);
     /**
      * VPN 最近一次重建开始的时间戳（{@link android.os.SystemClock#elapsedRealtime()} 毫秒）。
      * 用于抑制 VPN 建立后物理网络的虚假回调（Android 在 establish() 后会重新评估物理网络，
@@ -977,21 +977,27 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 final Network finalNetwork2 = network;
                 final VirtualNetworkConfig finalConfig2 = networkConfig;
                 final boolean finalNetworkIsOk = networkIsOk;
+                long pendingRequestSeq = vpnRebuildRequestSeq.incrementAndGet();
                 if (pendingFirstEstablishRunnable != null) {
-                    LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_REPLACED] caller=onNetworkReconfigure, networkId="
-                            + finalNetwork2.getNetworkId());
+                    LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_REPLACED] seq=" + pendingRequestSeq
+                            + ", caller=onNetworkReconfigure, networkId=" + finalNetwork2.getNetworkId());
                     mainHandler.removeCallbacks(pendingFirstEstablishRunnable);
                 }
                 pendingFirstEstablishRunnable = () -> {
                     pendingFirstEstablishRunnable = null;
-                    LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_FIRED] caller=onNetworkReconfigure, networkId="
-                            + finalNetwork2.getNetworkId());
-                    boolean configUpdated = updateTunnelConfig(finalNetwork2, "onNetworkReconfigure(延迟首次调用,handler未就绪)");
+                    LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_FIRED] seq=" + pendingRequestSeq
+                            + ", caller=onNetworkReconfigure, networkId=" + finalNetwork2.getNetworkId());
+                    boolean configUpdated = updateTunnelConfig(
+                            finalNetwork2,
+                            "onNetworkReconfigure(延迟首次调用,handler未就绪,seq=" + pendingRequestSeq + ")",
+                            pendingRequestSeq
+                    );
                     if (configUpdated || !finalNetworkIsOk) {
                         this.eventBus.post(new VirtualNetworkConfigChangedEvent(finalConfig2));
                     }
                 };
-                LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_SCHEDULED] delayMs=" + FIRST_ESTABLISH_DELAY_MS
+                LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_SCHEDULED] seq=" + pendingRequestSeq
+                        + ", delayMs=" + FIRST_ESTABLISH_DELAY_MS
                         + ", caller=onNetworkReconfigure, networkId=" + finalNetwork2.getNetworkId());
                 mainHandler.postDelayed(pendingFirstEstablishRunnable, FIRST_ESTABLISH_DELAY_MS);
                 return;
@@ -1137,7 +1143,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     private boolean updateTunnelConfig(Network network, String caller) {
-        long requestSeq = vpnRebuildRequestSeq.incrementAndGet();
+        return updateTunnelConfig(network, caller, null);
+    }
+
+    private boolean updateTunnelConfig(Network network, String caller, Long fixedRequestSeq) {
+        long requestSeq = fixedRequestSeq != null ? fixedRequestSeq : vpnRebuildRequestSeq.incrementAndGet();
         LogUtil.i(TAG, "[ANCHOR][VPN_REBUILD_REQUEST] seq=" + requestSeq
                 + ", caller=" + caller
                 + ", networkId=" + network.getNetworkId()
