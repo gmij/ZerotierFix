@@ -281,38 +281,45 @@ public class CidrBlock implements Comparable<CidrBlock> {
         // no unprotected candidate exists do we fall back to merging the overall smallest gap
         // (protection is best-effort, not a hard constraint, to ensure convergence).
         while (totalCidrCount > maxEntries && ranges.size() > 1) {
-            int minIdx = 0;
-            long minGap = Long.MAX_VALUE;
-            int minIdxUnprotected = -1;
-            long minGapUnprotected = Long.MAX_VALUE;
+            // Track the smallest non-protected gap (preferred merge candidate).
+            int minIdxPreferred = -1;
+            long minGapPreferred = Long.MAX_VALUE;
+            // Track the smallest overall gap regardless of protection (fallback when all
+            // remaining gaps are protected and we have no choice but to fill one of them).
+            int minIdxFallback = -1;
+            long minGapFallback = Long.MAX_VALUE;
 
             for (int i = 0; i < ranges.size() - 1; i++) {
                 // gap >= 0 always holds here (see comment above); Math.max guards against
                 // any unexpected edge cases without changing behavior for valid inputs.
                 // gap = number of IPs between the end of range[i] and start of range[i+1].
                 long gap = Math.max(0, ranges.get(i + 1)[0] - ranges.get(i)[1] - 1);
-                if (gap < minGap) {
-                    minGap = gap;
-                    minIdx = i;
+
+                // Update the overall fallback minimum first (covers every gap unconditionally).
+                if (gap < minGapFallback) {
+                    minGapFallback = gap;
+                    minIdxFallback = i;
                 }
-                // Check whether this gap is protected (i.e., overlaps any protected range).
+
+                // Skip protected gaps for the preferred (non-protected) candidate.
                 // The gap occupies [ranges[i].end + 1, ranges[i+1].start - 1].
                 if (!protectedRanges.isEmpty()) {
                     long gapStart = ranges.get(i)[1] + 1;
                     long gapEnd   = ranges.get(i + 1)[0] - 1;
                     if (gapStart <= gapEnd
                             && gapOverlapsProtected(gapStart, gapEnd, protectedRanges)) {
-                        continue; // skip protected gaps for the "unprotected-preferred" candidate
+                        continue;
                     }
                 }
-                if (gap < minGapUnprotected) {
-                    minGapUnprotected = gap;
-                    minIdxUnprotected = i;
+
+                if (gap < minGapPreferred) {
+                    minGapPreferred = gap;
+                    minIdxPreferred = i;
                 }
             }
 
-            // Use the best unprotected candidate if available; fall back to overall minimum
-            int mergeIdx = (minIdxUnprotected >= 0) ? minIdxUnprotected : minIdx;
+            // Use the best non-protected candidate if available; fall back to overall minimum.
+            int mergeIdx = (minIdxPreferred >= 0) ? minIdxPreferred : minIdxFallback;
 
             // Read counts before mutation
             int cnt1 = cidrCounts.get(mergeIdx);
