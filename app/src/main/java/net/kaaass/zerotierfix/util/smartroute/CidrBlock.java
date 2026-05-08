@@ -289,17 +289,21 @@ public class CidrBlock implements Comparable<CidrBlock> {
             for (int i = 0; i < ranges.size() - 1; i++) {
                 // gap >= 0 always holds here (see comment above); Math.max guards against
                 // any unexpected edge cases without changing behavior for valid inputs.
-                long gapStart = ranges.get(i)[1] + 1;
-                long gapEnd   = ranges.get(i + 1)[0] - 1;
-                long gap = Math.max(0, gapEnd - ranges.get(i)[1]);
+                // gap = number of IPs between the end of range[i] and start of range[i+1].
+                long gap = Math.max(0, ranges.get(i + 1)[0] - ranges.get(i)[1] - 1);
                 if (gap < minGap) {
                     minGap = gap;
                     minIdx = i;
                 }
-                // Check whether this gap is protected (i.e., overlaps any protected range)
-                if (!protectedRanges.isEmpty() && gapStart <= gapEnd
-                        && gapOverlapsProtected(gapStart, gapEnd, protectedRanges)) {
-                    continue; // skip protected gaps for the "unprotected-preferred" candidate
+                // Check whether this gap is protected (i.e., overlaps any protected range).
+                // The gap occupies [ranges[i].end + 1, ranges[i+1].start - 1].
+                if (!protectedRanges.isEmpty()) {
+                    long gapStart = ranges.get(i)[1] + 1;
+                    long gapEnd   = ranges.get(i + 1)[0] - 1;
+                    if (gapStart <= gapEnd
+                            && gapOverlapsProtected(gapStart, gapEnd, protectedRanges)) {
+                        continue; // skip protected gaps for the "unprotected-preferred" candidate
+                    }
                 }
                 if (gap < minGapUnprotected) {
                     minGapUnprotected = gap;
