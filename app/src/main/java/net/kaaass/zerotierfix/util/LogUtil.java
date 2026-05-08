@@ -2,6 +2,8 @@ package net.kaaass.zerotierfix.util;
 
 import android.util.Log;
 
+import net.kaaass.zerotierfix.BuildConfig;
+
 /**
  * 日志工具类，为应用提供统一的日志记录接口
  * 同时记录到系统日志和应用内部日志
@@ -24,10 +26,16 @@ public class LogUtil {
     
     /**
      * 记录调试级别日志
+     *
+     * <p>在 release 包中仅写入 Android logcat（Log.d），跳过 logManager 内部缓冲区。
+     * DEBUG 条目在业务日志 UI 中会被 formatBusinessEntry() 过滤掉，存入缓冲区毫无意义，
+     * 且每次调用都会触发 new SimpleDateFormat / new Date 分配，产生不必要的 GC 压力。
      */
     public static void d(String tag, String message) {
         Log.d(tag, message);
-        logManager.debug(tag, message);
+        if (BuildConfig.DEBUG) {
+            logManager.debug(tag, message);
+        }
     }
     
     /**

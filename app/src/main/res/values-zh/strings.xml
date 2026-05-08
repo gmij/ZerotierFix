@@ -60,6 +60,10 @@
     <string name="preferences_network_disable_ipv6">禁用 IPv6</string>
     <string name="preferences_network_disable_ipv6_summary">需要手动断开、重连使配置生效</string>
     <string name="preferences_network_use_cell_data">允许移动网络下使用</string>
+    <string name="preferences_network_auto_rebuild">网络变化时自动重建 VPN</string>
+    <string name="preferences_network_auto_rebuild_summary">用于排障：关闭后，Wi-Fi/4G 切换不会自动触发 VPN 路由重建。需手动重连或手动更新配置后生效。</string>
+    <string name="preferences_network_smart_routing_enabled">启用智能路由增强</string>
+    <string name="preferences_network_smart_routing_enabled_summary">关闭后将禁用 CHINA_DIRECT/GFW 分流增强，尽量回退到接近 fork 原始路由行为（需断开重连生效）。</string>
     <string name="reset_planet">重置 Planet</string>
     <string name="settings">设置</string>
     <string name="status_label">状态:</string>
@@ -138,6 +142,8 @@
     <string name="cached_moon_file_delete">已删除缓存的 Moon 文件。需手动重连使配置生效。</string>
     <string name="channel_name">连接状态通知</string>
     <string name="channel_description">连接状态</string>
+    <string name="notification_title_connecting">ZeroTier Fix</string>
+    <string name="notification_text_connecting">正在连接…</string>
     <string name="notification_title_connected">已连接</string>
     <string name="notification_text_connected">已连接至网络: %1$s</string>
     <string name="toast_vpn_application_not_prepared" >VPN 服务还未准备好或已经失效。</string>

@@ -1,7 +1,5 @@
 package net.kaaass.zerotierfix.service;
 
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
@@ -19,12 +17,10 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.preference.PreferenceManager;
 import android.widget.Toast;
-
-import androidx.core.app.NotificationCompat;
-import androidx.core.content.ContextCompat;
 
 import com.zerotier.sdk.Event;
 import com.zerotier.sdk.EventListener;
@@ -68,7 +64,6 @@ import net.kaaass.zerotierfix.model.Network;
 import net.kaaass.zerotierfix.model.NetworkConfig;
 import net.kaaass.zerotierfix.model.NetworkDao;
 import net.kaaass.zerotierfix.model.type.DNSMode;
-import net.kaaass.zerotierfix.ui.NetworkListActivity;
 import net.kaaass.zerotierfix.util.Constants;
 import net.kaaass.zerotierfix.util.DatabaseUtils;
 import net.kaaass.zerotierfix.util.InetAddressUtils;
@@ -96,6 +91,7 @@ import java.net.Socket;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -103,6 +99,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 // TODO: clear up
@@ -113,7 +110,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     public static final String ZT1_USE_DEFAULT_ROUTE = "com.zerotier.one.use_default_route";
     private static final String[] DISALLOWED_APPS = {"com.android.vending"};
     private static final String TAG = "ZT1_Service";
-    private static final int ZT_NOTIFICATION_TAG = 5919812;
     /** 移动数据接口名称前缀——这些是"上行"互联网提供者，不应排除在 VPN 路由之外。 */
     private static final String[] MOBILE_DATA_IFACE_PREFIXES = {
             "rmnet", "v4-rmnet",   // Qualcomm (rmnet_data0 等) 及其 CLAT/464XLAT 接口
@@ -153,14 +149,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             "1.1.1.1",    // Cloudflare DNS 主
             "1.0.0.1",    // Cloudflare DNS 备
     };
-    /**
-     * Android 13+ excludeRoute 最大条数（安全上限）。
-     * Binder 单次事务上限（1 MB）在部分 OEM ROM 中更低（如 600 KB）。
-     * CIDR 聚合后中国 IP 数量通常降至 4 000-6 000 条（视 chnroutes 数据而定），
-     * 此上限作为最后一道安全网，确保即使在极端 OEM 设备上也不超过 Binder 限制。
-     * 6 500 条 × ~83 字节 ≈ 540 KB，低于常见 OEM 600 KB 限制。
-     */
-    private static final int MAX_EXCLUDE_ROUTES_ANDROID13 = 6500;
     private final IBinder mBinder = new ZeroTierBinder();
     private final DataStore dataStore = new DataStore(this);
     private final EventBus eventBus = EventBus.getDefault();
@@ -175,7 +163,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private long networkId = 0;
     private long nextBackgroundTaskDeadline = 0;
     private Node node;
-    private NotificationManager notificationManager;
     private TunTapAdapter tunTapAdapter;
     private UdpCom udpCom;
     private Thread udpThread;
@@ -189,6 +176,35 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /** 防止网络变化事件过于频繁触发重配的最小间隔（毫秒） */
     private static final long NETWORK_CHANGE_DEBOUNCE_MS = 3000;
     /**
+     * onNetworkReconfigure 物理网络切换窗口保护的额外扩展时间（毫秒）。
+     * 物理网络切换窗口 = NETWORK_CHANGE_DEBOUNCE_MS + NETWORK_CHANGE_WINDOW_EXTENSION_MS。
+     * 扩展时间用于覆盖 ZT SDK 触发 CONFIG_UPDATE 与 Android CM 触发 onLost/onAvailable 之间的时差。
+     */
+    private static final long NETWORK_CHANGE_WINDOW_EXTENSION_MS = 2000;
+    /**
+     * onNetworkReconfigure 触发重建前的延迟（毫秒）。
+     * 引入此延迟以解决竞态：ZT SDK 监测到底层 socket 断开的速度有时快于 Android CM 触发 onLost，
+     * 导致 sinceNetworkChange 读取到旧值。延迟 1000ms 后 onLost 有充足时间写入 lastPhysicalNetworkChangeTime。
+     * 设置为 1000ms（而非更短的 200ms）是因为在低端设备或高负载下，
+     * ZT SDK 可能比 Android CM 早 800ms+ 感知到物理链路断开，200ms 不足以覆盖此时差。
+     */
+    private static final long RECONFIGURE_REBUILD_DELAY_MS = 1000;
+    /**
+     * 首次 VPN 建链时 onNetworkReconfigure (handler==null) 分支的延迟（毫秒）。
+     * 给系统足够时间处理 VPN consent 状态，避免 establish() 过早执行导致 VPN 图标不显示。
+     */
+    private static final long FIRST_ESTABLISH_PENDING_DELAY_MS = 500;
+    /**
+     * 首次 VPN establish 成功后，触发 OEM 图标修复重建前的延迟（毫秒）。
+     * 首页开关启动时 UI 会在短时间内发生多次 bind/unbind，若重建过早容易落在系统
+     * VPN 注册的竞争窗口内，导致第二次 establish 仍不触发图标。
+     */
+    private static final long FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS = 5000;
+    /** 首次图标修复重建在 UI 仍绑定服务时的重试间隔（毫秒）。 */
+    private static final long FIRST_ESTABLISH_ICON_REFRESH_RETRY_DELAY_MS = 1000;
+    /** 首次图标修复重建最大重试次数。 */
+    private static final int FIRST_ESTABLISH_ICON_REFRESH_MAX_RETRIES = 3;
+    /**
      * 自学习直连 IP 触发 VPN 重建的 Runnable。
      * 与 networkChangeRunnable 独立，避免互相取消。
      */
@@ -199,6 +215,53 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     };
     /** 自学习 IP 触发重建的防抖延迟（10 秒，确保批量 IP 一次重建） */
     private static final long LEARNED_IP_REBUILD_DEBOUNCE_MS = 10_000;
+    /**
+     * 用户主动切换路由模式（全局/per-app）时的防抖延迟（毫秒）。
+     * 单次 toggle 操作会触发 doUpdatePerAppRouting + doUpdateSmartRoutingMode，
+     * 产生两个 NetworkConfigChangedByUserEvent；若不合并会导致两次 establish()，
+     * 第二次 establish() 生成新 TUN fd，OEM ROM 清除 VPN 钥匙图标。
+     * 500ms 足够合并同一用户操作内的多个事件，同时不引入明显延迟。
+     */
+    private static final long USER_CONFIG_CHANGE_DEBOUNCE_MS = 500;
+    /** 用户主动切换配置时待处理重建的 Network 引用 */
+    private volatile Network pendingUserConfigNetwork = null;
+    /** 用户主动切换配置的 debounce Runnable：合并短时间内多个配置变更事件为一次 VPN 重建 */
+    private final Runnable userConfigChangeRunnable = () -> {
+        Network network = pendingUserConfigNetwork;
+        if (network == null) return;
+        pendingUserConfigNetwork = null;
+        LogUtil.i(TAG, "用户配置变更 debounce 到期，执行 VPN 重建");
+        updateTunnelConfig(network, "userConfigChangeRunnable(用户切换配置)");
+    };
+
+    /**
+     * 是否启用“网络变化自动重建 VPN”。
+     * 默认关闭，便于逐步排查网络切换相关重建问题。
+     */
+    private boolean isNetworkAutoRebuildEnabled() {
+        return PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(Constants.PREF_NETWORK_AUTO_REBUILD, false);
+    }
+
+    /**
+     * 是否启用智能路由增强（CHINA_DIRECT/GFW 数据分流）。
+     * 关闭后尽量回退到接近 fork 原始版本的全局/Per-app 路由行为。
+     */
+    private boolean isSmartRoutingEnabled() {
+        return PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(Constants.PREF_NETWORK_SMART_ROUTING_ENABLED, true);
+    }
+
+    /**
+     * 确保网络变化 HandlerThread 与 Handler 已初始化。
+     */
+    private void ensureNetworkChangeHandler() {
+        if (networkChangeThread == null) {
+            networkChangeThread = new HandlerThread("ZT-NetworkChange");
+            networkChangeThread.start();
+            networkChangeHandler = new Handler(networkChangeThread.getLooper());
+        }
+    }
     /**
      * 上次触发重建时的链路地址快照。
      * 仅当链路地址发生变化（如 IP 切换）时才重配 VPN；
@@ -212,12 +275,45 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private final java.util.concurrent.atomic.AtomicBoolean isConfiguringVpn =
             new java.util.concurrent.atomic.AtomicBoolean(false);
+    /** 主线程 Handler，用于首次 establish 前的延迟调度 */
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    /** 首次 VPN establish 的延迟 Runnable，用于防止重复调度（ZT SDK 首次加入网络时可能连续触发多次 onNetworkReconfigure） */
+    private Runnable pendingFirstEstablishRunnable;
+    /** chnroutes 就绪后的延迟重建 Runnable，用于避免立即大路由重建导致 OEM VPN 图标抖动 */
+    private Runnable pendingChnroutesReadyRebuildRunnable;
+    /** VPN 重建请求序号，用于日志锚点关联同一次触发链路 */
+    private final AtomicLong vpnRebuildRequestSeq = new AtomicLong(0);
+    /**
+     * VPN 最近一次重建开始的时间戳（{@link android.os.SystemClock#elapsedRealtime()} 毫秒）。
+     * 用于抑制 VPN 建立后物理网络的虚假回调（Android 在 establish() 后会重新评估物理网络，
+     * 导致 onAvailable/onLinkPropertiesChanged 在毫秒级触发，形成 3s debounce → 重建 → 触发 → 重建 的无限循环）。
+     * 同样用于抑制 ZT 节点在 VPN 重建后立刻触发的 onNetworkReconfigure。
+     */
+    private volatile long lastRebuildTime = 0;
+    /**
+     * 最近一次检测到物理网络变化的时间戳（{@link android.os.SystemClock#elapsedRealtime()} 毫秒）。
+     * 物理网络（WiFi/蜂窝）发生 onAvailable/onLost/onLinkPropertiesChanged 时更新。
+     * 用于抑制 ZT SDK 因物理网络变化而连锁触发的 onNetworkReconfigure：
+     * ZT 节点在底层 socket 连通性改变后数百毫秒内触发 CONFIG_UPDATE（isChanged=true），
+     * 若此时距上次 VPN 重建已超过 REBUILD_SETTLE_MS，settle 检查会放行该事件并立即重建，
+     * 新 TUN fd 顶替旧 TUN，OEM ROM 因此清除系统 VPN 钥匙图标。
+     * 通过记录物理网络变化时刻，在 onNetworkReconfigure 中额外屏蔽这段"连锁窗口"内的重建，
+     * 让 3s debounce 路径统一处理物理网络切换，避免双重重建。
+     */
+    private volatile long lastPhysicalNetworkChangeTime = 0;
+    /** VPN 重建后抑制后续虚假网络回调的静默期（毫秒）。应大于 NETWORK_CHANGE_DEBOUNCE_MS。
+     * establish() 返回后，OS 会重新评估所有物理网络并触发 onAvailable / onLinkPropertiesChanged；
+     * 12 s 静默期覆盖这些回调的 3 s debounce + 重评估延迟（与路由数量无关），
+     * 避免不必要的二次重建导致 VPN 图标消失。 */
+    private static final long REBUILD_SETTLE_MS = 12_000;
     /**
      * 腾讯云 CIDR 验证日志一次性标志。
      * configureChinaDirectRouting 可能在 VPN 重建时多次调用；该标志确保 11 条验证日志只打印一次，
      * 避免每次重建都重复输出相同信息。chnroutes 刷新后重置，重新执行一次验证。
      */
     private volatile boolean tencentCidrsVerified = false;
+    /** 多播组扫描间隔（毫秒）。多播组变更极少，无需高频扫描；间隔越短 CPU 唤醒越频繁。 */
+    private static final long MULTICAST_SCAN_INTERVAL_MS = 5000;
     private Thread v4MulticastScanner = new Thread() {
         /* class com.zerotier.one.service.ZeroTierOneService.AnonymousClass1 */
         List<String> subscriptions = new ArrayList<>();
@@ -266,7 +362,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         }
                     }
                     this.subscriptions = groups;
-                    Thread.sleep(1000);
+                    Thread.sleep(MULTICAST_SCAN_INTERVAL_MS);
                 } catch (InterruptedException e) {
                     LogUtil.e(ZeroTierOneService.TAG, "V4 Multicast Scanner Thread Interrupted", e);
                     break;
@@ -311,7 +407,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         }
                     }
                     this.subscriptions = groups;
-                    Thread.sleep(1000);
+                    Thread.sleep(MULTICAST_SCAN_INTERVAL_MS);
                 } catch (InterruptedException e) {
                     LogUtil.e(ZeroTierOneService.TAG, "V6 Multicast Scanner Thread Interrupted", e);
                     break;
@@ -350,6 +446,23 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.i(TAG, "Bind Count: " + this.bindCount);
     }
 
+    /**
+     * PendingIntent 提供给 {@link VpnService.Builder#setConfigureIntent}，
+     * 用户在系统 VPN 设置中点击当前 VPN 时会跳转到本应用主界面。
+     * 与状态栏图标无关。
+     */
+    private PendingIntent getVpnConfigureIntent() {
+        Intent notificationIntent = new Intent(this,
+                net.kaaass.zerotierfix.ui.NetworkListActivity.class);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            flags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        return PendingIntent.getActivity(this, 0, notificationIntent, flags);
+    }
+
+
+
     public IBinder onBind(Intent intent) {
         LogUtil.d(TAG, "Bound by: " + getPackageManager().getNameForUid(Binder.getCallingUid()));
         this.bindCount++;
@@ -386,6 +499,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return START_NOT_STICKY;
         }
         this.mStartID = startId;
+
+
 
         // 注册事件总线监听器
         if (!this.eventBus.isRegistered(this)) {
@@ -430,7 +545,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         this.networkId = networkId;
 
         // 触发智能路由数据文件下载（后台进行，不阻塞启动）
-        SmartRoutingManager.getInstance(this).ensureDataReady();
+        if (isSmartRoutingEnabled()) {
+            SmartRoutingManager.getInstance(this).ensureDataReady();
+        } else {
+            LogUtil.i(TAG, "智能路由增强已关闭：跳过 SmartRouting 数据预加载");
+        }
 
         // 检查当前的网络环境
         var preferences = PreferenceManager.getDefaultSharedPreferences(this);
@@ -458,7 +577,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 if (this.svrSocket == null) {
                     this.svrSocket = new DatagramSocket(null);
                     this.svrSocket.setReuseAddress(true);
-                    this.svrSocket.setSoTimeout(1000);
+                    this.svrSocket.setSoTimeout(5000);
                     this.svrSocket.bind(new InetSocketAddress(9994));
                 }
                 if (!protect(this.svrSocket)) {
@@ -540,6 +659,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 取消网络变化回调
         unregisterNetworkChangeCallback();
 
+        // 清除 SmartRouting chnroutes 就绪回调，避免服务停止后触发跨 session 的陈旧重建
+        SmartRoutingManager.getInstance(this).setOnChnroutesReadyListener(null);
+
+        // 取消首次 establish 的 pending runnable（避免 VPN 停止后仍触发 establish）
+        if (pendingFirstEstablishRunnable != null) {
+            mainHandler.removeCallbacks(pendingFirstEstablishRunnable);
+            pendingFirstEstablishRunnable = null;
+        }
+        // 取消 chnroutes 就绪后的延迟重建
+        if (pendingChnroutesReadyRebuildRunnable != null) {
+            mainHandler.removeCallbacks(pendingChnroutesReadyRebuildRunnable);
+            pendingChnroutesReadyRebuildRunnable = null;
+        }
+
         if (this.svrSocket != null) {
             this.svrSocket.close();
             this.svrSocket = null;
@@ -600,11 +733,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (this.eventBus.isRegistered(this)) {
             this.eventBus.unregister(this);
         }
-        if (this.notificationManager != null) {
-            this.notificationManager.cancel(ZT_NOTIFICATION_TAG);
-        }
         if (!stopSelfResult(this.mStartID)) {
-            LogUtil.e(TAG, "stopSelfResult() failed!");
+            // stopSelfResult 在服务被快速重启时（新 startId 已生成）会返回 false，属正常现象
+            LogUtil.d(TAG, "stopSelfResult() returned false (service likely restarted with new startId)");
         }
     }
 
@@ -669,18 +800,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         LogUtil.e(TAG, "Error on processBackgroundTasks: " + taskResult.toString());
                         shutdown();
                     }
-                    // 按 ZeroTier 指定的下一个截止时间睡眠。
-                    // 此处重新取时刻以计入 processBackgroundTasks 本身的耗时；
-                    // 若 sleepMs 为负（任务执行期间已超过截止时间），下方 if (sleepMs > 0) 会跳过睡眠。
+                    // 按 ZeroTier 指定的下一个截止时间睡眠（计入 processBackgroundTasks 自身耗时）。
                     sleepMs = newDeadline[0] - System.currentTimeMillis();
                 } else {
                     sleepMs = taskDeadline - currentTime;
                 }
-                // 限制最长睡眠时间，避免在更新截止时间时无法及时响应
+                // 限制最长睡眠时间，避免在更新截止时间时无法及时响应。
+                // 同时保证最短 50 ms：防止 ZeroTier SDK 返回 0 或已过期的截止时间时
+                // 造成忙等（100% CPU），既不影响正常协议时序，也给调度器留出充足喘息空间。
                 if (sleepMs > 5000) sleepMs = 5000;
-                if (sleepMs > 0) {
-                    Thread.sleep(sleepMs);
-                }
+                if (sleepMs < 50)   sleepMs = 50;
+                Thread.sleep(sleepMs);
             } catch (InterruptedException ignored) {
                 break;
             } catch (Exception e) {
@@ -801,13 +931,104 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
     @Subscribe(threadMode = ThreadMode.ASYNC)
     public void onNetworkReconfigure(NetworkReconfigureEvent event) {
-        boolean isChanged = event.isChanged();
         var network = event.getNetwork();
+        // 只处理当前服务所连接网络的配置变化，忽略其他 ZT 网络的 CONFIG_UPDATE。
+        // onNetworkConfigurationUpdated 对 ZT 节点中所有网络均会触发，若用户配置了多个
+        // ZeroTier 网络（例如一个全局代理、一个 per-app），不同网络的 CONFIG_UPDATE
+        // 会在此处交替触发 updateTunnelConfig，导致 VPN 路由模式反复在全局/per-app
+        // 之间切换，每次切换都生成新 TUN fd，OEM ROM 随即清除系统 VPN 钥匙图标。
+        if (network.getNetworkId() != this.networkId) {
+            return;
+        }
+        boolean isChanged = event.isChanged();
         var networkConfig = event.getVirtualNetworkConfig();
-        boolean configUpdated = isChanged && updateTunnelConfig(network);
+        if (isChanged) {
+            long now = android.os.SystemClock.elapsedRealtime();
+            long sinceRebuild = now - lastRebuildTime;
+            long sinceNetworkChange = now - lastPhysicalNetworkChangeTime;
+            // 抑制 VPN 重建后 ZT 节点的虚假回调：establish() 创建新 TUN 接口后，ZT 节点会立刻上报
+            // 配置变化（isChanged=true），若不过滤会立即触发第二次完整重建，形成双重重建循环。
+            if (sinceRebuild < REBUILD_SETTLE_MS) {
+                LogUtil.i(TAG, "onNetworkReconfigure: VPN 重建稳定期内，跳过重建（距上次重建 "
+                        + sinceRebuild + "ms）");
+                isChanged = false;
+            } else if (sinceNetworkChange < NETWORK_CHANGE_DEBOUNCE_MS + NETWORK_CHANGE_WINDOW_EXTENSION_MS) {
+                // 物理网络刚发生变化（onLost/onAvailable 已调度 3s debounce 重建），
+                // ZT SDK 会在数百毫秒内因 socket 连通性改变连锁触发 CONFIG_UPDATE。
+                // 此时直接重建会产生额外一次 establish()，OEM ROM 随即清除 VPN 图标；
+                // 丢弃此事件，让 debounce 路径统一处理物理网络切换。
+                LogUtil.i(TAG, "onNetworkReconfigure: 物理网络切换窗口内，跳过（距上次网络变化 "
+                        + sinceNetworkChange + "ms，debounce 重建已排队）");
+                isChanged = false;
+            }
+        }
         boolean networkIsOk = networkConfig.getStatus() == VirtualNetworkStatus.NETWORK_STATUS_OK;
 
-        if (configUpdated || !networkIsOk) {
+        if (isChanged) {
+            if (networkChangeHandler != null) {
+                // 通过 handler 延迟 RECONFIGURE_REBUILD_DELAY_MS 再执行重建，解决以下竞态：
+                // ZT SDK 监测到底层 socket 连通性断开的速度有时快于 Android CM 触发 onLost，
+                // 导致 onNetworkReconfigure 抵达时 lastPhysicalNetworkChangeTime 尚未更新，
+                // sinceNetworkChange 读取到旧值而绕过物理网络切换窗口保护，触发额外一次 establish()。
+                // 延迟后再次检查两个稳定期条件：
+                //   - 若 onLost 已在延迟内更新 lastPhysicalNetworkChangeTime → sinceNetworkChange < 5s → 丢弃；
+                //   - 若确实是 ZT 控制器分配新 IP（非物理切换）→ 两个条件均通过 → 正常重建。
+                final Network finalNetwork = network;
+                final VirtualNetworkConfig finalConfig = networkConfig;
+                networkChangeHandler.postDelayed(() -> {
+                    long now2 = android.os.SystemClock.elapsedRealtime();
+                    long delaySinceRebuild = now2 - lastRebuildTime;
+                    long delaySinceNetChange = now2 - lastPhysicalNetworkChangeTime;
+                    if (delaySinceRebuild < REBUILD_SETTLE_MS) {
+                        LogUtil.i(TAG, "onNetworkReconfigure (延迟): VPN 重建稳定期内，跳过（距上次重建 "
+                                + delaySinceRebuild + "ms）");
+                        return;
+                    }
+                    if (delaySinceNetChange < NETWORK_CHANGE_DEBOUNCE_MS + NETWORK_CHANGE_WINDOW_EXTENSION_MS) {
+                        LogUtil.i(TAG, "onNetworkReconfigure (延迟): 物理网络切换窗口内，跳过（距上次网络变化 "
+                                + delaySinceNetChange + "ms，debounce 重建已排队）");
+                        return;
+                    }
+                    boolean updated = updateTunnelConfig(finalNetwork, "onNetworkReconfigure(延迟回调)");
+                    if (updated || finalConfig.getStatus() != VirtualNetworkStatus.NETWORK_STATUS_OK) {
+                        eventBus.post(new VirtualNetworkConfigChangedEvent(finalConfig));
+                    }
+                }, RECONFIGURE_REBUILD_DELAY_MS);
+            } else {
+                // networkChangeHandler 尚未就绪（首次 VPN 连接前），通过主线程 Handler 延迟执行。
+                // 延迟给系统足够时间处理 VPN consent 状态，避免 establish() 过早导致 VPN 图标不显示。
+                // 注意：ZT SDK 首次加入网络时可能连续触发多次 onNetworkReconfigure（isChanged=true），
+                // 若不取消前一个 pending runnable 会导致多次 establish()，OEM ROM 清除 VPN 图标。
+                final Network finalNetwork2 = network;
+                final VirtualNetworkConfig finalConfig2 = networkConfig;
+                final boolean finalNetworkIsOk = networkIsOk;
+                long pendingRequestSeq = vpnRebuildRequestSeq.incrementAndGet();
+                if (pendingFirstEstablishRunnable != null) {
+                    LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_REPLACED] seq=" + pendingRequestSeq
+                            + ", caller=onNetworkReconfigure, networkId=" + finalNetwork2.getNetworkId());
+                    mainHandler.removeCallbacks(pendingFirstEstablishRunnable);
+                }
+                pendingFirstEstablishRunnable = () -> {
+                    pendingFirstEstablishRunnable = null;
+                    LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_FIRED] seq=" + pendingRequestSeq
+                            + ", caller=onNetworkReconfigure, networkId=" + finalNetwork2.getNetworkId());
+                    boolean configUpdated = updateTunnelConfig(
+                            finalNetwork2,
+                            "onNetworkReconfigure(延迟首次调用,handler未就绪,seq=" + pendingRequestSeq + ")",
+                            pendingRequestSeq
+                    );
+                    if (configUpdated || !finalNetworkIsOk) {
+                        this.eventBus.post(new VirtualNetworkConfigChangedEvent(finalConfig2));
+                    }
+                };
+                LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_PENDING_SCHEDULED] seq=" + pendingRequestSeq
+                        + ", delayMs=" + FIRST_ESTABLISH_PENDING_DELAY_MS
+                        + ", caller=onNetworkReconfigure, networkId=" + finalNetwork2.getNetworkId());
+                mainHandler.postDelayed(pendingFirstEstablishRunnable, FIRST_ESTABLISH_PENDING_DELAY_MS);
+                return;
+            }
+        }
+        if (!networkIsOk) {
             this.eventBus.post(new VirtualNetworkConfigChangedEvent(networkConfig));
         }
     }
@@ -818,7 +1039,21 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (network.getNetworkId() != this.networkId) {
             return;
         }
-        updateTunnelConfig(network);
+        // 使用 debounce 合并短时间内多个用户配置变更事件（如 toggle 全局模式时
+        // doUpdatePerAppRouting + doUpdateSmartRoutingMode 会连续触发两个事件）。
+        // 若不合并，第二个事件会命中 isConfiguringVpn CAS 锁并延迟 3s 重建，
+        // 或在极端时序下产生双重 establish()，OEM ROM 清除系统 VPN 图标。
+        if (networkChangeHandler != null) {
+            pendingUserConfigNetwork = network;
+            networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
+            networkChangeHandler.postDelayed(userConfigChangeRunnable, USER_CONFIG_CHANGE_DEBOUNCE_MS);
+        } else {
+            // networkChangeHandler 尚未就绪（例如禁用网络自动重建时），创建后继续做用户配置防抖。
+            ensureNetworkChangeHandler();
+            pendingUserConfigNetwork = network;
+            networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
+            networkChangeHandler.postDelayed(userConfigChangeRunnable, USER_CONFIG_CHANGE_DEBOUNCE_MS);
+        }
     }
 
     /**
@@ -893,7 +1128,26 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             network.setNetworkName(networkName);
         }
         network.update();
-        return !virtualNetworkConfig.equals(virtualNetworkConfig2);
+        // 仅当分配的 IP 地址发生变化时才触发 VPN 重建。
+        // ZT SDK 在节点发现过程中会频繁更新 peer 路由、组播组、托管路由等字段，
+        // 这些变化对我们的"中国直连/全局代理"路由配置毫无影响，但每次都会导致
+        // onNetworkReconfigure 触发完整的 VPN establish()，新 TUN fd 替换旧的，
+        // OEM ROM（Flyme/MIUI/ColorOS）随即清除系统 VPN 钥匙图标。
+        // 只有 assignedAddresses（设备在 ZT 网络中的 IP）发生变化时才需要重建 VPN 接口。
+        InetSocketAddress[] newAddrs = virtualNetworkConfig.getAssignedAddresses();
+        if (virtualNetworkConfig2 == null) {
+            // 首次配置：仅当 ZT 已分配 IP 地址时才触发建链，避免在节点授权前
+            // 触发一次失败的 establish()，进而污染 lastRebuildTime 阻塞后续建链。
+            return newAddrs != null && newAddrs.length > 0;
+        }
+        InetSocketAddress[] oldAddrs = virtualNetworkConfig2.getAssignedAddresses();
+        // 使用 Set 比较，避免 Arrays.equals 的顺序敏感性导致误判。
+        // InetSocketAddress.equals() 正确比较 IP 地址和前缀长度（port 字段）。
+        Set<InetSocketAddress> newSet = newAddrs != null
+                ? new HashSet<>(Arrays.asList(newAddrs)) : new HashSet<>();
+        Set<InetSocketAddress> oldSet = oldAddrs != null
+                ? new HashSet<>(Arrays.asList(oldAddrs)) : new HashSet<>();
+        return !newSet.equals(oldSet);
     }
 
     protected void shutdown() {
@@ -910,33 +1164,68 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     private boolean updateTunnelConfig(Network network) {
+        return updateTunnelConfig(network, "unknown");
+    }
+
+    private boolean updateTunnelConfig(Network network, String caller) {
+        return updateTunnelConfig(network, caller, null);
+    }
+
+    private boolean updateTunnelConfig(Network network, String caller, Long fixedRequestSeq) {
+        long requestSeq = fixedRequestSeq != null ? fixedRequestSeq : vpnRebuildRequestSeq.incrementAndGet();
+        LogUtil.i(TAG, "[ANCHOR][VPN_REBUILD_REQUEST] seq=" + requestSeq
+                + ", caller=" + caller
+                + ", networkId=" + network.getNetworkId()
+                + ", sinceRebuildMs=" + (android.os.SystemClock.elapsedRealtime() - lastRebuildTime));
         // 防止并发执行：若已有 VPN 配置正在进行，延迟 3s 后由 networkChangeHandler 重试一次。
         if (!isConfiguringVpn.compareAndSet(false, true)) {
-            LogUtil.d(TAG, "updateTunnelConfig: 已有配置正在进行，延迟 3s 重试");
+            LogUtil.d(TAG, "updateTunnelConfig[" + caller + "]: 已有配置正在进行，延迟 3s 重试");
+            LogUtil.w(TAG, "[ANCHOR][VPN_REBUILD_SKIPPED_BUSY] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", retryDelayMs=" + NETWORK_CHANGE_DEBOUNCE_MS);
             if (networkChangeHandler != null) {
                 networkChangeHandler.removeCallbacks(networkChangeRunnable);
                 networkChangeHandler.postDelayed(networkChangeRunnable, NETWORK_CHANGE_DEBOUNCE_MS);
+                LogUtil.i(TAG, "[ANCHOR][VPN_REBUILD_RETRY_SCHEDULED] seq=" + requestSeq
+                        + ", caller=" + caller
+                        + ", via=networkChangeRunnable");
             } else {
-                LogUtil.w(TAG, "updateTunnelConfig: networkChangeHandler 未就绪，重试请求已丢弃");
+                LogUtil.w(TAG, "updateTunnelConfig[" + caller + "]: networkChangeHandler 未就绪，重试请求已丢弃");
+                LogUtil.w(TAG, "[ANCHOR][VPN_REBUILD_RETRY_DROPPED] seq=" + requestSeq
+                        + ", caller=" + caller
+                        + ", reason=networkChangeHandler_null");
             }
             return false;
         }
         try {
-            return doUpdateTunnelConfig(network);
+            LogUtil.i(TAG, "▶ updateTunnelConfig 开始执行，触发路径: " + caller);
+            LogUtil.i(TAG, "[ANCHOR][VPN_REBUILD_EXEC_BEGIN] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", thread=" + Thread.currentThread().getName());
+            boolean updated = doUpdateTunnelConfig(network, requestSeq, caller);
+            LogUtil.i(TAG, "[ANCHOR][VPN_REBUILD_EXEC_END] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", updated=" + updated);
+            return updated;
         } finally {
             isConfiguringVpn.set(false);
         }
     }
 
-    private boolean doUpdateTunnelConfig(Network network) {
+    private boolean doUpdateTunnelConfig(Network network, long requestSeq, String caller) {
+        // 记录重建开始时间：用于抑制 VPN establish() 触发的虚假物理网络回调和 ZT node 回调
+        lastRebuildTime = android.os.SystemClock.elapsedRealtime();
         long networkId = network.getNetworkId();
         var networkConfig = network.getNetworkConfig();
         var virtualNetworkConfig = getVirtualNetworkConfig(networkId);
         if (virtualNetworkConfig == null) {
+            LogUtil.w(TAG, "[ANCHOR][VPN_REBUILD_ABORT] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", reason=virtualNetworkConfig_null");
             return false;
         }
 
-        // 重启 TUN TAP
+        // 停止 TUN TAP 读写线程（但暂不关闭旧 TUN fd，保持系统 VPN 图标）
         if (this.tunTapAdapter.isRunning()) {
             this.tunTapAdapter.interrupt();
             try {
@@ -946,31 +1235,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         this.tunTapAdapter.clearRouteMap();
 
-        // 重启 VPN Socket
-        if (this.in != null) {
-            try {
-                this.in.close();
-            } catch (Exception e) {
-                LogUtil.e(TAG, "Error closing VPN input stream: " + e, e);
-            }
-            this.in = null;
-        }
-        if (this.out != null) {
-            try {
-                this.out.close();
-            } catch (Exception e) {
-                LogUtil.e(TAG, "Error closing VPN output stream: " + e, e);
-            }
-            this.out = null;
-        }
-        if (this.vpnSocket != null) {
-            try {
-                this.vpnSocket.close();
-            } catch (Exception e) {
-                LogUtil.e(TAG, "Error closing VPN socket: " + e, e);
-            }
-            this.vpnSocket = null;
-        }
+        // 保存旧的 VPN 资源引用，延迟到新 establish() 成功后再关闭。
+        // 根据 Google VPN 开发文档，旧 TUN fd 在新 establish() 返回前必须保持打开，
+        // 否则系统会在无活跃 TUN 接口期间移除状态栏 VPN 钥匙图标。
+        var oldIn = this.in;
+        var oldOut = this.out;
+        var oldVpnSocket = this.vpnSocket;
+        this.in = null;
+        this.out = null;
+        this.vpnSocket = null;
 
         // 配置 VPN
         LogUtil.d(TAG, "Configuring VpnService.Builder");
@@ -1027,13 +1300,20 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 只有选中的应用能使用这些路由（通过addAllowedApplication限制）
         boolean shouldAddGlobalRoutes = isRouteViaZeroTier || isPerAppRouting;
         int smartRoutingMode = networkConfig.getSmartRoutingMode();
+        boolean smartRoutingEnabled = isSmartRoutingEnabled();
         if (shouldAddGlobalRoutes) {
             try {
-                // 新版本始终启用国内直连分流，无需依赖 DB 中的 smartRoutingMode 值：
-                //   • 全局路由（isRouteViaZeroTier=true）：中国 IP 排除在 VPN 之外，直接走物理网络
-                //   • Per-app 路由（isPerAppRouting=true）：选中应用（如微信）的中国 CDN 流量
-                //     同样走物理网络，仅非中国 IP 进入 VPN/ZT，避免直播 CDN 因 ZT 绕路而卡顿
-                configureChinaDirectRouting(builder, virtualNetworkConfig, assignedAddresses);
+                if (smartRoutingEnabled) {
+                    // 智能路由增强开启：使用 CHINA_DIRECT 分流
+                    LogUtil.i(TAG, "[ANCHOR][ROUTE_PATH_SELECTED] path=CHINA_DIRECT"
+                            + ", smartRoutingEnabled=true");
+                    configureChinaDirectRouting(builder, virtualNetworkConfig, assignedAddresses);
+                } else {
+                    // 智能路由增强关闭：回退到普通全局/Per-app 路由
+                    LogUtil.i(TAG, "[ANCHOR][ROUTE_PATH_SELECTED] path=DIRECT_GLOBAL"
+                            + ", smartRoutingEnabled=" + smartRoutingEnabled);
+                    configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses, isPerAppRouting);
+                }
                 
                 // 大幅增强对本地连接的保护，避免VPN路由循环
                 // 1. 保护常用DNS查询连接
@@ -1122,6 +1402,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     );
 
                     if (!isDisabledV6Route && shouldRouteToZerotier) {
+                        if (smartRoutingEnabled && shouldAddGlobalRoutes
+                                && shouldSkipManagedIpv4RouteForChinaDirect(viaAddress)) {
+                            LogUtil.i(LogUtil.ROUTE_TAG, "CHINA_DIRECT: 跳过 ZeroTier 下发公网路由 "
+                                    + viaAddress.getHostAddress() + "/" + targetPort
+                                    + "，避免覆盖国内直连策略");
+                            continue;
+                        }
                         builder.addRoute(viaAddress, targetPort);
                         Route route = new Route(viaAddress, targetPort);
                         if (via != null) {
@@ -1159,14 +1446,27 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         builder.setMtu(mtu);
 
         builder.setSession(Constants.VPN_SESSION_NAME);
+        builder.setConfigureIntent(getVpnConfigureIntent());
 
         // 建立 VPN 连接
         // establish() 通过 Binder 传输路由表，若路由条数过多可能抛出 TransactionTooLargeException。
         // 捕获该异常并降级为全局路由（0.0.0.0/0），确保 VPN 至少能正常启动。
+        LogUtil.w(TAG, "★ 即将调用 establish() 创建新 TUN fd，isRouteViaZeroTier=" + isRouteViaZeroTier
+                + ", perApp=" + isPerAppRouting + ", 距上次重建=" + (android.os.SystemClock.elapsedRealtime() - lastRebuildTime) + "ms");
+        LogUtil.w(TAG, "[ANCHOR][ESTABLISH_ATTEMPT] seq=" + requestSeq
+                + ", caller=" + caller
+                + ", hasOldTun=" + (oldVpnSocket != null)
+                + ", isRouteViaZeroTier=" + isRouteViaZeroTier
+                + ", isPerAppRouting=" + isPerAppRouting);
         try {
             this.vpnSocket = builder.establish();
+            LogUtil.i(TAG, "[ANCHOR][ESTABLISH_PRIMARY_SUCCESS] seq=" + requestSeq
+                    + ", caller=" + caller);
         } catch (RuntimeException e) {
             LogUtil.e(TAG, "establish() 失败（可能路由条数过多）：" + e.getMessage() + "，降级为全局路由重试", e);
+            LogUtil.w(TAG, "[ANCHOR][ESTABLISH_PRIMARY_FAILED] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", fallback=global_route");
             // 降级：重建 builder，仅使用 0.0.0.0/0 全局路由
             var fallbackBuilder = new VpnService.Builder();
             for (var vpnAddress : assignedAddresses) {
@@ -1189,12 +1489,40 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             configureAllowedDisallowedApps(fallbackBuilder, isRouteViaZeroTier);
             fallbackBuilder.setMtu(mtu);
             fallbackBuilder.setSession(Constants.VPN_SESSION_NAME);
+            fallbackBuilder.setConfigureIntent(getVpnConfigureIntent());
             this.vpnSocket = fallbackBuilder.establish();
+            LogUtil.i(TAG, "[ANCHOR][ESTABLISH_FALLBACK_SUCCESS] seq=" + requestSeq
+                    + ", caller=" + caller);
         }
         if (this.vpnSocket == null) {
+            // establish() 失败，关闭旧资源并报告错误
+            closeOldVpnResources(oldIn, oldOut, oldVpnSocket);
             this.eventBus.post(new VPNErrorEvent(getString(R.string.toast_vpn_application_not_prepared)));
+            LogUtil.e(TAG, "[ANCHOR][ESTABLISH_FAILED_NULL_SOCKET] seq=" + requestSeq
+                    + ", caller=" + caller);
             return false;
         }
+        LogUtil.i(TAG, "[ANCHOR][ESTABLISH_EFFECTIVE] seq=" + requestSeq
+                + ", caller=" + caller
+                + ", firstEstablish=" + (oldVpnSocket == null));
+
+        // OEM ROM 兼容：首次 establish()（无旧 TUN fd）时，部分 OEM ROM 不显示 VPN 钥匙图标。
+        // 原因：系统在"首次创建 VPN"代码路径中不触发图标绘制，但"更新已有 VPN"路径正常。
+        // 解决：首次 establish 成功后，延迟一段时间再触发一次完整 VPN 重建。此时 vpnSocket 已非空，
+        // establish() 走"更新现有 VPN"路径 → 系统显示 VPN 钥匙图标。
+        // 注意：不能立即再次 establish()；部分 OEM ROM 需要更久时间将首次 VPN 注册到系统中。
+        if (oldVpnSocket == null) {
+            final Network refreshNetwork = network;
+            final long parentRequestSeq = requestSeq;
+            scheduleFirstEstablishIconRefresh(refreshNetwork, parentRequestSeq, caller, 0);
+            LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_SCHEDULED] seq=" + requestSeq
+                    + ", caller=" + caller
+                    + ", delayMs=" + FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
+        }
+
+        // 新 TUN fd 创建成功，现在安全关闭旧的资源
+        closeOldVpnResources(oldIn, oldOut, oldVpnSocket);
+
         this.in = new FileInputStream(this.vpnSocket.getFileDescriptor());
         this.out = new FileOutputStream(this.vpnSocket.getFileDescriptor());
         this.tunTapAdapter.setVpnSocket(this.vpnSocket);
@@ -1204,57 +1532,35 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 新版本始终以 CHINA_DIRECT 运行，无需依赖 DB 中的 smartRoutingMode 值。
         // Per-app 模式：perAppRoutingActive=true，仅选定应用进入 TUN。
         int effectiveSmartRoutingMode = shouldAddGlobalRoutes
-                ? SmartRoutingManager.MODE_CHINA_DIRECT
+                ? ((smartRoutingEnabled)
+                        ? SmartRoutingManager.MODE_CHINA_DIRECT
+                        : SmartRoutingManager.MODE_OFF)
                 : smartRoutingMode;
         SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
         this.tunTapAdapter.setSmartRouting(smartRouter, effectiveSmartRoutingMode, isPerAppRouting);
 
         // 注册自学习直连 IP 回调：DNS 嗅探发现直播 CDN 走 ZT 时，
         // 用 10 秒防抖重建 VPN，让新 IP 立即走物理直连，实现"越用越好用"。
-        smartRouter.setOnNewLearnedIpListener(ip -> {
-            if (networkChangeHandler != null) {
-                networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
-                networkChangeHandler.postDelayed(learnedIpRebuildRunnable,
-                        LEARNED_IP_REBUILD_DEBOUNCE_MS);
-            }
-        });
+        if (smartRoutingEnabled && isNetworkAutoRebuildEnabled()) {
+            ensureNetworkChangeHandler();
+            smartRouter.setOnNewLearnedIpListener(ip -> {
+                if (networkChangeHandler != null) {
+                    LogUtil.i(TAG, "[ANCHOR][LEARNED_IP_REBUILD_SCHEDULED] ip=" + ip
+                            + ", debounceMs=" + LEARNED_IP_REBUILD_DEBOUNCE_MS);
+                    networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
+                    networkChangeHandler.postDelayed(learnedIpRebuildRunnable,
+                            LEARNED_IP_REBUILD_DEBOUNCE_MS);
+                }
+            });
+        } else {
+            smartRouter.setOnNewLearnedIpListener(null);
+        }
 
         this.tunTapAdapter.startThreads();
 
-        // 状态栏提示
-        if (this.notificationManager == null) {
-            this.notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        }
-        if (Build.VERSION.SDK_INT >= 26) {
-            String channelName = getString(R.string.channel_name);
-            String description = getString(R.string.channel_description);
-            var channel = new NotificationChannel(
-                    Constants.CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_HIGH);
-            channel.setDescription(description);
-            this.notificationManager.createNotificationChannel(channel);
-        }
-        int pendingIntentFlag = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 31) {
-            pendingIntentFlag |= PendingIntent.FLAG_IMMUTABLE;
-        }
-        var pendingIntent =
-                PendingIntent.getActivity(this, 0,
-                        new Intent(this, NetworkListActivity.class)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP
-                                        | Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                        , pendingIntentFlag);
-        var notification = new NotificationCompat.Builder(this, Constants.CHANNEL_ID)
-                .setPriority(1)
-                .setOngoing(true)
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setContentTitle(getString(R.string.notification_title_connected))
-                .setContentText(getString(R.string.notification_text_connected, network.getNetworkIdStr()))
-                .setColor(ContextCompat.getColor(getApplicationContext(), R.color.zerotier_orange))
-                .setContentIntent(pendingIntent).build();
-        this.notificationManager.notify(ZT_NOTIFICATION_TAG, notification);
         LogUtil.i(TAG, "ZeroTier One Connected");
 
-        // 注册网络变化回调：当手机在 WiFi/4G/5G 之间切换时重新配置 VPN 路由
+        // 注册网络变化回调（可通过设置项开关控制）：当手机在 WiFi/4G/5G 之间切换时重新配置 VPN 路由
         registerNetworkChangeCallback();
 
         // 旧版本 Android 多播处理
@@ -1267,6 +1573,69 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
         return true;
+    }
+
+    /**
+     * 关闭旧的 VPN 资源（流和 TUN fd）。
+     * 在新 establish() 成功创建新 TUN fd 之后调用，确保系统 VPN 图标无缝切换。
+     */
+    private void closeOldVpnResources(FileInputStream oldIn, FileOutputStream oldOut,
+                                       ParcelFileDescriptor oldVpnSocket) {
+        if (oldIn != null) {
+            try {
+                oldIn.close();
+            } catch (Exception e) {
+                LogUtil.d(TAG, "Error closing old VPN input stream: " + e.getMessage());
+            }
+        }
+        if (oldOut != null) {
+            try {
+                oldOut.close();
+            } catch (Exception e) {
+                LogUtil.d(TAG, "Error closing old VPN output stream: " + e.getMessage());
+            }
+        }
+        if (oldVpnSocket != null) {
+            try {
+                oldVpnSocket.close();
+            } catch (Exception e) {
+                LogUtil.d(TAG, "Error closing old VPN socket: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 首次 establish 后延迟触发一次重建，用于走“更新已有 VPN”路径激活 OEM ROM 系统图标。
+     * 若此时 UI 仍持有 service 绑定（bindCount > 0），短暂重试，避开首页开关启动的绑定抖动窗口。
+     */
+    private void scheduleFirstEstablishIconRefresh(Network refreshNetwork, long parentRequestSeq,
+                                                   String caller, int attempt) {
+        mainHandler.postDelayed(() -> {
+            if (this.vpnSocket == null) {
+                LogUtil.d(TAG, "首次 VPN 延迟刷新取消：VPN 已停止");
+                LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_CANCELLED] seq=" + parentRequestSeq
+                        + ", caller=" + caller);
+                return;
+            }
+            if (this.bindCount > 0 && attempt < FIRST_ESTABLISH_ICON_REFRESH_MAX_RETRIES) {
+                int nextAttempt = attempt + 1;
+                LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_RETRY] seq=" + parentRequestSeq
+                        + ", caller=" + caller
+                        + ", bindCount=" + this.bindCount
+                        + ", nextAttempt=" + nextAttempt);
+                scheduleFirstEstablishIconRefresh(refreshNetwork, parentRequestSeq, caller, nextAttempt);
+                return;
+            }
+            LogUtil.i(TAG, "首次 VPN establish 延迟刷新：触发重建以激活 OEM ROM 系统 VPN 图标");
+            LogUtil.i(TAG, "[ANCHOR][FIRST_ESTABLISH_REFRESH_TRIGGER] seq=" + parentRequestSeq
+                    + ", caller=" + caller
+                    + ", attempt=" + attempt
+                    + ", nextCaller=firstEstablishDelayedRefresh(OEM图标修复)");
+            updateTunnelConfig(refreshNetwork,
+                    "firstEstablishDelayedRefresh(OEM图标修复,parentSeq=" + parentRequestSeq
+                            + ",attempt=" + attempt + ")");
+        }, attempt == 0 ? FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS
+                : FIRST_ESTABLISH_ICON_REFRESH_RETRY_DELAY_MS);
     }
     
     /**
@@ -1301,33 +1670,61 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * VPN 自身的网络事件。若使用 {@code registerDefaultNetworkCallback}，VPN 建立时
      * 虚拟网络会成为新的默认网络并触发 {@code onAvailable}，导致每次重建 VPN 都再次
      * 触发回调，形成无限重建循环，VPN 图标持续闪烁或消失。
+     *
+     * <p>本方法可在 VPN 重建路径（networkChangeThread 上）中安全重入：
+     * 只更换 ConnectivityManager 回调对象，不销毁 HandlerThread/Handler，
+     * 避免 Bug：原先调用 unregisterNetworkChangeCallback() 会同时清空 handler，
+     * 导致重建后所有网络变化均被静默丢弃。
      */
     private void registerNetworkChangeCallback() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
             // API 24 以下不支持 registerNetworkCallback
             return;
         }
-        // 启动后台 HandlerThread，用于异步执行 VPN 重建，避免阻塞系统回调线程
-        if (networkChangeThread == null) {
-            networkChangeThread = new HandlerThread("ZT-NetworkChange");
-            networkChangeThread.start();
-            networkChangeHandler = new Handler(networkChangeThread.getLooper());
+        ensureNetworkChangeHandler();
+        if (!isNetworkAutoRebuildEnabled()) {
+            unregisterConnectivityNetworkCallback();
+            networkChangeHandler.removeCallbacks(networkChangeRunnable);
+            networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
+            LogUtil.i(TAG, "网络自动重建已禁用：跳过物理网络变化回调注册");
+            return;
         }
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return;
+        // 仅注销旧的 ConnectivityManager 回调（不销毁 HandlerThread），避免自毁 handler。
+        unregisterConnectivityNetworkCallback();
+        this.lastLinkAddresses = null;
+        // 清除可能由本次 VPN establish() 触发的旧 pending 重建任务。
+        // establish() 调用完成后物理网络会在数毫秒内触发 onAvailable，若不清除将立即发起下一次重建。
+        networkChangeHandler.removeCallbacks(networkChangeRunnable);
+        // 清除用户配置变更的 pending 重建：当前重建已在执行，待处理的用户配置重建不再需要。
+        networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
+        pendingUserConfigNetwork = null;
         try {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            if (cm == null) return;
-            unregisterNetworkChangeCallback(); // 避免重复注册
             this.networkCallback = new ConnectivityManager.NetworkCallback() {
                 @Override
                 public void onAvailable(android.net.Network network) {
-                    LogUtil.i(TAG, "网络变化: 新网络可用 (" + network + ")");
-                    // 新网络出现时重置地址快照，确保后续 onLinkPropertiesChanged 能正常比较
+                    // 新网络出现时始终重置地址快照，确保后续 onLinkPropertiesChanged 能正常比较
                     lastLinkAddresses = null;
+                    // 检查 VPN 重建稳定期：establish() 会触发物理网络在毫秒级内调用 onAvailable，
+                    // 若不过滤则每次 VPN 重建后 3s 都会再次重建，形成无限循环。
+                    if (android.os.SystemClock.elapsedRealtime() - lastRebuildTime < REBUILD_SETTLE_MS) {
+                        LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，跳过 onAvailable (" + network + ")");
+                        return;
+                    }
+                    LogUtil.i(TAG, "网络变化: 新网络可用 (" + network + ")");
                     onNetworkChanged();
                 }
 
                 @Override
                 public void onLost(android.net.Network network) {
+                    // 检查 VPN 重建稳定期：establish() 时系统会重新评估物理网络优先级，
+                    // 偶发触发 onLost；不过滤将形成 重建 → onLost → debounce → 重建 的循环，
+                    // 新生成的 TUN 顶替旧 TUN，OEM ROM（Flyme/MIUI/ColorOS）会顺势抹掉系统 VPN 钥匙图标。
+                    if (android.os.SystemClock.elapsedRealtime() - lastRebuildTime < REBUILD_SETTLE_MS) {
+                        LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，跳过 onLost (" + network + ")");
+                        return;
+                    }
                     LogUtil.i(TAG, "网络变化: 网络丢失 (" + network + ")");
                     lastLinkAddresses = null;
                     onNetworkChanged();
@@ -1336,6 +1733,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 @Override
                 public void onLinkPropertiesChanged(android.net.Network network,
                                                     LinkProperties linkProperties) {
+                    // 检查 VPN 重建稳定期（同 onAvailable 说明）。
+                    if (android.os.SystemClock.elapsedRealtime() - lastRebuildTime < REBUILD_SETTLE_MS) {
+                        LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，跳过 onLinkPropertiesChanged (" + network + ")");
+                        lastLinkAddresses = null;
+                        return;
+                    }
                     // 只有链路地址（IP 地址/前缀）发生变化时才重配 VPN。
                     // DNS 更新、MTU 变化、DHCP 续租等不改变地址的事件将被忽略，
                     // 避免 VPN 启动时因 Android 系统多次下发配置而产生误报日志和无效重建。
@@ -1359,6 +1762,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                     .build();
+            // 在注册新回调之前刷新 lastRebuildTime：
+            // cm.unregisterNetworkCallback 是异步的（向 ConnectivityService 发消息），
+            // 旧回调在取消消息被 ConnectivityService 处理之前仍可能触发 onAvailable / onLinkPropertiesChanged。
+            // 这些"旧回调回声"事件的到来时 lastRebuildTime 仍为本次重建开始时的旧值，
+            // 但若上次静默期已过（距上次 build 超过 REBUILD_SETTLE_MS），旧回调会通过静默检查，
+            // 导致 3s 后触发一次必然重建，新 TUN fd 顶替旧 TUN，OEM ROM 因此清除 VPN 钥匙图标。
+            // 此处刷新 lastRebuildTime，确保刚注册新回调时的任何事件（旧回调回声或新回调初始通知）
+            // 都落在新的静默窗口内，被正确抑制。
+            lastRebuildTime = android.os.SystemClock.elapsedRealtime();
             cm.registerNetworkCallback(physicalNetworkRequest, this.networkCallback);
             LogUtil.d(TAG, "已注册网络变化回调（仅监听物理网络）");
         } catch (Exception e) {
@@ -1367,9 +1779,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     /**
-     * 取消网络变化回调
+     * 仅取消 ConnectivityManager 网络回调，不销毁 HandlerThread。
      */
-    private void unregisterNetworkChangeCallback() {
+    private void unregisterConnectivityNetworkCallback() {
         if (this.networkCallback == null) return;
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -1381,10 +1793,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         this.networkCallback = null;
         this.lastLinkAddresses = null;
+    }
+
+    /**
+     * 取消网络变化回调
+     */
+    private void unregisterNetworkChangeCallback() {
+        unregisterConnectivityNetworkCallback();
         // 停止 HandlerThread（取消所有待执行的重建任务）
         if (networkChangeHandler != null) {
             networkChangeHandler.removeCallbacks(networkChangeRunnable);
             networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
+            networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
             networkChangeHandler = null;
         }
         if (networkChangeThread != null) {
@@ -1399,7 +1819,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 系统回调线程立即返回，不会被 VPN 重建阻塞。
      */
     private void onNetworkChanged() {
+        // 防御性检查：除系统网络回调外，该方法也可能由其他路径（如 chnroutes 就绪触发）
+        // 间接调用；当“网络自动重建”开关关闭时必须统一短路。
+        if (!isNetworkAutoRebuildEnabled()) return;
         if (networkChangeHandler == null) return;
+        // 记录物理网络变化时刻，供 onNetworkReconfigure 判断是否为连锁触发。
+        lastPhysicalNetworkChangeTime = android.os.SystemClock.elapsedRealtime();
         networkChangeHandler.removeCallbacks(networkChangeRunnable);
         networkChangeHandler.postDelayed(networkChangeRunnable, NETWORK_CHANGE_DEBOUNCE_MS);
     }
@@ -1408,6 +1833,23 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 实际执行 VPN 路由重建的逻辑，由 {@link #networkChangeRunnable} 在后台线程调用。
      */
     private void doNetworkChangedUpdate() {
+        // 防御性检查：除了 networkChangeRunnable，learnedIpRebuildRunnable 也会调用此方法；
+        // 且开关关闭前已排队的旧 runnable 仍可能在稍后执行，因此此处必须再次判定开关。
+        if (!isNetworkAutoRebuildEnabled()) {
+            LogUtil.i(TAG, "网络自动重建已禁用，跳过 doNetworkChangedUpdate");
+            return;
+        }
+        // 防御性检查：若 VPN 刚刚重建完成（settle 窗口内），直接丢弃本次事件。
+        // 多个回调路径（onAvailable / onLost / onLinkPropertiesChanged / onNetworkReconfigure 等）
+        // 都可能在 establish() 后被系统虚假触发；若在此处"延迟重试"而非直接丢弃，
+        // 反而会在 settle 窗口到期后触发一次必然重建，产生新 TUN fd，OEM ROM 会抹掉 VPN 钥匙图标。
+        // 真正的物理网络变化（WiFi→4G 切换等）会在 settle 窗口外重新触发独立回调，不会被此处遗漏。
+        long sinceRebuild = android.os.SystemClock.elapsedRealtime() - lastRebuildTime;
+        if (sinceRebuild < REBUILD_SETTLE_MS) {
+            LogUtil.i(TAG, "网络变化: VPN 重建稳定期内，丢弃本次事件（距上次重建 " + sinceRebuild + "ms）");
+            return;
+        }
+
         // 清除连接日志缓存，以便网络切换后重新记录
         if (this.tunTapAdapter != null) {
             this.tunTapAdapter.clearConnLog();
@@ -1424,7 +1866,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         .list();
                 if (networks.size() == 1) {
                     Network network = networks.get(0);
-                    updateTunnelConfig(network);
+                    updateTunnelConfig(network, "doNetworkChangedUpdate(物理网络变化debounce)");
                 }
             } catch (Exception e) {
                 LogUtil.e(TAG, "网络变化后重配 VPN 失败: " + e.getMessage(), e);
@@ -1716,9 +2158,30 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.w(TAG, "CHINA_DIRECT 模式：chnroutes 尚未加载，临时全局路由，就绪后重建");
             router.setOnChnroutesReadyListener(() -> {
                 LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
-                // chnroutes 新鲜加载完毕，重置一次性验证标志，使下次重建重新打印腾讯 CIDR 验证日志
-                tencentCidrsVerified = false;
-                onNetworkChanged();
+                LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_TRIGGER] reason=chnroutes_ready");
+                // 切回主线程串行处理，避免来自不同线程的回调并发修改延迟重建 Runnable。
+                mainHandler.post(() -> {
+                    // chnroutes 新鲜加载完毕，重置一次性验证标志，使下次重建重新打印腾讯 CIDR 验证日志
+                    tencentCidrsVerified = false;
+                    if (this.vpnSocket == null) {
+                        LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_SKIPPED] reason=vpn_not_established");
+                        return;
+                    }
+                    if (pendingChnroutesReadyRebuildRunnable != null) {
+                        mainHandler.removeCallbacks(pendingChnroutesReadyRebuildRunnable);
+                    }
+                    pendingChnroutesReadyRebuildRunnable = () -> {
+                        pendingChnroutesReadyRebuildRunnable = null;
+                        if (this.vpnSocket == null) {
+                            LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_CANCELLED] reason=vpn_stopped_before_delay");
+                            return;
+                        }
+                        LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_EXECUTE] delayMs=" + FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
+                        onNetworkChanged();
+                    };
+                    mainHandler.postDelayed(pendingChnroutesReadyRebuildRunnable, FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
+                    LogUtil.i(TAG, "[ANCHOR][CHNROUTES_READY_REBUILD_DELAYED] delayMs=" + FIRST_ESTABLISH_ICON_REFRESH_DELAY_MS);
+                });
             });
             addGlobalRoutesToBuilder(builder, localSubnets);
             return;
@@ -1733,20 +2196,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (!tencentCidrsVerified) {
             tencentCidrsVerified = true;
             String[] tencentCidrChecks = {
-                    // ── AS45090 (Tencent Cloud China) ──
-                    "43.128.0.0",  // 43.128.0.0/13  腾讯云新节点（视频号直播 CDN 调度）
-                    "43.152.0.0",  // 43.152.0.0/13  腾讯云上海节点
-                    "162.62.0.0",  // 162.62.0.0/16  腾讯云国内节点
-                    "101.33.0.0",  // 101.33.0.0/17  腾讯云广州/北京
-                    "119.28.0.0",  // 119.28.0.0/16  旧 QCloud
-                    // ── AS132203 (Tencent Cloud International, 用于中国 CDN) ──
-                    "129.226.0.0", // 129.226.0.0/16 视频号直播实测命中（szlong.weixin.qq.com）
-                    "150.109.0.0", // 150.109.0.0/16 WeChat CDN / apmplus
-                    "49.51.0.0",   // 49.51.0.0/16   Tencent Cloud International
-                    // ── 其他常见腾讯/视频直播相关 IP（应在 chnroutes.txt BGP 数据中） ──
-                    "183.2.0.0",   // 183.2.0.0/16   腾讯 AS17623（微信 CDN 常用）
-                    "175.27.0.0",  // 175.27.0.0/16  腾讯云（B 站/视频号 CDN）
-                    "58.250.0.0",  // 58.250.0.0/15  腾讯 AS17623
+                    "43.128.0.0", "43.152.0.0", "162.62.0.0", "101.33.0.0", "119.28.0.0",
+                    "129.226.0.0", "150.109.0.0", "49.51.0.0", "183.2.0.0", "175.27.0.0", "58.250.0.0",
             };
             String[] tencentCidrLabels = {
                     "43.128.0.0/13", "43.152.0.0/13", "162.62.0.0/16",
@@ -1754,41 +2205,35 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     "129.226.0.0/16", "150.109.0.0/16", "49.51.0.0/16",
                     "183.2.0.0/16", "175.27.0.0/16", "58.250.0.0/15",
             };
+            int okCount = 0;
+            List<String> failedCidrs = new ArrayList<>();
             for (int i = 0; i < tencentCidrChecks.length; i++) {
                 try {
                     InetAddress sample = InetAddress.getByName(tencentCidrChecks[i]);
-                    boolean inChina = router.isChineseIp(sample);
-                    if (inChina) {
-                        LogUtil.i(LogUtil.ROUTE_TAG, "腾讯云 " + tencentCidrLabels[i]
-                                + " → IN_CHINA（已排除出 VPN）✓");
+                    if (router.isChineseIp(sample)) {
+                        okCount++;
                     } else {
-                        LogUtil.w(LogUtil.ROUTE_TAG, "腾讯云 " + tencentCidrLabels[i]
-                                + " → NOT_IN_CHINA（未排除出 VPN，直播可能卡顿！）");
+                        failedCidrs.add(tencentCidrLabels[i]);
                     }
                 } catch (Exception e) {
-                    LogUtil.w(LogUtil.ROUTE_TAG, "验证腾讯云 CIDR " + tencentCidrLabels[i] + " 失败: " + e.getMessage());
+                    failedCidrs.add(tencentCidrLabels[i] + "(err)");
                 }
+            }
+            if (failedCidrs.isEmpty()) {
+                LogUtil.i(LogUtil.ROUTE_TAG, "腾讯云 " + okCount + " 个补充段全部 IN_CHINA（已排除出 VPN）✓");
+            } else {
+                LogUtil.w(LogUtil.ROUTE_TAG, "腾讯云补充段验证：" + okCount + "/" + tencentCidrChecks.length
+                        + " 通过，未排除: " + android.text.TextUtils.join(", ", failedCidrs) + "（直播可能卡顿！）");
             }
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Android 13+：0.0.0.0/0 + excludeRoute(中国IP) + excludeRoute(本地子网)
-            // 部分 OEM ROM 的 Binder 事务上限低于 AOSP 1 MB（如 600 KB），
-            // 全量 7 400+ 条中国 CIDR 序列化约 620 KB 会触发 TransactionTooLargeException。
-            // 按前缀长度升序排序（短前缀 = 覆盖更广），取最重要的 MAX_EXCLUDE_ROUTES_ANDROID13 条，
-            // 序列化约 336 KB，安全余量充足。
+            // Android 13+：0.0.0.0/0 + excludeRoute(中国IP超级聚合列表) + excludeRoute(本地子网)
+            // 超级聚合后中国 CIDR ≤ 500 条，序列化约 41 KB，远低于任何 OEM ROM 的 Binder 事务上限。
             builder.addRoute(InetAddress.getByName("0.0.0.0"), 0);
-            List<CidrBlock> sortedChinaCidrs = new ArrayList<>(router.getChinaCidrs());
-            // 按前缀长度升序排序：prefixLen 数值越小表示覆盖范围越大（/8 > /24），
-            // 升序排列后 /8 排在 /24 之前，优先 excludeRoute 覆盖最广的 CIDR，
-            // 在截断时确保最重要（覆盖最多 IP）的段被排除。
-            // 仅对超出上限的列表排序（已聚合后通常 ≤ 上限，排序仅作安全兜底）。
-            if (sortedChinaCidrs.size() > MAX_EXCLUDE_ROUTES_ANDROID13) {
-                sortedChinaCidrs.sort(Comparator.comparingInt(c -> c.prefixLen));
-            }
+            List<CidrBlock> chinaCidrsVpnSafe = router.getChinaCidrsVpnSafe();
             int excluded = 0;
-            for (CidrBlock cidr : sortedChinaCidrs) {
-                if (excluded >= MAX_EXCLUDE_ROUTES_ANDROID13) break;
+            for (CidrBlock cidr : chinaCidrsVpnSafe) {
                 InetAddress addr = cidr.toInetAddress();
                 if (addr != null) {
                     builder.excludeRoute(new IpPrefix(addr, cidr.prefixLen));
@@ -1798,22 +2243,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             for (long[] s : localSubnets) {
                 builder.excludeRoute(new IpPrefix(longToIpv4Addr(s[0]), (int) s[1]));
             }
-            if (excluded < router.getChinaCidrs().size()) {
-                LogUtil.w(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
-                        + excluded + "/" + router.getChinaCidrs().size() + " 条中国 IP（已截断）+ "
-                        + localSubnets.size() + " 个本地子网");
-            } else {
-                LogUtil.d(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
-                        + excluded + " 条中国 IP + "
-                        + localSubnets.size() + " 个本地子网");
-            }
+            LogUtil.d(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
+                    + excluded + " 条中国 IP（超级聚合，全量 " + router.getChinaCidrs().size()
+                    + " 条）+ " + localSubnets.size() + " 个本地子网");
         } else {
-            // Android 12-：添加非中国 CIDR，每条再剔除本地活跃子网。
-            // 非中国 CIDR 补集数量取决于聚合后的中国 CIDR 数量，通常在 8 000-12 000 条左右。
-            // Binder 事务上限约 600 KB-1 MB；按前缀长度升序排序（前缀越短 = 覆盖越广），
-            // 优先保留覆盖最大 IP 范围的路由，并将总条数限制在 5 000 条（约 415 KB）以内。
+            // Android 12-：添加非中国 CIDR 补集，每条再剔除本地活跃子网。
+            // 使用超级聚合后的非中国补集（通常 ≤ 1 500 条），远小于之前的 8 000-12 000 条。
+            // 保留 MAX_ROUTES_LEGACY_ANDROID 上限作为安全兜底，实际不会触发。
             final int MAX_ROUTES_LEGACY_ANDROID = 5000;
-            List<CidrBlock> nonChina = new ArrayList<>(router.getNonChinaCidrs());
+            List<CidrBlock> nonChina = new ArrayList<>(router.getNonChinaCidrsVpnSafe());
             nonChina.sort(Comparator.comparingInt(c -> c.prefixLen));
             int added = 0;
             for (CidrBlock cidr : nonChina) {
@@ -1836,11 +2274,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
             if (added >= MAX_ROUTES_LEGACY_ANDROID) {
                 LogUtil.w(TAG, "CHINA_DIRECT (Android 12-): 已达路由上限 " + MAX_ROUTES_LEGACY_ANDROID
-                        + " 条，共 " + nonChina.size() + " 条非中国路由，"
+                        + " 条，共 " + nonChina.size() + " 条非中国路由（超级聚合），"
                         + (nonChina.size() - MAX_ROUTES_LEGACY_ANDROID)
                         + " 条未加入 VPN 路由表");
             }
-            LogUtil.i(TAG, "CHINA_DIRECT (Android 12-): 添加 " + added + "/" + nonChina.size() + " 条非中国路由");
+            LogUtil.i(TAG, "CHINA_DIRECT (Android 12-): 添加 " + added + "/" + nonChina.size()
+                    + " 条非中国路由（超级聚合）");
         }
     }
 
@@ -2106,6 +2545,27 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (prefix == 0) return true;
         long mask = (~0L << (32 - prefix)) & 0xFFFFFFFFL;
         return (network & mask) == (ipLong & mask);
+    }
+
+    /**
+     * CHINA_DIRECT 已自行构建公网 IPv4 分流规则；若继续接收 ZeroTier 控制器下发的公网 IPv4 路由
+     * （如 /1、/2 等默认路由分片），会重新把国内地址覆盖回 TUN，导致直播 CDN 绕路。
+     * 仅保留私有/本地用途的 IPv4 managed route，公网部分统一交由 configureChinaDirectRouting 处理。
+     */
+    static boolean shouldSkipManagedIpv4RouteForChinaDirect(InetAddress routeAddress) {
+        if (!(routeAddress instanceof Inet4Address)) {
+            return false;
+        }
+        long ipLong = ipv4BytesToLong(routeAddress.getAddress());
+        if ((ipLong & 0xFF000000L) == 0x0A000000L) return false;        // 10.0.0.0/8
+        if ((ipLong & 0xFFF00000L) == 0xAC100000L) return false;        // 172.16.0.0/12
+        if ((ipLong & 0xFFFF0000L) == 0xC0A80000L) return false;        // 192.168.0.0/16
+        if ((ipLong & 0xFF000000L) == 0x7F000000L) return false;        // 127.0.0.0/8
+        if ((ipLong & 0xFFFF0000L) == LINK_LOCAL_PREFIX) return false;  // 169.254.0.0/16
+        if ((ipLong & CGN_MASK) == CGN_PREFIX) return false;            // 100.64.0.0/10
+        if ((ipLong & 0xF0000000L) == 0xE0000000L) return false;        // 224.0.0.0/4 multicast
+        if ((ipLong & 0xF0000000L) == 0xF0000000L) return false;        // 240.0.0.0/4 reserved
+        return true;
     }
 
     /**

@@ -14,6 +14,8 @@ public class Constants {
     public static final String PREF_SET_PLANET_FILE = "set_planet_file";
 
     public static final String PREF_NETWORK_DISABLE_IPV6 = "network_disable_ipv6";
+    public static final String PREF_NETWORK_AUTO_REBUILD = "network_auto_rebuild";
+    public static final String PREF_NETWORK_SMART_ROUTING_ENABLED = "network_smart_routing_enabled";
 
     public static final String PREF_GENERAL_START_ZEROTIER_ON_BOOT = "general_start_zerotier_on_boot";
 
@@ -25,7 +27,10 @@ public class Constants {
 
     public static final String FILE_PLANET = "planet";
 
-    public static final String CHANNEL_ID = "ZT1";
+    // "ZT1_v2": bumped from "ZT1" because the old channel was created with IMPORTANCE_LOW
+    // on some devices. Android ignores programmatic importance changes on existing channels,
+    // so the only way to restore status-bar icon visibility is to use a new channel ID.
+    public static final String CHANNEL_ID = "ZT1_v2";
 
     public static final String VPN_SESSION_NAME = "ZeroTier One";
 
