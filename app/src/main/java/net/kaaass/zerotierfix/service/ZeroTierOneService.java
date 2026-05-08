@@ -1912,6 +1912,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         var dnsMode = DNSMode.fromInt(networkConfig.getDnsMode());
         boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
         boolean isPerAppRouting = networkConfig.getPerAppRouting();
+        SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
         // 全局代理模式（isRouteViaZeroTier=true）：中国 IP 排除在 VPN 外，DNS 服务器本身却是中国 IP，
         // 国内 DNS（114/AliDNS）直连时会对 google.com 等境外域名进行 DNS 污染，导致证书错误。
         // 使用国际 DNS（Google/Cloudflare），这些 IP 是非中国 IP，会经 VPN/ZT 发出，绕过 GFW 污染。
@@ -1935,11 +1936,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 builder.addSearchDomain(virtualNetworkConfig.getDns().getDomain());
                 for (var inetSocketAddress : virtualNetworkConfig.getDns().getServers()) {
                     InetAddress address = inetSocketAddress.getAddress();
-                    if (address instanceof Inet4Address) {
-                        builder.addDnsServer(address);
-                    } else if ((address instanceof Inet6Address) && !this.disableIPv6) {
-                        builder.addDnsServer(address);
+                    if (isGlobalProxy && !shouldKeepNetworkDnsServerInGlobalProxy(address, smartRouter)) {
+                        LogUtil.i(TAG, "全局代理模式：跳过公网 DNS "
+                                + String.valueOf(address) + "，避免 YouTube/Google 类应用命中污染解析");
+                        continue;
                     }
+                    addDnsServerIfSupported(builder, address);
                 }
                 // 路由激活时额外添加 DNS 备援
                 if (isGlobalProxy) {
@@ -1955,11 +1957,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 for (var dnsServer : networkConfig.getDnsServers()) {
                     try {
                         InetAddress byName = InetAddress.getByName(dnsServer.getNameserver());
-                        if (byName instanceof Inet4Address) {
-                            builder.addDnsServer(byName);
-                        } else if ((byName instanceof Inet6Address) && !this.disableIPv6) {
-                            builder.addDnsServer(byName);
+                        if (isGlobalProxy && !shouldKeepNetworkDnsServerInGlobalProxy(byName, smartRouter)) {
+                            LogUtil.i(TAG, "全局代理模式：跳过自定义公网 DNS "
+                                    + byName.getHostAddress() + "，避免污染解析");
+                            continue;
                         }
+                        addDnsServerIfSupported(builder, byName);
                     } catch (Exception e) {
                         LogUtil.e(TAG, "Exception parsing DNS server: " + e, e);
                     }
@@ -1985,6 +1988,45 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 }
                 break;
         }
+    }
+
+    private void addDnsServerIfSupported(VpnService.Builder builder, InetAddress address) {
+        if (address instanceof Inet4Address) {
+            builder.addDnsServer(address);
+        } else if ((address instanceof Inet6Address) && !this.disableIPv6) {
+            builder.addDnsServer(address);
+        }
+    }
+
+    private boolean shouldKeepNetworkDnsServerInGlobalProxy(InetAddress address,
+                                                            SmartRoutingManager smartRouter) {
+        if (address == null) {
+            return false;
+        }
+        if (!(address instanceof Inet4Address)) {
+            return true;
+        }
+        if (isLocalOrPrivateIpv4(address)) {
+            return true;
+        }
+        if (!smartRouter.isChnroutesReady()) {
+            return false;
+        }
+        return !smartRouter.isChineseIp(address);
+    }
+
+    private static boolean isLocalOrPrivateIpv4(InetAddress address) {
+        if (!(address instanceof Inet4Address)) {
+            return false;
+        }
+        if (address.isAnyLocalAddress()
+                || address.isLoopbackAddress()
+                || address.isLinkLocalAddress()
+                || address.isSiteLocalAddress()) {
+            return true;
+        }
+        long ipLong = ipv4BytesToLong(address.getAddress());
+        return (ipLong & CGN_MASK) == CGN_PREFIX;
     }
     
 
