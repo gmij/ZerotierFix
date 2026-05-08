@@ -103,11 +103,34 @@ public class SmartRoutingManager {
 
     /**
      * VPN 路由超级聚合目标上限。
-     * 将中国 IP CIDR 列表从标准聚合后的 4 000–6 000 条压缩到此上限以内，
-     * 使 VPN {@code Builder.establish()} 的 Binder 序列化体积约 41 KB，
+     * 将中国 IP CIDR 列表从标准聚合后的约 7 000 条压缩到此上限以内，
+     * 使 VPN {@code Builder.establish()} 的 Binder 序列化体积约 164 KB（约 82 字节/条），
      * 远低于任何 OEM ROM 的事务上限（最低约 600 KB）。
+     *
+     * <p>历史：此值曾为 500（≈41 KB）。500 过于激进——超级聚合会将相隔较远的中国 IP 区间强行
+     * 合并，产生 172.0.0.0/8 等巨型块，将 YouTube（172.217.x.x）、Google（142.250.x.x）等
+     * 非中国 IP 纳入"排除"列表，导致这些流量绕过 VPN 走物理网络，最终被 GFW 屏蔽。
+     * 2000 条既能维持 Binder 大小安全，又避免了上述误判。
      */
-    private static final int SUPER_AGGREGATE_MAX_ENTRIES = 500;
+    private static final int SUPER_AGGREGATE_MAX_ENTRIES = 2000;
+
+    /**
+     * 受保护的非中国 CIDR 列表：即使在超级聚合过程中，这些 IP 所在的间隙也不会被填充。
+     *
+     * <p>主要保护对象为间隙极小（/24 等）但关键的非中国 IP，例如：
+     * <ul>
+     *   <li>1.1.1.0/24 – Cloudflare DNS 主（1.1.1.1），夹在 1.1.0.0/24 和 1.1.2.0/23 两个中国段之间，
+     *       若被合并则 Cloudflare DNS 经物理网络发出、受 GFW 污染，导致全局代理模式下 DNS 解析失败。</li>
+     *   <li>1.0.0.0/24 – Cloudflare DNS 备（1.0.0.1），类似情形。</li>
+     * </ul>
+     *
+     * <p>保护为尽力而为（best-effort）：若无法在不填充受保护间隙的前提下达到 maxEntries，
+     * 算法将回退到普通最小间隙合并，确保最终收敛。
+     */
+    private static final String[] PROTECTED_NON_CHINA_CIDRS = {
+            "1.1.1.0/24",   // Cloudflare DNS 主（1.1.1.1）
+            "1.0.0.0/24",   // Cloudflare DNS 备（1.0.0.1）
+    };
 
     /** China CIDR 列表（CHINA_DIRECT 使用；完整精度，用于 isChineseIp() 查询） */
     private volatile List<CidrBlock> chinaCidrs = Collections.emptyList();
@@ -345,9 +368,8 @@ public class SmartRoutingManager {
         // 与 parseChnroutes 的处理方式一致（binaryContains 同样使用 signed int 比较）。
         int ipInt = (int) ipLong;
         learnedDirectCidrs.add(new CidrBlock(ipInt, 32));
-        LogUtil.i(LogUtil.DNS_TAG, "✅ 自学习直连: " + ip.getHostAddress()
-                + " (" + domain + ") → 已加入直连列表，下次 VPN 重建后生效，将持久化到 "
-                + Constants.FILE_LEARNED_DIRECT_IPS);
+        LogUtil.d(LogUtil.DNS_TAG, "✅ 自学习直连: " + ip.getHostAddress()
+                + " (" + domain + ") → 已加入直连列表");
         // 持久化（异步，不阻塞主流程）
         executor.execute(this::persistLearnedIps);
         // 触发 VPN 重建回调
@@ -429,30 +451,20 @@ public class SmartRoutingManager {
         if (isGfwDomain(record.domain)) {
             boolean isNew = gfwIpSet.add(record.ip);
             if (isNew) {
-                LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
                         + " -> ZT (GFW)");
                 OnNewGfwIpListener l = onNewGfwIpListener;
                 if (l != null) l.onNewGfwIp(record.ip);
             }
         } else if (isChineseIp(record.ip)) {
-            // 直播相关域名升级为 INFO 级，release 包也可见，用于确认国内 CDN 是否走直连
             if (isLiveStreamingDomain(record.domain)) {
-                LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                        + " -> direct (CN)");
-            } else {
                 LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                        + " -> direct (CN)");
+                        + " -> direct (CN live)");
             }
         } else {
             // 非中国 IP：直播相关域名自动触发自学习。
-            // learnDirectIp 内部会判断是否新 IP：
-            //   - 新 IP → 打印 "✅ 自学习" 日志 + 触发防抖 VPN 重建
-            //   - 已知 IP → 静默跳过（已在 learnedDirectIpSet 中）
             if (isLiveStreamingDomain(record.domain)) {
                 learnDirectIp(record.ip, record.domain);
-            } else {
-                LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                        + " -> ZT");
             }
         }
     }
@@ -606,8 +618,14 @@ public class SmartRoutingManager {
 
         // 超级聚合：进一步将中国 IP CIDR 压缩到 SUPER_AGGREGATE_MAX_ENTRIES 条以内，
         // 用于 VPN Builder.establish() 的 excludeRoute/addRoute，避免 Binder 序列化超限。
-        // 在后台线程运行约 50-200 ms（对 ~5000 条数据），不阻塞主线程或 VPN 建立。
-        List<CidrBlock> superAggregated = CidrBlock.superAggregate(aggregated, SUPER_AGGREGATE_MAX_ENTRIES);
+        // 传入受保护 CIDR 列表，防止关键非中国 IP（如 Cloudflare DNS 1.1.1.0/24）被意外纳入排除范围。
+        // 在后台线程运行，不阻塞主线程或 VPN 建立。
+        List<CidrBlock> protectedBlocks = new ArrayList<>();
+        for (String cidr : PROTECTED_NON_CHINA_CIDRS) {
+            CidrBlock b = CidrBlock.parse(cidr);
+            if (b != null) protectedBlocks.add(b);
+        }
+        List<CidrBlock> superAggregated = CidrBlock.superAggregate(aggregated, SUPER_AGGREGATE_MAX_ENTRIES, protectedBlocks);
         this.chinaCidrsVpnSafe = Collections.unmodifiableList(superAggregated);
         this.nonChinaCidrsVpnSafe = Collections.unmodifiableList(
                 CidrBlock.computeComplement(superAggregated));
