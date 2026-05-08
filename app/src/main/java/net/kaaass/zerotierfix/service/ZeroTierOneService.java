@@ -149,14 +149,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             "1.1.1.1",    // Cloudflare DNS 主
             "1.0.0.1",    // Cloudflare DNS 备
     };
-    /**
-     * Android 13+ excludeRoute 最大条数（安全上限）。
-     * Binder 单次事务上限（1 MB）在部分 OEM ROM 中更低（如 600 KB）。
-     * CIDR 聚合后中国 IP 数量通常降至 4 000-6 000 条（视 chnroutes 数据而定），
-     * 此上限作为最后一道安全网，确保即使在极端 OEM 设备上也不超过 Binder 限制。
-     * 6 500 条 × ~83 字节 ≈ 540 KB，低于常见 OEM 600 KB 限制。
-     */
-    private static final int MAX_EXCLUDE_ROUTES_ANDROID13 = 6500;
     private final IBinder mBinder = new ZeroTierBinder();
     private final DataStore dataStore = new DataStore(this);
     private final EventBus eventBus = EventBus.getDefault();
@@ -310,7 +302,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private volatile long lastPhysicalNetworkChangeTime = 0;
     /** VPN 重建后抑制后续虚假网络回调的静默期（毫秒）。应大于 NETWORK_CHANGE_DEBOUNCE_MS。
-     * 全局模式 establish() 需添加 ~3900 条 excludeRoute，耗时较长，OS 在 establish() 返回后
+     * CHINA_DIRECT 模式 establish() 添加 ~500 条超级聚合 excludeRoute，耗时较短，OS 在 establish() 返回后
      * 会重新评估所有物理网络并触发 onAvailable / onLinkPropertiesChanged；
      * 设置 12s 静默期可覆盖这些回调的 3s debounce + 重评估延迟，避免不必要的二次重建。 */
     private static final long REBUILD_SETTLE_MS = 12_000;
@@ -1774,8 +1766,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             // cm.unregisterNetworkCallback 是异步的（向 ConnectivityService 发消息），
             // 旧回调在取消消息被 ConnectivityService 处理之前仍可能触发 onAvailable / onLinkPropertiesChanged。
             // 这些"旧回调回声"事件的到来时 lastRebuildTime 仍为本次重建开始时的旧值，
-            // 但若建立过程耗时较长（如全局模式添加 ~3900 条 excludeRoute，历时约 300ms），
-            // 而上次静默期已过（距上次 build 超过 REBUILD_SETTLE_MS），旧回调会通过静默检查，
+            // 但若上次静默期已过（距上次 build 超过 REBUILD_SETTLE_MS），旧回调会通过静默检查，
             // 导致 3s 后触发一次必然重建，新 TUN fd 顶替旧 TUN，OEM ROM 因此清除 VPN 钥匙图标。
             // 此处刷新 lastRebuildTime，确保刚注册新回调时的任何事件（旧回调回声或新回调初始通知）
             // 都落在新的静默窗口内，被正确抑制。
@@ -2237,23 +2228,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Android 13+：0.0.0.0/0 + excludeRoute(中国IP) + excludeRoute(本地子网)
-            // 部分 OEM ROM 的 Binder 事务上限低于 AOSP 1 MB（如 600 KB），
-            // 全量 7 400+ 条中国 CIDR 序列化约 620 KB 会触发 TransactionTooLargeException。
-            // 按前缀长度升序排序（短前缀 = 覆盖更广），取最重要的 MAX_EXCLUDE_ROUTES_ANDROID13 条，
-            // 序列化约 336 KB，安全余量充足。
+            // Android 13+：0.0.0.0/0 + excludeRoute(中国IP超级聚合列表) + excludeRoute(本地子网)
+            // 超级聚合后中国 CIDR ≤ 500 条，序列化约 41 KB，远低于任何 OEM ROM 的 Binder 事务上限。
             builder.addRoute(InetAddress.getByName("0.0.0.0"), 0);
-            List<CidrBlock> sortedChinaCidrs = new ArrayList<>(router.getChinaCidrs());
-            // 按前缀长度升序排序：prefixLen 数值越小表示覆盖范围越大（/8 > /24），
-            // 升序排列后 /8 排在 /24 之前，优先 excludeRoute 覆盖最广的 CIDR，
-            // 在截断时确保最重要（覆盖最多 IP）的段被排除。
-            // 仅对超出上限的列表排序（已聚合后通常 ≤ 上限，排序仅作安全兜底）。
-            if (sortedChinaCidrs.size() > MAX_EXCLUDE_ROUTES_ANDROID13) {
-                sortedChinaCidrs.sort(Comparator.comparingInt(c -> c.prefixLen));
-            }
+            List<CidrBlock> chinaCidrsVpnSafe = router.getChinaCidrsVpnSafe();
             int excluded = 0;
-            for (CidrBlock cidr : sortedChinaCidrs) {
-                if (excluded >= MAX_EXCLUDE_ROUTES_ANDROID13) break;
+            for (CidrBlock cidr : chinaCidrsVpnSafe) {
                 InetAddress addr = cidr.toInetAddress();
                 if (addr != null) {
                     builder.excludeRoute(new IpPrefix(addr, cidr.prefixLen));
@@ -2263,22 +2243,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             for (long[] s : localSubnets) {
                 builder.excludeRoute(new IpPrefix(longToIpv4Addr(s[0]), (int) s[1]));
             }
-            if (excluded < router.getChinaCidrs().size()) {
-                LogUtil.w(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
-                        + excluded + "/" + router.getChinaCidrs().size() + " 条中国 IP（已截断）+ "
-                        + localSubnets.size() + " 个本地子网");
-            } else {
-                LogUtil.d(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
-                        + excluded + " 条中国 IP + "
-                        + localSubnets.size() + " 个本地子网");
-            }
+            LogUtil.d(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
+                    + excluded + " 条中国 IP（超级聚合，全量 " + router.getChinaCidrs().size()
+                    + " 条）+ " + localSubnets.size() + " 个本地子网");
         } else {
-            // Android 12-：添加非中国 CIDR，每条再剔除本地活跃子网。
-            // 非中国 CIDR 补集数量取决于聚合后的中国 CIDR 数量，通常在 8 000-12 000 条左右。
-            // Binder 事务上限约 600 KB-1 MB；按前缀长度升序排序（前缀越短 = 覆盖越广），
-            // 优先保留覆盖最大 IP 范围的路由，并将总条数限制在 5 000 条（约 415 KB）以内。
+            // Android 12-：添加非中国 CIDR 补集，每条再剔除本地活跃子网。
+            // 使用超级聚合后的非中国补集（通常 ≤ 1 500 条），远小于之前的 8 000-12 000 条。
+            // 保留 MAX_ROUTES_LEGACY_ANDROID 上限作为安全兜底，实际不会触发。
             final int MAX_ROUTES_LEGACY_ANDROID = 5000;
-            List<CidrBlock> nonChina = new ArrayList<>(router.getNonChinaCidrs());
+            List<CidrBlock> nonChina = new ArrayList<>(router.getNonChinaCidrsVpnSafe());
             nonChina.sort(Comparator.comparingInt(c -> c.prefixLen));
             int added = 0;
             for (CidrBlock cidr : nonChina) {
@@ -2301,11 +2274,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
             if (added >= MAX_ROUTES_LEGACY_ANDROID) {
                 LogUtil.w(TAG, "CHINA_DIRECT (Android 12-): 已达路由上限 " + MAX_ROUTES_LEGACY_ANDROID
-                        + " 条，共 " + nonChina.size() + " 条非中国路由，"
+                        + " 条，共 " + nonChina.size() + " 条非中国路由（超级聚合），"
                         + (nonChina.size() - MAX_ROUTES_LEGACY_ANDROID)
                         + " 条未加入 VPN 路由表");
             }
-            LogUtil.i(TAG, "CHINA_DIRECT (Android 12-): 添加 " + added + "/" + nonChina.size() + " 条非中国路由");
+            LogUtil.i(TAG, "CHINA_DIRECT (Android 12-): 添加 " + added + "/" + nonChina.size()
+                    + " 条非中国路由（超级聚合）");
         }
     }
 

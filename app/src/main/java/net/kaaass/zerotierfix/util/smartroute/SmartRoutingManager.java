@@ -101,11 +101,32 @@ public class SmartRoutingManager {
     private final Context context;
     private final Executor executor = Executors.newSingleThreadExecutor();
 
-    /** China CIDR 列表（CHINA_DIRECT 使用） */
+    /**
+     * VPN 路由超级聚合目标上限。
+     * 将中国 IP CIDR 列表从标准聚合后的 4 000–6 000 条压缩到此上限以内，
+     * 使 VPN {@code Builder.establish()} 的 Binder 序列化体积约 41 KB，
+     * 远低于任何 OEM ROM 的事务上限（最低约 600 KB）。
+     */
+    private static final int SUPER_AGGREGATE_MAX_ENTRIES = 500;
+
+    /** China CIDR 列表（CHINA_DIRECT 使用；完整精度，用于 isChineseIp() 查询） */
     private volatile List<CidrBlock> chinaCidrs = Collections.emptyList();
 
     /** 非 China CIDR 列表（CHINA_DIRECT 路由排除的补集） */
     private volatile List<CidrBlock> nonChinaCidrs = Collections.emptyList();
+
+    /**
+     * VPN-safe 中国 IP 超级聚合列表（≤ SUPER_AGGREGATE_MAX_ENTRIES 条）。
+     * 由 parseChnroutes() 在后台线程预计算，用于 VPN Builder.establish() 的 excludeRoute/addRoute，
+     * 避免大量 CIDR 导致 Binder 序列化超限。精度略低于 chinaCidrs，但对网络连通性无实质影响。
+     */
+    private volatile List<CidrBlock> chinaCidrsVpnSafe = Collections.emptyList();
+
+    /**
+     * VPN-safe 非中国 IP 补集（chinaCidrsVpnSafe 的补集），用于 Android 12- 的 addRoute。
+     * 由 parseChnroutes() 与 chinaCidrsVpnSafe 一同计算并缓存。
+     */
+    private volatile List<CidrBlock> nonChinaCidrsVpnSafe = Collections.emptyList();
 
     /** GFW 域名集合（GFW_LIST 使用） */
     private volatile Set<String> gfwDomains = Collections.emptySet();
@@ -219,6 +240,35 @@ public class SmartRoutingManager {
         merged.addAll(learned);
         Collections.sort(merged);
         return Collections.unmodifiableList(merged);
+    }
+
+    /**
+     * 返回 VPN-safe 中国 IP 超级聚合列表（≤ SUPER_AGGREGATE_MAX_ENTRIES 条），
+     * 包含自学习直连 IP（/32，直接追加，不再触发超级聚合）。
+     *
+     * <p>用于 {@code VpnService.Builder.excludeRoute()} / {@code addRoute()}，
+     * 避免全量 CIDR 序列化超出 Binder 事务大小限制。
+     * 精度判断（{@link #isChineseIp}）仍使用完整的 chinaCidrs。
+     */
+    public List<CidrBlock> getChinaCidrsVpnSafe() {
+        List<CidrBlock> learned = new ArrayList<>(learnedDirectCidrs);
+        if (learned.isEmpty()) return chinaCidrsVpnSafe;
+        // Learned IPs are /32 entries (at most MAX_LEARNED_IPS = 500).
+        // Append them to the pre-computed super-aggregated base; no further super-aggregation
+        // needed since the combined size remains well within VPN builder limits.
+        List<CidrBlock> merged = new ArrayList<>(chinaCidrsVpnSafe.size() + learned.size());
+        merged.addAll(chinaCidrsVpnSafe);
+        merged.addAll(learned);
+        return Collections.unmodifiableList(merged);
+    }
+
+    /**
+     * 返回 VPN-safe 非中国 IP 补集（chinaCidrsVpnSafe 的补集）。
+     * 用于 Android 12- 的 {@code addRoute}；若有自学习 IP 则重新计算补集。
+     */
+    public List<CidrBlock> getNonChinaCidrsVpnSafe() {
+        if (learnedDirectCidrs.isEmpty()) return nonChinaCidrsVpnSafe;
+        return Collections.unmodifiableList(CidrBlock.computeComplement(getChinaCidrsVpnSafe()));
     }
 
     /**
@@ -548,9 +598,19 @@ public class SmartRoutingManager {
         this.chinaCidrs = Collections.unmodifiableList(aggregated);
         this.nonChinaCidrs = Collections.unmodifiableList(
                 CidrBlock.computeComplement(aggregated));
+
+        // 超级聚合：进一步将中国 IP CIDR 压缩到 SUPER_AGGREGATE_MAX_ENTRIES 条以内，
+        // 用于 VPN Builder.establish() 的 excludeRoute/addRoute，避免 Binder 序列化超限。
+        // 在后台线程运行约 50-200 ms（对 ~5000 条数据），不阻塞主线程或 VPN 建立。
+        List<CidrBlock> superAggregated = CidrBlock.superAggregate(aggregated, SUPER_AGGREGATE_MAX_ENTRIES);
+        this.chinaCidrsVpnSafe = Collections.unmodifiableList(superAggregated);
+        this.nonChinaCidrsVpnSafe = Collections.unmodifiableList(
+                CidrBlock.computeComplement(superAggregated));
+
         LogUtil.i(TAG, "已加载 " + beforeAgg + " 条中国 IP 路由（含 "
                 + supplementalAdded + " 条腾讯云补充段），聚合后 " + aggregated.size()
-                + " 条，补集 " + nonChinaCidrs.size() + " 条");
+                + " 条（补集 " + nonChinaCidrs.size() + " 条），超级聚合后 "
+                + superAggregated.size() + " 条（补集 " + nonChinaCidrsVpnSafe.size() + " 条）");
         // 通知等待中的 CHINA_DIRECT VPN 路由重建（getAndSet 原子读取并清除，消除竞态）
         OnChnroutesReadyListener l = onChnroutesReadyListenerRef.getAndSet(null);
         if (l != null) {

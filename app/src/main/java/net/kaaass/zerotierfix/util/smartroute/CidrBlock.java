@@ -195,6 +195,124 @@ public class CidrBlock implements Comparable<CidrBlock> {
     }
 
     /**
+     * 超级聚合（有损聚合）：在标准聚合基础上，通过允许少量误差进一步减少 CIDR 数量。
+     *
+     * <p>当 CIDR 总数超过 maxEntries 时，优先合并间隙最小的相邻区间对——将两个区间之间最少的
+     * 非目标 IP 纳入覆盖范围——直到总数 ≤ maxEntries。
+     *
+     * <p>典型应用：将中国 IP CIDR 列表从标准聚合后的 4 000–6 000 条压缩至约 300–500 条，
+     * 以避免 VPN {@code Builder.establish()} 超出 Binder 事务大小限制（部分 OEM ROM 低至 600 KB）。
+     * 代价：少量（约 5–10%）非中国 IP 会被纳入排除范围，走物理网络直连，通常不影响实际体验。
+     *
+     * <p>算法（贪心填隙）：
+     * <ol>
+     *   <li>将输入 CIDR 转为有序、不重叠的 [start, end] 区间（同 aggregate 前三步）</li>
+     *   <li>预计算每个区间对应的 CIDR 数及总数</li>
+     *   <li>每轮找出相邻区间间隙最小的对，合并后更新计数；循环直到总数 ≤ maxEntries</li>
+     *   <li>将最终区间列表转回 CIDR</li>
+     * </ol>
+     *
+     * <p>复杂度：O(n²)，其中 n 为初始区间数（通常 4 000–6 000），在后台线程运行约 50–200 ms，
+     * 不阻塞主线程。
+     *
+     * @param cidrs      待聚合的输入 CIDR 列表（如已调用 aggregate() 则效率更高）
+     * @param maxEntries 目标最大 CIDR 条目数
+     * @return 不超过 maxEntries 条的 CIDR 列表（按 startIp 排序）；若输入已满足则直接返回副本
+     */
+    public static List<CidrBlock> superAggregate(List<CidrBlock> cidrs, int maxEntries) {
+        if (cidrs == null || cidrs.isEmpty()) return Collections.emptyList();
+        if (cidrs.size() <= maxEntries) return new ArrayList<>(cidrs);
+
+        // Step 1: convert to sorted, non-overlapping intervals
+        List<long[]> ranges = new ArrayList<>(cidrs.size());
+        for (CidrBlock c : cidrs) {
+            ranges.add(new long[]{c.startIp & 0xFFFFFFFFL, c.endIp & 0xFFFFFFFFL});
+        }
+        ranges.sort((a, b) -> Long.compare(a[0], b[0]));
+        List<long[]> merged = new ArrayList<>();
+        long[] cur = new long[]{ranges.get(0)[0], ranges.get(0)[1]};
+        for (int i = 1; i < ranges.size(); i++) {
+            long[] next = ranges.get(i);
+            boolean adjacent = cur[1] < 0xFFFFFFFFL && next[0] <= cur[1] + 1;
+            if (adjacent) {
+                if (next[1] > cur[1]) cur[1] = next[1];
+            } else {
+                merged.add(cur);
+                cur = new long[]{next[0], next[1]};
+            }
+        }
+        merged.add(cur);
+        ranges = merged;
+
+        // Step 2: precompute CIDR count per interval and total count
+        List<Integer> cidrCounts = new ArrayList<>(ranges.size());
+        int totalCidrCount = 0;
+        for (long[] r : ranges) {
+            int cnt = countCidrsForRange(r[0], r[1]);
+            cidrCounts.add(cnt);
+            totalCidrCount += cnt;
+        }
+
+        // Step 3: greedy – find and merge the pair with the smallest inter-range gap
+        //         until totalCidrCount <= maxEntries
+        while (totalCidrCount > maxEntries && ranges.size() > 1) {
+            int minIdx = 0;
+            long minGap = Long.MAX_VALUE;
+            for (int i = 0; i < ranges.size() - 1; i++) {
+                long gap = ranges.get(i + 1)[0] - ranges.get(i)[1] - 1;
+                if (gap < minGap) {
+                    minGap = gap;
+                    minIdx = i;
+                }
+            }
+            // Read counts before mutation
+            int cnt1 = cidrCounts.get(minIdx);
+            int cnt2 = cidrCounts.get(minIdx + 1);
+            // Merge ranges[minIdx] and ranges[minIdx+1] by extending end
+            long newEnd = Math.max(ranges.get(minIdx)[1], ranges.get(minIdx + 1)[1]);
+            ranges.get(minIdx)[1] = newEnd;
+            ranges.remove(minIdx + 1);
+            int newCnt = countCidrsForRange(ranges.get(minIdx)[0], newEnd);
+            totalCidrCount = totalCidrCount - cnt1 - cnt2 + newCnt;
+            cidrCounts.set(minIdx, newCnt);
+            cidrCounts.remove(minIdx + 1);
+        }
+
+        // Step 4: convert intervals back to CIDRs
+        List<CidrBlock> result = new ArrayList<>(totalCidrCount);
+        for (long[] r : ranges) {
+            result.addAll(rangeToCidrs(r[0], r[1]));
+        }
+        return result;
+    }
+
+    /**
+     * 统计将 [start, end] 区间转换为 CIDR 所需的条目数（不创建对象，仅计数）。
+     */
+    private static int countCidrsForRange(long start, long end) {
+        int count = 0;
+        while (start <= end) {
+            int maxBits = 32;
+            long s = start;
+            for (int i = 0; i < 32; i++) {
+                if ((s & 1) == 0) maxBits--; else break;
+                s >>= 1;
+            }
+            int prefix = maxBits;
+            while (prefix <= 32) {
+                long blockEnd = start + (1L << (32 - prefix)) - 1;
+                if (blockEnd <= end) break;
+                prefix++;
+            }
+            if (prefix > 32) prefix = 32;
+            count++;
+            start += (1L << (32 - prefix));
+            if (start > 0xFFFFFFFFL) break;
+        }
+        return count;
+    }
+
+    /**
      * 将 [start, end] 范围拆分为最优 CIDR 列表
      */
     private static List<CidrBlock> rangeToCidrs(long start, long end) {
