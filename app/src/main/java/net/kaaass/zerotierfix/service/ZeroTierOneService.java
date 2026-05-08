@@ -1937,9 +1937,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 for (var inetSocketAddress : virtualNetworkConfig.getDns().getServers()) {
                     InetAddress address = inetSocketAddress.getAddress();
                     if (isGlobalProxy && !shouldKeepNetworkDnsServerInGlobalProxy(address, smartRouter)) {
-                        String dnsAddress = address != null ? address.getHostAddress() : "null";
                         LogUtil.i(TAG, "全局代理模式：跳过公网 DNS "
-                                + dnsAddress + "，避免 YouTube/Google 类应用命中污染解析");
+                                + address.getHostAddress() + "，避免 YouTube/Google 类应用命中污染解析");
                         continue;
                     }
                     addDnsServerIfSupported(builder, address);
@@ -2030,6 +2029,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return true;
         }
         long ipLong = ipv4BytesToLong(address.getAddress());
+        // RFC 6598 Carrier-Grade NAT: 100.64.0.0/10，也属于本地/运营商内网地址，不应按公网污染 DNS 处理。
         return (ipLong & CGN_MASK) == CGN_PREFIX;
     }
     
