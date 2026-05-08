@@ -255,11 +255,17 @@ public class CidrBlock implements Comparable<CidrBlock> {
 
         // Step 3: greedy – find and merge the pair with the smallest inter-range gap
         //         until totalCidrCount <= maxEntries
+        // After the initial merge step above, all consecutive intervals have gap >= 0
+        // (gap = next.start - cur.end - 1 >= 0; negative gaps / overlaps cannot occur
+        //  because overlapping/adjacent ranges were already merged in the step above).
+        // gap == 0 means exactly-adjacent ranges, which are merged for free (no extra IPs).
         while (totalCidrCount > maxEntries && ranges.size() > 1) {
             int minIdx = 0;
             long minGap = Long.MAX_VALUE;
             for (int i = 0; i < ranges.size() - 1; i++) {
-                long gap = ranges.get(i + 1)[0] - ranges.get(i)[1] - 1;
+                // gap >= 0 always holds here (see comment above); Math.max guards against
+                // any unexpected edge cases without changing behavior for valid inputs.
+                long gap = Math.max(0, ranges.get(i + 1)[0] - ranges.get(i)[1] - 1);
                 if (gap < minGap) {
                     minGap = gap;
                     minIdx = i;

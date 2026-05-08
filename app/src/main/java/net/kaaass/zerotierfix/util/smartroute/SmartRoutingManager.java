@@ -253,9 +253,14 @@ public class SmartRoutingManager {
     public List<CidrBlock> getChinaCidrsVpnSafe() {
         List<CidrBlock> learned = new ArrayList<>(learnedDirectCidrs);
         if (learned.isEmpty()) return chinaCidrsVpnSafe;
-        // Learned IPs are /32 entries (at most MAX_LEARNED_IPS = 500).
-        // Append them to the pre-computed super-aggregated base; no further super-aggregation
-        // needed since the combined size remains well within VPN builder limits.
+        // Learned IPs are /32 entries, capped at MAX_LEARNED_IPS (500) by learnDirectIp().
+        // Combined size: SUPER_AGGREGATE_MAX_ENTRIES (500) + MAX_LEARNED_IPS (500) = 1 000 max,
+        // which serialises to ~83 KB — well within any OEM ROM Binder limit.
+        // No further super-aggregation is needed.
+        if (learned.size() > MAX_LEARNED_IPS) {
+            // Defensive: should not happen, but truncate if the invariant is ever violated.
+            learned = learned.subList(0, MAX_LEARNED_IPS);
+        }
         List<CidrBlock> merged = new ArrayList<>(chinaCidrsVpnSafe.size() + learned.size());
         merged.addAll(chinaCidrsVpnSafe);
         merged.addAll(learned);

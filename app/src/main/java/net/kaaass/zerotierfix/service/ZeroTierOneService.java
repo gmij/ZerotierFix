@@ -302,9 +302,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private volatile long lastPhysicalNetworkChangeTime = 0;
     /** VPN 重建后抑制后续虚假网络回调的静默期（毫秒）。应大于 NETWORK_CHANGE_DEBOUNCE_MS。
-     * CHINA_DIRECT 模式 establish() 添加 ~500 条超级聚合 excludeRoute，耗时较短，OS 在 establish() 返回后
-     * 会重新评估所有物理网络并触发 onAvailable / onLinkPropertiesChanged；
-     * 设置 12s 静默期可覆盖这些回调的 3s debounce + 重评估延迟，避免不必要的二次重建。 */
+     * establish() 返回后，OS 会重新评估所有物理网络并触发 onAvailable / onLinkPropertiesChanged；
+     * 12 s 静默期覆盖这些回调的 3 s debounce + 重评估延迟（与路由数量无关），
+     * 避免不必要的二次重建导致 VPN 图标消失。 */
     private static final long REBUILD_SETTLE_MS = 12_000;
     /**
      * 腾讯云 CIDR 验证日志一次性标志。
