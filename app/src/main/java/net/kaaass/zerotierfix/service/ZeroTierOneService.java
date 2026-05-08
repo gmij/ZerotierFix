@@ -949,15 +949,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             // 抑制 VPN 重建后 ZT 节点的虚假回调：establish() 创建新 TUN 接口后，ZT 节点会立刻上报
             // 配置变化（isChanged=true），若不过滤会立即触发第二次完整重建，形成双重重建循环。
             if (sinceRebuild < REBUILD_SETTLE_MS) {
-                LogUtil.i(TAG, "onNetworkReconfigure: VPN 重建稳定期内，跳过重建（距上次重建 "
+                LogUtil.d(TAG, "onNetworkReconfigure: VPN 重建稳定期内，跳过重建（距上次重建 "
                         + sinceRebuild + "ms）");
                 isChanged = false;
             } else if (sinceNetworkChange < NETWORK_CHANGE_DEBOUNCE_MS + NETWORK_CHANGE_WINDOW_EXTENSION_MS) {
-                // 物理网络刚发生变化（onLost/onAvailable 已调度 3s debounce 重建），
-                // ZT SDK 会在数百毫秒内因 socket 连通性改变连锁触发 CONFIG_UPDATE。
-                // 此时直接重建会产生额外一次 establish()，OEM ROM 随即清除 VPN 图标；
-                // 丢弃此事件，让 debounce 路径统一处理物理网络切换。
-                LogUtil.i(TAG, "onNetworkReconfigure: 物理网络切换窗口内，跳过（距上次网络变化 "
+                LogUtil.d(TAG, "onNetworkReconfigure: 物理网络切换窗口内，跳过（距上次网络变化 "
                         + sinceNetworkChange + "ms，debounce 重建已排队）");
                 isChanged = false;
             }
@@ -980,12 +976,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     long delaySinceRebuild = now2 - lastRebuildTime;
                     long delaySinceNetChange = now2 - lastPhysicalNetworkChangeTime;
                     if (delaySinceRebuild < REBUILD_SETTLE_MS) {
-                        LogUtil.i(TAG, "onNetworkReconfigure (延迟): VPN 重建稳定期内，跳过（距上次重建 "
+                        LogUtil.d(TAG, "onNetworkReconfigure (延迟): VPN 重建稳定期内，跳过（距上次重建 "
                                 + delaySinceRebuild + "ms）");
                         return;
                     }
                     if (delaySinceNetChange < NETWORK_CHANGE_DEBOUNCE_MS + NETWORK_CHANGE_WINDOW_EXTENSION_MS) {
-                        LogUtil.i(TAG, "onNetworkReconfigure (延迟): 物理网络切换窗口内，跳过（距上次网络变化 "
+                        LogUtil.d(TAG, "onNetworkReconfigure (延迟): 物理网络切换窗口内，跳过（距上次网络变化 "
                                 + delaySinceNetChange + "ms，debounce 重建已排队）");
                         return;
                     }
@@ -1421,8 +1417,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 建立 VPN 连接
         // establish() 通过 Binder 传输路由表，若路由条数过多可能抛出 TransactionTooLargeException。
         // 捕获该异常并降级为全局路由（0.0.0.0/0），确保 VPN 至少能正常启动。
-        LogUtil.d(TAG, "即将调用 establish() 创建 TUN fd，isRouteViaZeroTier=" + isRouteViaZeroTier
-                + ", perApp=" + isPerAppRouting);
         try {
             this.vpnSocket = builder.establish();
         } catch (RuntimeException e) {
@@ -1564,16 +1558,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                                                    String caller, int attempt) {
         mainHandler.postDelayed(() -> {
             if (this.vpnSocket == null) {
-                LogUtil.d(TAG, "首次 VPN 延迟刷新取消：VPN 已停止");
                 return;
             }
             if (this.bindCount > 0 && attempt < FIRST_ESTABLISH_ICON_REFRESH_MAX_RETRIES) {
                 int nextAttempt = attempt + 1;
-                LogUtil.d(TAG, "首次 VPN 图标刷新等待绑定释放（bindCount=" + this.bindCount + ", attempt=" + nextAttempt + "）");
                 scheduleFirstEstablishIconRefresh(refreshNetwork, parentRequestSeq, caller, nextAttempt);
                 return;
             }
-            LogUtil.i(TAG, "首次 VPN establish 延迟刷新：触发重建以激活 OEM ROM 系统 VPN 图标");
             updateTunnelConfig(refreshNetwork,
                     "firstEstablishDelayedRefresh(OEM图标修复,parentSeq=" + parentRequestSeq
                             + ",attempt=" + attempt + ")");
@@ -1789,7 +1780,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 真正的物理网络变化（WiFi→4G 切换等）会在 settle 窗口外重新触发独立回调，不会被此处遗漏。
         long sinceRebuild = android.os.SystemClock.elapsedRealtime() - lastRebuildTime;
         if (sinceRebuild < REBUILD_SETTLE_MS) {
-            LogUtil.i(TAG, "网络变化: VPN 重建稳定期内，丢弃本次事件（距上次重建 " + sinceRebuild + "ms）");
+            LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，丢弃本次事件（距上次重建 " + sinceRebuild + "ms）");
             return;
         }
 

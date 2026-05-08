@@ -368,9 +368,8 @@ public class SmartRoutingManager {
         // 与 parseChnroutes 的处理方式一致（binaryContains 同样使用 signed int 比较）。
         int ipInt = (int) ipLong;
         learnedDirectCidrs.add(new CidrBlock(ipInt, 32));
-        LogUtil.i(LogUtil.DNS_TAG, "✅ 自学习直连: " + ip.getHostAddress()
-                + " (" + domain + ") → 已加入直连列表，下次 VPN 重建后生效，将持久化到 "
-                + Constants.FILE_LEARNED_DIRECT_IPS);
+        LogUtil.d(LogUtil.DNS_TAG, "✅ 自学习直连: " + ip.getHostAddress()
+                + " (" + domain + ") → 已加入直连列表");
         // 持久化（异步，不阻塞主流程）
         executor.execute(this::persistLearnedIps);
         // 触发 VPN 重建回调
@@ -452,30 +451,20 @@ public class SmartRoutingManager {
         if (isGfwDomain(record.domain)) {
             boolean isNew = gfwIpSet.add(record.ip);
             if (isNew) {
-                LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
+                LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
                         + " -> ZT (GFW)");
                 OnNewGfwIpListener l = onNewGfwIpListener;
                 if (l != null) l.onNewGfwIp(record.ip);
             }
         } else if (isChineseIp(record.ip)) {
-            // 直播相关域名升级为 INFO 级，release 包也可见，用于确认国内 CDN 是否走直连
             if (isLiveStreamingDomain(record.domain)) {
-                LogUtil.i(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                        + " -> direct (CN)");
-            } else {
                 LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                        + " -> direct (CN)");
+                        + " -> direct (CN live)");
             }
         } else {
             // 非中国 IP：直播相关域名自动触发自学习。
-            // learnDirectIp 内部会判断是否新 IP：
-            //   - 新 IP → 打印 "✅ 自学习" 日志 + 触发防抖 VPN 重建
-            //   - 已知 IP → 静默跳过（已在 learnedDirectIpSet 中）
             if (isLiveStreamingDomain(record.domain)) {
                 learnDirectIp(record.ip, record.domain);
-            } else {
-                LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                        + " -> ZT");
             }
         }
     }
