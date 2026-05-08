@@ -200,28 +200,44 @@ public class CidrBlock implements Comparable<CidrBlock> {
      * <p>当 CIDR 总数超过 maxEntries 时，优先合并间隙最小的相邻区间对——将两个区间之间最少的
      * 非目标 IP 纳入覆盖范围——直到总数 ≤ maxEntries。
      *
-     * <p>典型应用：将中国 IP CIDR 列表从标准聚合后的 4 000–6 000 条压缩至约 300–500 条，
+     * <p>典型应用：将中国 IP CIDR 列表从标准聚合后的约 7 000 条压缩至约 2 000 条，
      * 以避免 VPN {@code Builder.establish()} 超出 Binder 事务大小限制（部分 OEM ROM 低至 600 KB）。
-     * 代价：少量（约 5–10%）非中国 IP 会被纳入排除范围，走物理网络直连，通常不影响实际体验。
+     * 代价：少量非中国 IP 会被纳入排除范围，走物理网络直连。使用保护列表（protectedBlocks）
+     * 可以防止关键非中国 IP（如 Cloudflare DNS 1.1.1.0/24）被意外纳入排除范围。
      *
-     * <p>算法（贪心填隙）：
+     * <p>算法（贪心填隙，带保护）：
      * <ol>
      *   <li>将输入 CIDR 转为有序、不重叠的 [start, end] 区间（同 aggregate 前三步）</li>
      *   <li>预计算每个区间对应的 CIDR 数及总数</li>
-     *   <li>每轮找出相邻区间间隙最小的对，合并后更新计数；循环直到总数 ≤ maxEntries</li>
+     *   <li>每轮优先找出相邻区间间隙最小且不含受保护 IP 的对，合并后更新计数；
+     *       若所有候选均含受保护 IP，则退而合并最小间隙的对（保护为尽力而为）；
+     *       循环直到总数 ≤ maxEntries</li>
      *   <li>将最终区间列表转回 CIDR</li>
      * </ol>
      *
-     * <p>复杂度：O(n²)，其中 n 为初始区间数（通常 4 000–6 000），在后台线程运行约 50–200 ms，
+     * <p>复杂度：O(n²)，其中 n 为初始区间数（通常约 7 000），在后台线程运行约 50–500 ms，
      * 不阻塞主线程。
      *
-     * @param cidrs      待聚合的输入 CIDR 列表（如已调用 aggregate() 则效率更高）
-     * @param maxEntries 目标最大 CIDR 条目数
+     * @param cidrs          待聚合的输入 CIDR 列表（如已调用 aggregate() 则效率更高）
+     * @param maxEntries     目标最大 CIDR 条目数
+     * @param protectedBlocks 受保护的非中国 CIDR 列表（间隙中含这些 IP 的合并将被优先跳过）；
+     *                        可为 null 或空列表（退化为无保护的普通超级聚合）
      * @return 不超过 maxEntries 条的 CIDR 列表（按 startIp 排序）；若输入已满足则直接返回副本
      */
-    public static List<CidrBlock> superAggregate(List<CidrBlock> cidrs, int maxEntries) {
+    public static List<CidrBlock> superAggregate(List<CidrBlock> cidrs, int maxEntries,
+                                                  List<CidrBlock> protectedBlocks) {
         if (cidrs == null || cidrs.isEmpty()) return Collections.emptyList();
         if (cidrs.size() <= maxEntries) return new ArrayList<>(cidrs);
+
+        // Build sorted protected ranges for gap-intersection check
+        // Each entry: [start, end] (unsigned long)
+        List<long[]> protectedRanges = new ArrayList<>();
+        if (protectedBlocks != null && !protectedBlocks.isEmpty()) {
+            for (CidrBlock p : protectedBlocks) {
+                protectedRanges.add(new long[]{p.startIp & 0xFFFFFFFFL, p.endIp & 0xFFFFFFFFL});
+            }
+            protectedRanges.sort((a, b) -> Long.compare(a[0], b[0]));
+        }
 
         // Step 1: convert to sorted, non-overlapping intervals
         List<long[]> ranges = new ArrayList<>(cidrs.size());
@@ -254,34 +270,57 @@ public class CidrBlock implements Comparable<CidrBlock> {
         }
 
         // Step 3: greedy – find and merge the pair with the smallest inter-range gap
-        //         until totalCidrCount <= maxEntries
+        //         until totalCidrCount <= maxEntries.
         // After the initial merge step above, all consecutive intervals have gap >= 0
         // (gap = next.start - cur.end - 1 >= 0; negative gaps / overlaps cannot occur
         //  because overlapping/adjacent ranges were already merged in the step above).
         // gap == 0 means exactly-adjacent ranges, which are merged for free (no extra IPs).
+        //
+        // Protected-gap logic: when protectedRanges is non-empty, a gap is "protected" if it
+        // overlaps with any protected range. We prefer merging unprotected gaps first; only if
+        // no unprotected candidate exists do we fall back to merging the overall smallest gap
+        // (protection is best-effort, not a hard constraint, to ensure convergence).
         while (totalCidrCount > maxEntries && ranges.size() > 1) {
             int minIdx = 0;
             long minGap = Long.MAX_VALUE;
+            int minIdxUnprotected = -1;
+            long minGapUnprotected = Long.MAX_VALUE;
+
             for (int i = 0; i < ranges.size() - 1; i++) {
                 // gap >= 0 always holds here (see comment above); Math.max guards against
                 // any unexpected edge cases without changing behavior for valid inputs.
-                long gap = Math.max(0, ranges.get(i + 1)[0] - ranges.get(i)[1] - 1);
+                long gapStart = ranges.get(i)[1] + 1;
+                long gapEnd   = ranges.get(i + 1)[0] - 1;
+                long gap = Math.max(0, gapEnd - ranges.get(i)[1]);
                 if (gap < minGap) {
                     minGap = gap;
                     minIdx = i;
                 }
+                // Check whether this gap is protected (i.e., overlaps any protected range)
+                if (!protectedRanges.isEmpty() && gapStart <= gapEnd
+                        && gapOverlapsProtected(gapStart, gapEnd, protectedRanges)) {
+                    continue; // skip protected gaps for the "unprotected-preferred" candidate
+                }
+                if (gap < minGapUnprotected) {
+                    minGapUnprotected = gap;
+                    minIdxUnprotected = i;
+                }
             }
+
+            // Use the best unprotected candidate if available; fall back to overall minimum
+            int mergeIdx = (minIdxUnprotected >= 0) ? minIdxUnprotected : minIdx;
+
             // Read counts before mutation
-            int cnt1 = cidrCounts.get(minIdx);
-            int cnt2 = cidrCounts.get(minIdx + 1);
-            // Merge ranges[minIdx] and ranges[minIdx+1] by extending end
-            long newEnd = Math.max(ranges.get(minIdx)[1], ranges.get(minIdx + 1)[1]);
-            ranges.get(minIdx)[1] = newEnd;
-            ranges.remove(minIdx + 1);
-            int newCnt = countCidrsForRange(ranges.get(minIdx)[0], newEnd);
+            int cnt1 = cidrCounts.get(mergeIdx);
+            int cnt2 = cidrCounts.get(mergeIdx + 1);
+            // Merge ranges[mergeIdx] and ranges[mergeIdx+1] by extending end
+            long newEnd = Math.max(ranges.get(mergeIdx)[1], ranges.get(mergeIdx + 1)[1]);
+            ranges.get(mergeIdx)[1] = newEnd;
+            ranges.remove(mergeIdx + 1);
+            int newCnt = countCidrsForRange(ranges.get(mergeIdx)[0], newEnd);
             totalCidrCount = totalCidrCount - cnt1 - cnt2 + newCnt;
-            cidrCounts.set(minIdx, newCnt);
-            cidrCounts.remove(minIdx + 1);
+            cidrCounts.set(mergeIdx, newCnt);
+            cidrCounts.remove(mergeIdx + 1);
         }
 
         // Step 4: convert intervals back to CIDRs
@@ -290,6 +329,30 @@ public class CidrBlock implements Comparable<CidrBlock> {
             result.addAll(rangeToCidrs(r[0], r[1]));
         }
         return result;
+    }
+
+    /**
+     * 超级聚合（无保护列表简化版）：等同于 {@link #superAggregate(List, int, List)} 传入空保护列表。
+     *
+     * @param cidrs      待聚合的输入 CIDR 列表
+     * @param maxEntries 目标最大 CIDR 条目数
+     * @return 不超过 maxEntries 条的 CIDR 列表（按 startIp 排序）
+     */
+    public static List<CidrBlock> superAggregate(List<CidrBlock> cidrs, int maxEntries) {
+        return superAggregate(cidrs, maxEntries, null);
+    }
+
+    /**
+     * 检查间隙 [gapStart, gapEnd] 是否与任何受保护区间重叠。
+     * protectedRanges 必须已按 start 排序。
+     */
+    private static boolean gapOverlapsProtected(long gapStart, long gapEnd,
+                                                  List<long[]> protectedRanges) {
+        for (long[] p : protectedRanges) {
+            if (p[0] > gapEnd) break; // sorted: no further overlap possible
+            if (p[1] >= gapStart) return true;
+        }
+        return false;
     }
 
     /**

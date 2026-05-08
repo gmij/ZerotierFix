@@ -2229,7 +2229,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             // Android 13+：0.0.0.0/0 + excludeRoute(中国IP超级聚合列表) + excludeRoute(本地子网)
-            // 超级聚合后中国 CIDR ≤ 500 条，序列化约 41 KB，远低于任何 OEM ROM 的 Binder 事务上限。
+            // 超级聚合后中国 CIDR ≤ 2000 条，序列化约 164 KB，远低于任何 OEM ROM 的 Binder 事务上限。
             builder.addRoute(InetAddress.getByName("0.0.0.0"), 0);
             List<CidrBlock> chinaCidrsVpnSafe = router.getChinaCidrsVpnSafe();
             int excluded = 0;
