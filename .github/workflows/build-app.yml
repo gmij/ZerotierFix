@@ -140,7 +140,7 @@ jobs:
       # 创建GitHub Release (仅master分支)
       - name: Create Release
         if: github.ref == 'refs/heads/master' && success()
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ env.VERSION }}
           name: ZerotierFix v${{ env.VERSION }}
