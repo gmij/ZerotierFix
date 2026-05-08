@@ -1937,8 +1937,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 for (var inetSocketAddress : virtualNetworkConfig.getDns().getServers()) {
                     InetAddress address = inetSocketAddress.getAddress();
                     if (isGlobalProxy && !shouldKeepNetworkDnsServerInGlobalProxy(address, smartRouter)) {
+                        String dnsAddress = address != null ? address.getHostAddress() : "null";
                         LogUtil.i(TAG, "全局代理模式：跳过公网 DNS "
-                                + String.valueOf(address) + "，避免 YouTube/Google 类应用命中污染解析");
+                                + dnsAddress + "，避免 YouTube/Google 类应用命中污染解析");
                         continue;
                     }
                     addDnsServerIfSupported(builder, address);
@@ -2004,12 +2005,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             return false;
         }
         if (!(address instanceof Inet4Address)) {
+            // 当前污染问题只针对公网 IPv4 DNS：IPv6 保持原行为，避免误伤已有 IPv6/ULA DNS 配置。
             return true;
         }
         if (isLocalOrPrivateIpv4(address)) {
             return true;
         }
         if (!smartRouter.isChnroutesReady()) {
+            // chnroutes 未就绪时无法安全判断公网 DNS 是否属于中国地址；此时先全部跳过公网 DNS，
+            // 统一回退到后面追加的国际 DNS，避免初始化窗口内命中被污染的直连解析。
             return false;
         }
         return !smartRouter.isChineseIp(address);
