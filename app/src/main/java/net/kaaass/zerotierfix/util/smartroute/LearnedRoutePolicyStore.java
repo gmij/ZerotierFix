@@ -104,7 +104,7 @@ public class LearnedRoutePolicyStore {
         if (promotePrefix24) {
             long prefix24 = ipLong & 0xFFFFFF00L;
             changed |= observeSingleLocked(prefix24, 24, preference, domain,
-                    reason + " /24热点提升", nowMs, changeLog);
+                    reason + " /24 热点提升", nowMs, changeLog);
         }
         changed |= evictIfNeededLocked(preference, changeLog);
         if (!changed) return ChangeSummary.none();

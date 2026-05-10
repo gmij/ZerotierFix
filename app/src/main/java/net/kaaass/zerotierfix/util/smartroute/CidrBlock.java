@@ -474,6 +474,7 @@ public class CidrBlock implements Comparable<CidrBlock> {
     }
 
     private static List<long[]> toMergedRanges(List<CidrBlock> cidrs) {
+        if (cidrs == null || cidrs.isEmpty()) return Collections.emptyList();
         List<long[]> ranges = new ArrayList<>(cidrs.size());
         for (CidrBlock cidr : cidrs) {
             ranges.add(new long[]{cidr.startIp & 0xFFFFFFFFL, cidr.endIp & 0xFFFFFFFFL});
