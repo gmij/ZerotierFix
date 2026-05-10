@@ -195,6 +195,54 @@ public class CidrBlock implements Comparable<CidrBlock> {
     }
 
     /**
+     * 计算差集：{@code minuend - subtrahend}。
+     *
+     * <p>典型用途：在 CHINA_DIRECT 的粗粒度基础骨架上，减去少量 learned VIA_ZT 例外，
+     * 让原本命中中国路由的大热点 IP 重新回到 ZeroTier。</p>
+     */
+    public static List<CidrBlock> subtract(List<CidrBlock> minuend, List<CidrBlock> subtrahend) {
+        if (minuend == null || minuend.isEmpty()) return Collections.emptyList();
+        if (subtrahend == null || subtrahend.isEmpty()) return aggregate(minuend);
+
+        List<long[]> baseRanges = toMergedRanges(minuend);
+        List<long[]> removedRanges = toMergedRanges(subtrahend);
+        List<long[]> keptRanges = new ArrayList<>();
+        int removeIdx = 0;
+
+        for (long[] base : baseRanges) {
+            long cursor = base[0];
+            while (removeIdx < removedRanges.size() && removedRanges.get(removeIdx)[1] < cursor) {
+                removeIdx++;
+            }
+
+            int probeIdx = removeIdx;
+            while (probeIdx < removedRanges.size()) {
+                long[] removed = removedRanges.get(probeIdx);
+                if (removed[0] > base[1]) break;
+                if (removed[0] > cursor) {
+                    keptRanges.add(new long[]{cursor, Math.min(base[1], removed[0] - 1)});
+                }
+                if (removed[1] == 0xFFFFFFFFL) {
+                    cursor = 0x1_0000_0000L;
+                    break;
+                }
+                cursor = Math.max(cursor, removed[1] + 1);
+                if (cursor > base[1]) break;
+                probeIdx++;
+            }
+            if (cursor <= base[1]) {
+                keptRanges.add(new long[]{cursor, base[1]});
+            }
+        }
+
+        List<CidrBlock> result = new ArrayList<>();
+        for (long[] kept : keptRanges) {
+            result.addAll(rangeToCidrs(kept[0], kept[1]));
+        }
+        return result;
+    }
+
+    /**
      * 超级聚合（有损聚合）：在标准聚合基础上，通过允许少量误差进一步减少 CIDR 数量。
      *
      * <p>当 CIDR 总数超过 maxEntries 时，优先合并间隙最小的相邻区间对——将两个区间之间最少的
@@ -358,7 +406,7 @@ public class CidrBlock implements Comparable<CidrBlock> {
      * protectedRanges 必须已按 start 排序。
      */
     private static boolean gapOverlapsProtected(long gapStart, long gapEnd,
-                                                  List<long[]> protectedRanges) {
+                                                   List<long[]> protectedRanges) {
         for (long[] p : protectedRanges) {
             if (p[0] > gapEnd) break; // sorted: no further overlap possible
             if (p[1] >= gapStart) return true;
@@ -423,6 +471,27 @@ public class CidrBlock implements Comparable<CidrBlock> {
             if (start > 0xFFFFFFFFL) break;
         }
         return result;
+    }
+
+    private static List<long[]> toMergedRanges(List<CidrBlock> cidrs) {
+        List<long[]> ranges = new ArrayList<>(cidrs.size());
+        for (CidrBlock cidr : cidrs) {
+            ranges.add(new long[]{cidr.startIp & 0xFFFFFFFFL, cidr.endIp & 0xFFFFFFFFL});
+        }
+        ranges.sort((a, b) -> Long.compare(a[0], b[0]));
+        List<long[]> merged = new ArrayList<>();
+        long[] cur = new long[]{ranges.get(0)[0], ranges.get(0)[1]};
+        for (int i = 1; i < ranges.size(); i++) {
+            long[] next = ranges.get(i);
+            if (next[0] <= cur[1] + 1) {
+                cur[1] = Math.max(cur[1], next[1]);
+            } else {
+                merged.add(cur);
+                cur = new long[]{next[0], next[1]};
+            }
+        }
+        merged.add(cur);
+        return merged;
     }
 
     /**

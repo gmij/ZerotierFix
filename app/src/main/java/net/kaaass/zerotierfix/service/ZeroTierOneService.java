@@ -205,15 +205,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /** 首次图标修复重建最大重试次数。 */
     private static final int FIRST_ESTABLISH_ICON_REFRESH_MAX_RETRIES = 3;
     /**
-     * 自学习直连 IP 触发 VPN 重建的 Runnable。
+     * learned 路由策略触发 VPN 重建的 Runnable。
      * 与 networkChangeRunnable 独立，避免互相取消。
      */
-    private final Runnable learnedIpRebuildRunnable = () -> {
-        LogUtil.i(TAG, "自学习直连 IP 触发 VPN 路由重建（" + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000
-                + "s 防抖到期），重新配置 excludeRoute 使新发现的直播 CDN IP 走物理直连");
+    private final Runnable learnedRoutePolicyRebuildRunnable = () -> {
+        LogUtil.i(TAG, "learned 路由策略触发 VPN 重建（" + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000
+                + "s 防抖到期），重新配置智能路由例外表");
         doNetworkChangedUpdate();
     };
-    /** 自学习 IP 触发重建的防抖延迟（10 秒，确保批量 IP 一次重建） */
+    /** learned 路由策略触发重建的防抖延迟（10 秒，确保批量变更一次重建） */
     private static final long LEARNED_IP_REBUILD_DEBOUNCE_MS = 10_000;
     /**
      * 用户主动切换路由模式（全局/per-app）时的防抖延迟（毫秒）。
@@ -659,8 +659,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 取消网络变化回调
         unregisterNetworkChangeCallback();
 
-        // 清除 SmartRouting chnroutes 就绪回调，避免服务停止后触发跨 session 的陈旧重建
+        // 清除 SmartRouting 回调，避免服务停止后触发跨 session 的陈旧重建
         SmartRoutingManager.getInstance(this).setOnChnroutesReadyListener(null);
+        SmartRoutingManager.getInstance(this).setOnRoutePolicyChangedListener(null);
 
         // 取消首次 establish 的 pending runnable（避免 VPN 停止后仍触发 establish）
         if (pendingFirstEstablishRunnable != null) {
@@ -1486,20 +1487,21 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
         this.tunTapAdapter.setSmartRouting(smartRouter, effectiveSmartRoutingMode, isPerAppRouting);
 
-        // 注册自学习直连 IP 回调：DNS 嗅探发现直播 CDN 走 ZT 时，
-        // 用 10 秒防抖重建 VPN，让新 IP 立即走物理直连，实现"越用越好用"。
+        // 注册 learned 路由策略回调：DNS 嗅探发现新的 DIRECT / VIA_ZT 热点例外时，
+        // 用 10 秒防抖重建 VPN，避免每个新 IP 都触发一次全量 establish()。
         if (smartRoutingEnabled && isNetworkAutoRebuildEnabled()) {
             ensureNetworkChangeHandler();
-            smartRouter.setOnNewLearnedIpListener(ip -> {
+            smartRouter.setOnRoutePolicyChangedListener(summary -> {
                 if (networkChangeHandler != null) {
-                    LogUtil.d(TAG, "新直连 IP " + ip + "，安排 VPN 路由重建（防抖 " + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000 + "s）");
-                    networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
-                    networkChangeHandler.postDelayed(learnedIpRebuildRunnable,
+                    LogUtil.d(TAG, "learned 路由策略变化：" + summary + "，安排 VPN 路由重建（防抖 "
+                            + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000 + "s）");
+                    networkChangeHandler.removeCallbacks(learnedRoutePolicyRebuildRunnable);
+                    networkChangeHandler.postDelayed(learnedRoutePolicyRebuildRunnable,
                             LEARNED_IP_REBUILD_DEBOUNCE_MS);
                 }
             });
         } else {
-            smartRouter.setOnNewLearnedIpListener(null);
+            smartRouter.setOnRoutePolicyChangedListener(null);
         }
 
         this.tunTapAdapter.startThreads();
@@ -1619,7 +1621,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (!isNetworkAutoRebuildEnabled()) {
             unregisterConnectivityNetworkCallback();
             networkChangeHandler.removeCallbacks(networkChangeRunnable);
-            networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
+            networkChangeHandler.removeCallbacks(learnedRoutePolicyRebuildRunnable);
             LogUtil.i(TAG, "网络自动重建已禁用：跳过物理网络变化回调注册");
             return;
         }
@@ -1737,7 +1739,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 停止 HandlerThread（取消所有待执行的重建任务）
         if (networkChangeHandler != null) {
             networkChangeHandler.removeCallbacks(networkChangeRunnable);
-            networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
+            networkChangeHandler.removeCallbacks(learnedRoutePolicyRebuildRunnable);
             networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
             networkChangeHandler = null;
         }
@@ -1767,7 +1769,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 实际执行 VPN 路由重建的逻辑，由 {@link #networkChangeRunnable} 在后台线程调用。
      */
     private void doNetworkChangedUpdate() {
-        // 防御性检查：除了 networkChangeRunnable，learnedIpRebuildRunnable 也会调用此方法；
+        // 防御性检查：除了 networkChangeRunnable，learnedRoutePolicyRebuildRunnable 也会调用此方法；
         // 且开关关闭前已排队的旧 runnable 仍可能在稍后执行，因此此处必须再次判定开关。
         if (!isNetworkAutoRebuildEnabled()) {
             LogUtil.i(TAG, "网络自动重建已禁用，跳过 doNetworkChangedUpdate");
