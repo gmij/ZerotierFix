@@ -109,6 +109,19 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     public static final String ZT1_NETWORK_ID = "com.zerotier.one.network_id";
     public static final String ZT1_USE_DEFAULT_ROUTE = "com.zerotier.one.use_default_route";
     private static final String[] DISALLOWED_APPS = {"com.android.vending"};
+    /**
+     * 全局路由下默认旁路的系统蓝牙/电话相关包。
+     * 这些组件应尽量保持走系统原始网络路径，避免影响蓝牙通话、HFP 和系统拨号控制。
+     */
+    private static final String[] GLOBAL_ROUTE_SYSTEM_BYPASS_PACKAGES = {
+            "com.android.bluetooth",
+            "com.google.android.bluetooth",
+            "com.android.phone",
+            "com.android.server.telecom",
+            "com.android.dialer",
+            "com.google.android.dialer",
+            "com.android.incallui"
+    };
     private static final String TAG = "ZT1_Service";
     /** 移动数据接口名称前缀——这些是"上行"互联网提供者，不应排除在 VPN 路由之外。 */
     private static final String[] MOBILE_DATA_IFACE_PREFIXES = {
@@ -1850,11 +1863,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             if (isRouteViaZeroTier) {
                 // 全局路由模式，所有应用都通过VPN（除了本应用）
                 // 排除本应用自身，避免VPN循环
-                try {
-                    builder.addDisallowedApplication(getPackageName());
-                    LogUtil.d(TAG, "排除应用: " + getPackageName() + " (本应用)");
-                } catch (Exception e) {
-                    LogUtil.e(TAG, "无法排除应用 " + getPackageName(), e);
+                addDisallowedApplicationSafely(builder, getPackageName(), "本应用");
+                for (String packageName : GLOBAL_ROUTE_SYSTEM_BYPASS_PACKAGES) {
+                    addDisallowedApplicationSafely(builder, packageName, "全局路由下默认旁路的蓝牙/电话系统组件");
                 }
             } else {
                 LogUtil.d(TAG, "未启用全局路由或per-app路由");
@@ -1906,6 +1917,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
 
         LogUtil.i(TAG, "VPN已就绪: " + allowedCount + " 个应用通过Per-app路由走VPN");
+    }
+
+    private void addDisallowedApplicationSafely(VpnService.Builder builder, String packageName, String reason) {
+        try {
+            builder.addDisallowedApplication(packageName);
+            LogUtil.d(TAG, "排除应用: " + packageName + " (" + reason + ")");
+        } catch (Exception e) {
+            LogUtil.d(TAG, "跳过排除应用: " + packageName + " (" + reason + "): " + e.getMessage());
+        }
     }
 
     private void addDNSServers(VpnService.Builder builder, Network network) {
