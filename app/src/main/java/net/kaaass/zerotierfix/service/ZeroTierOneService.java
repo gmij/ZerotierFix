@@ -558,7 +558,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 ensureNetworkChangeHandler();
                 final String finalReason = reason;
                 networkChangeHandler.post(() ->
-                        rebuildVpnForCurrentNetwork(FORCE_RECONFIGURE_CALLER_PREFIX + finalReason + ")"));
+                        rebuildVpnForCurrentNetwork(FORCE_RECONFIGURE_CALLER_PREFIX + finalReason + ")", true));
                 return START_STICKY;
             } else {
                 LogUtil.d(TAG, "强制 VPN 重配请求忽略：服务尚未建立 VPN，按常规启动流程继续");
@@ -1172,6 +1172,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     private boolean updateTunnelConfig(Network network, String caller, Long fixedRequestSeq) {
+        return updateTunnelConfig(network, caller, fixedRequestSeq, false);
+    }
+
+    private boolean updateTunnelConfig(Network network, String caller, Long fixedRequestSeq,
+                                       boolean forceColdSwitch) {
         long requestSeq = fixedRequestSeq != null ? fixedRequestSeq : vpnRebuildRequestSeq.incrementAndGet();
         // 防止并发执行：若已有 VPN 配置正在进行，延迟 3s 后由 networkChangeHandler 重试一次。
         if (!isConfiguringVpn.compareAndSet(false, true)) {
@@ -1186,14 +1191,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         try {
             LogUtil.i(TAG, "VPN 重建开始，触发路径: " + caller);
-            boolean updated = doUpdateTunnelConfig(network, requestSeq, caller);
+            boolean updated = doUpdateTunnelConfig(network, requestSeq, caller, forceColdSwitch);
             return updated;
         } finally {
             isConfiguringVpn.set(false);
         }
     }
 
-    private boolean doUpdateTunnelConfig(Network network, long requestSeq, String caller) {
+    private boolean doUpdateTunnelConfig(Network network, long requestSeq, String caller,
+                                         boolean forceColdSwitch) {
         // 记录重建开始时间：用于抑制 VPN establish() 触发的虚假物理网络回调和 ZT node 回调
         lastRebuildTime = android.os.SystemClock.elapsedRealtime();
         long networkId = network.getNetworkId();
@@ -1226,7 +1232,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 对“设置切换智能路由触发的强制重配”，采用更接近冷启动的重建：
         // 先关闭旧 TUN 资源再 establish，可让系统路由/会话更彻底刷新，
         // 对应用户反馈的“重启 VPN 后可恢复”场景。
-        boolean forceColdSwitch = caller != null && caller.startsWith(FORCE_RECONFIGURE_CALLER_PREFIX);
         if (forceColdSwitch && oldVpnSocket != null) {
             LogUtil.i(TAG, "强制重配：先关闭旧 VPN 资源后再 establish（cold-switch）");
             closeOldVpnResources(oldIn, oldOut, oldVpnSocket);
@@ -1808,7 +1813,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 以当前 networkId 从数据库读取配置并执行一次 VPN 重建。
      * 用于承接多种“非物理网络变化”触发源（如 chnroutes 就绪、设置页强制重配）。
      */
-    private void rebuildVpnForCurrentNetwork(String caller) {
+    private void rebuildVpnForCurrentNetwork(String caller, boolean forceColdSwitch) {
         if (this.vpnSocket == null || this.networkId == 0 || this.node == null) {
             LogUtil.d(TAG, caller + ": VPN 未运行或网络上下文缺失，跳过");
             return;
@@ -1820,7 +1825,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     .where(NetworkDao.Properties.NetworkId.eq(this.networkId))
                     .list();
             if (networks.size() == 1) {
-                updateTunnelConfig(networks.get(0), caller);
+                updateTunnelConfig(networks.get(0), caller, null, forceColdSwitch);
             } else {
                 LogUtil.w(TAG, caller + ": 未找到唯一网络记录，size=" + networks.size());
             }
@@ -1836,7 +1841,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 该重建用于将“临时全局路由”切换为 CHINA_DIRECT 精确分流。
      */
     private void rebuildVpnForChnroutesReady() {
-        rebuildVpnForCurrentNetwork("chnroutesReady(数据就绪切换CHINA_DIRECT)");
+        rebuildVpnForCurrentNetwork("chnroutesReady(数据就绪切换CHINA_DIRECT)", false);
     }
     
     /**
