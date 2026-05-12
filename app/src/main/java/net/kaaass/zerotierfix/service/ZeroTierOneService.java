@@ -110,6 +110,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     public static final String ZT1_USE_DEFAULT_ROUTE = "com.zerotier.one.use_default_route";
     public static final String EXTRA_FORCE_RECONFIGURE = "net.kaaass.zerotierfix.extra.force_reconfigure";
     public static final String EXTRA_FORCE_RECONFIGURE_REASON = "net.kaaass.zerotierfix.extra.force_reconfigure_reason";
+    private static final String FORCE_RECONFIGURE_CALLER_PREFIX = "forceReconfigureIntent(";
     private static final String[] DISALLOWED_APPS = {"com.android.vending"};
     /**
      * 全局路由下默认旁路的系统蓝牙/电话相关包。
@@ -557,7 +558,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 ensureNetworkChangeHandler();
                 final String finalReason = reason;
                 networkChangeHandler.post(() ->
-                        rebuildVpnForCurrentNetwork("forceReconfigureIntent(" + finalReason + ")"));
+                        rebuildVpnForCurrentNetwork(FORCE_RECONFIGURE_CALLER_PREFIX + finalReason + ")"));
                 return START_STICKY;
             } else {
                 LogUtil.d(TAG, "强制 VPN 重配请求忽略：服务尚未建立 VPN，按常规启动流程继续");
@@ -1225,7 +1226,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 对“设置切换智能路由触发的强制重配”，采用更接近冷启动的重建：
         // 先关闭旧 TUN 资源再 establish，可让系统路由/会话更彻底刷新，
         // 对应用户反馈的“重启 VPN 后可恢复”场景。
-        boolean forceColdSwitch = caller != null && caller.startsWith("forceReconfigureIntent(");
+        boolean forceColdSwitch = caller != null && caller.startsWith(FORCE_RECONFIGURE_CALLER_PREFIX);
         if (forceColdSwitch && oldVpnSocket != null) {
             LogUtil.i(TAG, "强制重配：先关闭旧 VPN 资源后再 establish（cold-switch）");
             closeOldVpnResources(oldIn, oldOut, oldVpnSocket);
