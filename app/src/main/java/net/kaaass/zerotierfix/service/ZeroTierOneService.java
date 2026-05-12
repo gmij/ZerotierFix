@@ -109,6 +109,19 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     public static final String ZT1_NETWORK_ID = "com.zerotier.one.network_id";
     public static final String ZT1_USE_DEFAULT_ROUTE = "com.zerotier.one.use_default_route";
     private static final String[] DISALLOWED_APPS = {"com.android.vending"};
+    /**
+     * 全局路由下默认旁路的系统蓝牙/电话相关包。
+     * 这些组件应尽量保持走系统原始网络路径，避免影响蓝牙通话、HFP 和系统拨号控制。
+     */
+    private static final String[] GLOBAL_ROUTE_SYSTEM_BYPASS_PACKAGES = {
+            "com.android.bluetooth",
+            "com.google.android.bluetooth",
+            "com.android.phone",
+            "com.android.server.telecom",
+            "com.android.dialer",
+            "com.google.android.dialer",
+            "com.android.incallui"
+    };
     private static final String TAG = "ZT1_Service";
     /** 移动数据接口名称前缀——这些是"上行"互联网提供者，不应排除在 VPN 路由之外。 */
     private static final String[] MOBILE_DATA_IFACE_PREFIXES = {
@@ -205,15 +218,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /** 首次图标修复重建最大重试次数。 */
     private static final int FIRST_ESTABLISH_ICON_REFRESH_MAX_RETRIES = 3;
     /**
-     * 自学习直连 IP 触发 VPN 重建的 Runnable。
+     * learned 路由策略触发 VPN 重建的 Runnable。
      * 与 networkChangeRunnable 独立，避免互相取消。
      */
-    private final Runnable learnedIpRebuildRunnable = () -> {
-        LogUtil.i(TAG, "自学习直连 IP 触发 VPN 路由重建（" + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000
-                + "s 防抖到期），重新配置 excludeRoute 使新发现的直播 CDN IP 走物理直连");
+    private final Runnable learnedRoutePolicyRebuildRunnable = () -> {
+        LogUtil.i(TAG, "learned 路由策略触发 VPN 重建（" + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000
+                + "s 防抖到期），重新配置智能路由例外表");
         doNetworkChangedUpdate();
     };
-    /** 自学习 IP 触发重建的防抖延迟（10 秒，确保批量 IP 一次重建） */
+    /** learned 路由策略触发重建的防抖延迟（10 秒，确保批量变更一次重建） */
     private static final long LEARNED_IP_REBUILD_DEBOUNCE_MS = 10_000;
     /**
      * 用户主动切换路由模式（全局/per-app）时的防抖延迟（毫秒）。
@@ -659,8 +672,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 取消网络变化回调
         unregisterNetworkChangeCallback();
 
-        // 清除 SmartRouting chnroutes 就绪回调，避免服务停止后触发跨 session 的陈旧重建
+        // 清除 SmartRouting 回调，避免服务停止后触发跨 session 的陈旧重建
         SmartRoutingManager.getInstance(this).setOnChnroutesReadyListener(null);
+        SmartRoutingManager.getInstance(this).setOnRoutePolicyChangedListener(null);
 
         // 取消首次 establish 的 pending runnable（避免 VPN 停止后仍触发 establish）
         if (pendingFirstEstablishRunnable != null) {
@@ -1405,8 +1419,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 配置 MTU
         int mtu = virtualNetworkConfig.getMtu();
         LogUtil.d(TAG, "MTU from Network Config: " + mtu);
-        if (mtu == 0) {
-            mtu = 2800;
+        // 过大的 MTU 会在移动网络/NAT 场景触发 UDP 分片黑洞，表现为下载中断或 0B 文件。
+        // 默认 1400：为 ZeroTier/UDP 封装和部分运营商链路预留头部空间，比 1500 更稳。
+        // 用户/控制器显式下发 MTU 时，仍允许使用 <=1500 的值。
+        if (mtu <= 0) {
+            mtu = 1400;
+        } else if (mtu > 1500) {
+            LogUtil.w(TAG, "MTU too large for stable mobile transport, clamp to 1500: " + mtu);
+            mtu = 1500;
         }
         LogUtil.d(TAG, "MTU Set: " + mtu);
         builder.setMtu(mtu);
@@ -1486,20 +1506,21 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
         this.tunTapAdapter.setSmartRouting(smartRouter, effectiveSmartRoutingMode, isPerAppRouting);
 
-        // 注册自学习直连 IP 回调：DNS 嗅探发现直播 CDN 走 ZT 时，
-        // 用 10 秒防抖重建 VPN，让新 IP 立即走物理直连，实现"越用越好用"。
+        // 注册 learned 路由策略回调：DNS 嗅探发现新的 DIRECT / VIA_ZT 热点例外时，
+        // 用 10 秒防抖重建 VPN，避免每个新 IP 都触发一次全量 establish()。
         if (smartRoutingEnabled && isNetworkAutoRebuildEnabled()) {
             ensureNetworkChangeHandler();
-            smartRouter.setOnNewLearnedIpListener(ip -> {
+            smartRouter.setOnRoutePolicyChangedListener(summary -> {
                 if (networkChangeHandler != null) {
-                    LogUtil.d(TAG, "新直连 IP " + ip + "，安排 VPN 路由重建（防抖 " + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000 + "s）");
-                    networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
-                    networkChangeHandler.postDelayed(learnedIpRebuildRunnable,
+                    LogUtil.d(TAG, "learned 路由策略变化：" + summary + "，安排 VPN 路由重建（防抖 "
+                            + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000 + "s）");
+                    networkChangeHandler.removeCallbacks(learnedRoutePolicyRebuildRunnable);
+                    networkChangeHandler.postDelayed(learnedRoutePolicyRebuildRunnable,
                             LEARNED_IP_REBUILD_DEBOUNCE_MS);
                 }
             });
         } else {
-            smartRouter.setOnNewLearnedIpListener(null);
+            smartRouter.setOnRoutePolicyChangedListener(null);
         }
 
         this.tunTapAdapter.startThreads();
@@ -1619,7 +1640,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (!isNetworkAutoRebuildEnabled()) {
             unregisterConnectivityNetworkCallback();
             networkChangeHandler.removeCallbacks(networkChangeRunnable);
-            networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
+            networkChangeHandler.removeCallbacks(learnedRoutePolicyRebuildRunnable);
             LogUtil.i(TAG, "网络自动重建已禁用：跳过物理网络变化回调注册");
             return;
         }
@@ -1737,7 +1758,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 停止 HandlerThread（取消所有待执行的重建任务）
         if (networkChangeHandler != null) {
             networkChangeHandler.removeCallbacks(networkChangeRunnable);
-            networkChangeHandler.removeCallbacks(learnedIpRebuildRunnable);
+            networkChangeHandler.removeCallbacks(learnedRoutePolicyRebuildRunnable);
             networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
             networkChangeHandler = null;
         }
@@ -1767,7 +1788,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 实际执行 VPN 路由重建的逻辑，由 {@link #networkChangeRunnable} 在后台线程调用。
      */
     private void doNetworkChangedUpdate() {
-        // 防御性检查：除了 networkChangeRunnable，learnedIpRebuildRunnable 也会调用此方法；
+        // 防御性检查：除了 networkChangeRunnable，learnedRoutePolicyRebuildRunnable 也会调用此方法；
         // 且开关关闭前已排队的旧 runnable 仍可能在稍后执行，因此此处必须再次判定开关。
         if (!isNetworkAutoRebuildEnabled()) {
             LogUtil.i(TAG, "网络自动重建已禁用，跳过 doNetworkChangedUpdate");
@@ -1848,11 +1869,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             if (isRouteViaZeroTier) {
                 // 全局路由模式，所有应用都通过VPN（除了本应用）
                 // 排除本应用自身，避免VPN循环
-                try {
-                    builder.addDisallowedApplication(getPackageName());
-                    LogUtil.d(TAG, "排除应用: " + getPackageName() + " (本应用)");
-                } catch (Exception e) {
-                    LogUtil.e(TAG, "无法排除应用 " + getPackageName(), e);
+                addDisallowedApplicationSafely(builder, getPackageName(), "本应用");
+                for (String packageName : GLOBAL_ROUTE_SYSTEM_BYPASS_PACKAGES) {
+                    addDisallowedApplicationSafely(builder, packageName, "全局路由下默认旁路的蓝牙/电话系统组件");
                 }
             } else {
                 LogUtil.d(TAG, "未启用全局路由或per-app路由");
@@ -1906,12 +1925,22 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.i(TAG, "VPN已就绪: " + allowedCount + " 个应用通过Per-app路由走VPN");
     }
 
+    private void addDisallowedApplicationSafely(VpnService.Builder builder, String packageName, String reason) {
+        try {
+            builder.addDisallowedApplication(packageName);
+            LogUtil.d(TAG, "排除应用: " + packageName + " (" + reason + ")");
+        } catch (Exception e) {
+            LogUtil.d(TAG, "跳过排除应用: " + packageName + " (" + reason + "): " + e.getMessage());
+        }
+    }
+
     private void addDNSServers(VpnService.Builder builder, Network network) {
         var networkConfig = network.getNetworkConfig();
         var virtualNetworkConfig = getVirtualNetworkConfig(network.getNetworkId());
         var dnsMode = DNSMode.fromInt(networkConfig.getDnsMode());
         boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
         boolean isPerAppRouting = networkConfig.getPerAppRouting();
+        SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
         // 全局代理模式（isRouteViaZeroTier=true）：中国 IP 排除在 VPN 外，DNS 服务器本身却是中国 IP，
         // 国内 DNS（114/AliDNS）直连时会对 google.com 等境外域名进行 DNS 污染，导致证书错误。
         // 使用国际 DNS（Google/Cloudflare），这些 IP 是非中国 IP，会经 VPN/ZT 发出，绕过 GFW 污染。
@@ -1935,11 +1964,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 builder.addSearchDomain(virtualNetworkConfig.getDns().getDomain());
                 for (var inetSocketAddress : virtualNetworkConfig.getDns().getServers()) {
                     InetAddress address = inetSocketAddress.getAddress();
-                    if (address instanceof Inet4Address) {
-                        builder.addDnsServer(address);
-                    } else if ((address instanceof Inet6Address) && !this.disableIPv6) {
-                        builder.addDnsServer(address);
+                    if (isGlobalProxy && !shouldKeepNetworkDnsServerInGlobalProxy(address, smartRouter)) {
+                        LogUtil.i(TAG, "全局代理模式：跳过公网 DNS "
+                                + address.getHostAddress() + "，避免 YouTube/Google 类应用命中污染解析");
+                        continue;
                     }
+                    addDnsServerIfSupported(builder, address);
                 }
                 // 路由激活时额外添加 DNS 备援
                 if (isGlobalProxy) {
@@ -1955,11 +1985,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 for (var dnsServer : networkConfig.getDnsServers()) {
                     try {
                         InetAddress byName = InetAddress.getByName(dnsServer.getNameserver());
-                        if (byName instanceof Inet4Address) {
-                            builder.addDnsServer(byName);
-                        } else if ((byName instanceof Inet6Address) && !this.disableIPv6) {
-                            builder.addDnsServer(byName);
+                        if (isGlobalProxy && !shouldKeepNetworkDnsServerInGlobalProxy(byName, smartRouter)) {
+                            LogUtil.i(TAG, "全局代理模式：跳过自定义公网 DNS "
+                                    + byName.getHostAddress() + "，避免污染解析");
+                            continue;
                         }
+                        addDnsServerIfSupported(builder, byName);
                     } catch (Exception e) {
                         LogUtil.e(TAG, "Exception parsing DNS server: " + e, e);
                     }
@@ -1985,6 +2016,49 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 }
                 break;
         }
+    }
+
+    private void addDnsServerIfSupported(VpnService.Builder builder, InetAddress address) {
+        if (address instanceof Inet4Address) {
+            builder.addDnsServer(address);
+        } else if ((address instanceof Inet6Address) && !this.disableIPv6) {
+            builder.addDnsServer(address);
+        }
+    }
+
+    private boolean shouldKeepNetworkDnsServerInGlobalProxy(InetAddress address,
+                                                            SmartRoutingManager smartRouter) {
+        if (address == null) {
+            return false;
+        }
+        if (!(address instanceof Inet4Address)) {
+            // 当前污染问题只针对公网 IPv4 DNS：IPv6 保持原行为，避免误伤已有 IPv6/ULA DNS 配置。
+            return true;
+        }
+        if (isLocalOrPrivateIpv4(address)) {
+            return true;
+        }
+        if (!smartRouter.isChnroutesReady()) {
+            // chnroutes 未就绪时无法安全判断公网 DNS 是否属于中国地址；此时先全部跳过公网 DNS，
+            // 统一回退到后面追加的国际 DNS，避免初始化窗口内命中被污染的直连解析。
+            return false;
+        }
+        return !smartRouter.isChineseIp(address);
+    }
+
+    private static boolean isLocalOrPrivateIpv4(InetAddress address) {
+        if (!(address instanceof Inet4Address)) {
+            return false;
+        }
+        if (address.isAnyLocalAddress()
+                || address.isLoopbackAddress()
+                || address.isLinkLocalAddress()
+                || address.isSiteLocalAddress()) {
+            return true;
+        }
+        long ipLong = ipv4BytesToLong(address.getAddress());
+        // RFC 6598 Carrier-Grade NAT: 100.64.0.0/10，也属于本地/运营商内网地址，不应按公网污染 DNS 处理。
+        return (ipLong & CGN_MASK) == CGN_PREFIX;
     }
     
 

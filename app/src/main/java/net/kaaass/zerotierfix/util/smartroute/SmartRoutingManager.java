@@ -16,7 +16,6 @@ import java.net.InetAddress;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -184,27 +183,31 @@ public class SmartRoutingManager {
      * 自学习直连 IP 监听器：当 DNS 嗅探发现新的直播 CDN IP 走 ZT（非中国IP）时触发，
      * 用于通知 ZeroTierOneService 做防抖 VPN 重建，让新 IP 立即走直连。
      */
-    public interface OnNewLearnedIpListener {
-        void onNewLearnedIp(InetAddress ip);
+    public interface OnRoutePolicyChangedListener {
+        void onRoutePolicyChanged(String summary);
     }
-    private volatile OnNewLearnedIpListener onNewLearnedIpListener;
+    private volatile OnRoutePolicyChangedListener onRoutePolicyChangedListener;
 
     /**
-     * 自学习直连 IP 集合（uint32 整数形式，用于 isChineseIp O(1) 快速查找）。
-     * 在 DNS 嗅探发现直播 CDN IP 走 ZT 时动态增长，跨 session 持久化到文件。
+     * 分层式动态路由策略表：
+     * DIRECT = 补充进中国直连骨架；VIA_ZT = 从中国直连骨架中挖掉的热点例外。
+     *
+     * <p>DIRECT 允许更多热点，所以容量略大；VIA_ZT 每个 /32 都会拆分已有 excludeRoute，
+     * 为避免 Binder 路由表急剧膨胀，容量保持更小。</p>
      */
-    private final java.util.concurrent.CopyOnWriteArraySet<Long> learnedDirectIpSet =
-            new java.util.concurrent.CopyOnWriteArraySet<>();
-
-    /**
-     * 自学习直连 IP 的 CIDR 列表（全部为 /32），用于 VPN 路由 excludeRoute 配置。
-     * 与 chinaCidrs 一起通过 getChinaCidrs() 对外提供。
-     */
-    private final java.util.concurrent.CopyOnWriteArrayList<CidrBlock> learnedDirectCidrs =
-            new java.util.concurrent.CopyOnWriteArrayList<>();
-
-    /** 自学习 IP 上限，防止无限增长 */
-    private static final int MAX_LEARNED_IPS = 500;
+    private static final long LEARNED_POLICY_TTL_MS = 7L * 24 * 60 * 60 * 1000;
+    private static final int DIRECT_ACTIVATION_HITS = 2;
+    private static final int VIA_ZT_ACTIVATION_HITS = 1;
+    private static final int PREFIX_PROMOTION_HITS = 3;
+    private static final int MAX_ACTIVE_DIRECT_POLICIES = 160;
+    private static final int MAX_ACTIVE_VIA_ZT_POLICIES = 24;
+    private final LearnedRoutePolicyStore learnedRoutePolicies = new LearnedRoutePolicyStore(
+            LEARNED_POLICY_TTL_MS,
+            DIRECT_ACTIVATION_HITS,
+            VIA_ZT_ACTIVATION_HITS,
+            PREFIX_PROMOTION_HITS,
+            MAX_ACTIVE_DIRECT_POLICIES,
+            MAX_ACTIVE_VIA_ZT_POLICIES);
 
     private SmartRoutingManager(Context context) {
         this.context = context;
@@ -224,8 +227,13 @@ public class SmartRoutingManager {
      */
     public boolean isChineseIp(InetAddress address) {
         if (address == null) return false;
-        long ipLong = toUint32(address);
-        if (ipLong != -1 && learnedDirectIpSet.contains(ipLong)) return true;
+        long now = System.currentTimeMillis();
+        if (learnedRoutePolicies.matchesActivePolicy(address, LearnedRoutePolicyStore.Preference.VIA_ZT, now)) {
+            return false;
+        }
+        if (learnedRoutePolicies.matchesActivePolicy(address, LearnedRoutePolicyStore.Preference.DIRECT, now)) {
+            return true;
+        }
         return binaryContains(chinaCidrs, address);
     }
 
@@ -245,57 +253,40 @@ public class SmartRoutingManager {
 
     /**
      * 返回非中国 CIDR 列表（CHINA_DIRECT 模式路由排除的补集）。
-     * 若有自学习 IP，重新计算补集以确保它们也被排除。
+     * 若有 learned 例外，则重新计算补集以确保它们即时生效。
      */
     public List<CidrBlock> getNonChinaCidrs() {
-        if (learnedDirectCidrs.isEmpty()) return nonChinaCidrs;
+        if (!hasLearnedRouteOverrides()) return nonChinaCidrs;
         return Collections.unmodifiableList(CidrBlock.computeComplement(getChinaCidrs()));
     }
 
     /**
-     * 返回中国 CIDR 列表（包含 chnroutes + supplement + 自学习 IP）。
+     * 返回中国 CIDR 列表（基础 chnroutes + DIRECT learned - VIA_ZT learned）。
      */
     public List<CidrBlock> getChinaCidrs() {
-        List<CidrBlock> learned = new ArrayList<>(learnedDirectCidrs);
-        if (learned.isEmpty()) return chinaCidrs;
-        List<CidrBlock> merged = new ArrayList<>(chinaCidrs.size() + learned.size());
-        merged.addAll(chinaCidrs);
-        merged.addAll(learned);
-        Collections.sort(merged);
-        return Collections.unmodifiableList(merged);
+        if (!hasLearnedRouteOverrides()) return chinaCidrs;
+        return Collections.unmodifiableList(buildEffectiveChinaCidrs(chinaCidrs));
     }
 
     /**
      * 返回 VPN-safe 中国 IP 超级聚合列表（≤ SUPER_AGGREGATE_MAX_ENTRIES 条），
-     * 包含自学习直连 IP（/32，直接追加，不再触发超级聚合）。
+     * 包含 learned DIRECT / VIA_ZT 例外。
      *
      * <p>用于 {@code VpnService.Builder.excludeRoute()} / {@code addRoute()}，
      * 避免全量 CIDR 序列化超出 Binder 事务大小限制。
      * 精度判断（{@link #isChineseIp}）仍使用完整的 chinaCidrs。
      */
     public List<CidrBlock> getChinaCidrsVpnSafe() {
-        List<CidrBlock> learned = new ArrayList<>(learnedDirectCidrs);
-        if (learned.isEmpty()) return chinaCidrsVpnSafe;
-        // Learned IPs are /32 entries, capped at MAX_LEARNED_IPS (500) by learnDirectIp().
-        // Combined size: SUPER_AGGREGATE_MAX_ENTRIES (500) + MAX_LEARNED_IPS (500) = 1 000 max,
-        // which serialises to ~83 KB — well within any OEM ROM Binder limit.
-        // No further super-aggregation is needed.
-        if (learned.size() > MAX_LEARNED_IPS) {
-            // Defensive: should not happen, but truncate if the invariant is ever violated.
-            learned = learned.subList(0, MAX_LEARNED_IPS);
-        }
-        List<CidrBlock> merged = new ArrayList<>(chinaCidrsVpnSafe.size() + learned.size());
-        merged.addAll(chinaCidrsVpnSafe);
-        merged.addAll(learned);
-        return Collections.unmodifiableList(merged);
+        if (!hasLearnedRouteOverrides()) return chinaCidrsVpnSafe;
+        return Collections.unmodifiableList(buildEffectiveChinaCidrs(chinaCidrsVpnSafe));
     }
 
     /**
      * 返回 VPN-safe 非中国 IP 补集（chinaCidrsVpnSafe 的补集）。
-     * 用于 Android 12- 的 {@code addRoute}；若有自学习 IP 则重新计算补集。
+     * 用于 Android 12- 的 {@code addRoute}；若有 learned 例外则重新计算补集。
      */
     public List<CidrBlock> getNonChinaCidrsVpnSafe() {
-        if (learnedDirectCidrs.isEmpty()) return nonChinaCidrsVpnSafe;
+        if (!hasLearnedRouteOverrides()) return nonChinaCidrsVpnSafe;
         return Collections.unmodifiableList(CidrBlock.computeComplement(getChinaCidrsVpnSafe()));
     }
 
@@ -330,55 +321,30 @@ public class SmartRoutingManager {
     /**
      * 注册自学习直连 IP 发现回调（用于触发防抖 VPN 重建）
      */
-    public void setOnNewLearnedIpListener(OnNewLearnedIpListener listener) {
-        this.onNewLearnedIpListener = listener;
+    public void setOnRoutePolicyChangedListener(OnRoutePolicyChangedListener listener) {
+        this.onRoutePolicyChangedListener = listener;
     }
 
 
     /**
-     * 尝试将一个直播 CDN IP 加入自学习直连列表。
-     * <p>
-     * 条件：IPv4、未超出上限、此前未知。满足条件时：
-     * <ol>
-     *   <li>立即更新内存中的 {@link #learnedDirectIpSet} 和 {@link #learnedDirectCidrs}，
-     *       使 {@link #isChineseIp} 和 {@link #getChinaCidrs} 即刻生效；</li>
-     *   <li>通过后台线程将 IP 持久化到 {@code learned_direct_ips.txt}；</li>
-     *   <li>触发 {@link OnNewLearnedIpListener}，由 ZeroTierOneService 在 10 s 防抖后
-     *       重建 VPN 路由，使新 IP 真正走物理网络直连。</li>
-     * </ol>
-     *
-     * @param ip     要学习的 IP（仅处理 IPv4 /32）
-     * @param domain 触发该学习的域名（仅用于日志）
+     * 记录一次 learned DIRECT / VIA_ZT 观察。
      */
-    public void learnDirectIp(InetAddress ip, String domain) {
-        if (ip == null) return;
-        long ipLong = toUint32(ip);
-        if (ipLong == -1) return; // 仅学习 IPv4
-        if (learnedDirectIpSet.contains(ipLong)) {
-            LogUtil.d(TAG, "自学习直连 IP 已知: " + ip.getHostAddress() + " (domain=" + domain + ")");
-            return;
-        }
-        if (learnedDirectIpSet.size() >= MAX_LEARNED_IPS) {
-            LogUtil.d(TAG, "自学习直连 IP 已达上限 " + MAX_LEARNED_IPS + "，跳过 " + ip.getHostAddress());
-            return;
-        }
-        // 更新内存（线程安全）
-        learnedDirectIpSet.add(ipLong);
-        // 注意：(int) ipLong 的高位截断是有意为之——CidrBlock 内部以 signed int 存储 IP，
-        // 与 parseChnroutes 的处理方式一致（binaryContains 同样使用 signed int 比较）。
-        int ipInt = (int) ipLong;
-        learnedDirectCidrs.add(new CidrBlock(ipInt, 32));
-        LogUtil.d(LogUtil.DNS_TAG, "✅ 自学习直连: " + ip.getHostAddress()
-                + " (" + domain + ") → 已加入直连列表");
-        // 持久化（异步，不阻塞主流程）
+    public void observeRoutePolicy(InetAddress ip,
+                                   LearnedRoutePolicyStore.Preference preference,
+                                   String domain,
+                                   String reason,
+                                   boolean promotePrefix24) {
+        LearnedRoutePolicyStore.ChangeSummary change = learnedRoutePolicies.observe(
+                ip, preference, domain, reason, System.currentTimeMillis(), promotePrefix24);
+        if (!change.routingChanged) return;
+        LogUtil.i(LogUtil.DNS_TAG, "学习路由策略更新: " + change.message);
         executor.execute(this::persistLearnedIps);
-        // 触发 VPN 重建回调
-        OnNewLearnedIpListener l = onNewLearnedIpListener;
-        if (l != null) l.onNewLearnedIp(ip);
+        OnRoutePolicyChangedListener listener = onRoutePolicyChangedListener;
+        if (listener != null) listener.onRoutePolicyChanged(change.message);
     }
 
     /**
-     * 从 {@code learned_direct_ips.txt} 加载之前持久化的自学习直连 IP。
+     * 从 {@code learned_direct_ips.txt} 加载之前持久化的 learned 路由策略。
      * 在 {@link #loadOrDownloadAll()} 中调用，VPN 启动即可使用上次积累的学习结果。
      */
     private void loadLearnedIps() {
@@ -388,54 +354,35 @@ public class SmartRoutingManager {
         try (BufferedReader br = new BufferedReader(new FileReader(file))) {
             String line;
             while ((line = br.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) continue;
-                // 格式：x.x.x.x/32 或 x.x.x.x
-                String ipStr = line.contains("/") ? line.substring(0, line.indexOf('/')) : line;
-                try {
-                    InetAddress ip = InetAddress.getByName(ipStr);
-                    long ipLong = toUint32(ip);
-                    if (ipLong != -1 && learnedDirectIpSet.add(ipLong)) {
-                        learnedDirectCidrs.add(new CidrBlock((int) ipLong, 32));
-                        loaded++;
-                    }
-                } catch (Exception e) {
-                    LogUtil.d(TAG, "跳过无效自学习 IP 行: " + line);
-                }
-                if (learnedDirectIpSet.size() >= MAX_LEARNED_IPS) break;
+                learnedRoutePolicies.restore(line);
+                loaded++;
             }
         } catch (IOException e) {
-            LogUtil.w(TAG, "加载自学习直连 IP 失败: " + e.getMessage());
+            LogUtil.w(TAG, "加载 learned 路由策略失败: " + e.getMessage());
         }
         if (loaded > 0) {
-            LogUtil.i(TAG, "已加载 " + loaded + " 个自学习直连 IP（共 "
-                    + learnedDirectIpSet.size() + " 个）");
+            LogUtil.i(TAG, "已加载 " + loaded + " 条 learned 路由策略");
         }
     }
 
     /**
-     * 将当前 {@link #learnedDirectIpSet} 持久化到文件。
+     * 将当前 learned 路由策略持久化到文件。
      * 在后台线程执行，不阻塞调用方。
      */
     private void persistLearnedIps() {
         File file = new File(context.getFilesDir(), Constants.FILE_LEARNED_DIRECT_IPS);
         try {
             StringBuilder sb = new StringBuilder();
-            sb.append("# 自学习直连 IP 列表 - 由 SmartRoutingManager 在 DNS 嗅探时自动生成\n");
-            sb.append("# 每行一个 IPv4 /32 CIDR，启动时自动加载，无需手动编辑\n");
-            for (Long ipLong : learnedDirectIpSet) {
-                long l = ipLong & 0xFFFFFFFFL;
-                int a = (int) ((l >> 24) & 0xFF);
-                int b = (int) ((l >> 16) & 0xFF);
-                int c = (int) ((l >> 8) & 0xFF);
-                int d = (int) (l & 0xFF);
-                sb.append(a).append('.').append(b).append('.').append(c).append('.').append(d)
-                        .append("/32\n");
+            sb.append("# learned route policies - generated by SmartRoutingManager\n");
+            sb.append("# format: PREFERENCE|CIDR|hits|lastSeenAt|domain|reason\n");
+            sb.append("# example: DIRECT|43.128.12.0/24|3|1715300000000|cdn.example|live-domain-non-cn /24 热点提升\n");
+            for (String line : learnedRoutePolicies.serializeLines(System.currentTimeMillis())) {
+                sb.append(line).append('\n');
             }
             org.apache.commons.io.FileUtils.writeStringToFile(
                     file, sb.toString(), java.nio.charset.StandardCharsets.UTF_8);
         } catch (IOException e) {
-            LogUtil.w(TAG, "持久化自学习直连 IP 失败: " + e.getMessage());
+            LogUtil.w(TAG, "持久化 learned 路由策略失败: " + e.getMessage());
         }
     }
 
@@ -456,6 +403,8 @@ public class SmartRoutingManager {
                 OnNewGfwIpListener l = onNewGfwIpListener;
                 if (l != null) l.onNewGfwIp(record.ip);
             }
+            observeRoutePolicy(record.ip, LearnedRoutePolicyStore.Preference.VIA_ZT,
+                    record.domain, "gfw-domain", false);
         } else if (isChineseIp(record.ip)) {
             if (isLiveStreamingDomain(record.domain)) {
                 LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
@@ -464,7 +413,8 @@ public class SmartRoutingManager {
         } else {
             // 非中国 IP：直播相关域名自动触发自学习。
             if (isLiveStreamingDomain(record.domain)) {
-                learnDirectIp(record.ip, record.domain);
+                observeRoutePolicy(record.ip, LearnedRoutePolicyStore.Preference.DIRECT,
+                        record.domain, "live-domain-non-cn", true);
             }
         }
     }
@@ -485,10 +435,17 @@ public class SmartRoutingManager {
         return ipToDomain.get(address.getHostAddress());
     }
 
+    /**
+     * 返回 learned 策略对该 IP 的诊断描述（若无命中则返回 null）。
+     */
+    public String getLearnedPolicyDescription(InetAddress address) {
+        return learnedRoutePolicies.describeActivePolicy(address, System.currentTimeMillis());
+    }
+
     // ────────────────────────── 下载 / 加载逻辑 ──────────────────────────
 
     private void loadOrDownloadAll() {
-        loadLearnedIps();       // 先加载上次积累的自学习直连 IP，确保 VPN 启动即生效
+        loadLearnedIps();       // 先加载上次积累的 learned 路由策略，确保 VPN 启动即生效
         loadOrDownloadChnroutes();
         loadOrDownloadGfwList();
     }
@@ -734,5 +691,27 @@ public class SmartRoutingManager {
             }
         }
         return false;
+    }
+
+    private boolean hasLearnedRouteOverrides() {
+        long now = System.currentTimeMillis();
+        return !learnedRoutePolicies.getActiveCidrs(LearnedRoutePolicyStore.Preference.DIRECT, now).isEmpty()
+                || !learnedRoutePolicies.getActiveCidrs(LearnedRoutePolicyStore.Preference.VIA_ZT, now).isEmpty();
+    }
+
+    private List<CidrBlock> buildEffectiveChinaCidrs(List<CidrBlock> baseChinaCidrs) {
+        long now = System.currentTimeMillis();
+        List<CidrBlock> learnedDirect = learnedRoutePolicies.getActiveCidrs(
+                LearnedRoutePolicyStore.Preference.DIRECT, now);
+        List<CidrBlock> learnedViaZt = learnedRoutePolicies.getActiveCidrs(
+                LearnedRoutePolicyStore.Preference.VIA_ZT, now);
+        List<CidrBlock> merged = new ArrayList<>(baseChinaCidrs.size() + learnedDirect.size());
+        merged.addAll(baseChinaCidrs);
+        merged.addAll(learnedDirect);
+        List<CidrBlock> effective = CidrBlock.aggregate(merged);
+        if (!learnedViaZt.isEmpty()) {
+            effective = CidrBlock.subtract(effective, learnedViaZt);
+        }
+        return effective;
     }
 }

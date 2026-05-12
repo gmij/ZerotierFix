@@ -245,7 +245,10 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         } else if (smartRoutingManager != null && smartRoutingMode != SmartRoutingManager.MODE_OFF) {
             boolean isGfw = smartRoutingManager.getGfwIpSet().contains(origDestIP);
             boolean isCn = smartRoutingManager.isChineseIp(origDestIP);
-            if (isGfw) {
+            String learnedPolicy = smartRoutingManager.getLearnedPolicyDescription(origDestIP);
+            if (learnedPolicy != null && learnedPolicy.startsWith("via-zt ")) {
+                routeReason = "ZT (" + learnedPolicy + ")";
+            } else if (isGfw) {
                 routeReason = "ZT (GFW)";
             } else if (isCn) {
                 routeReason = "ZT (CN)";

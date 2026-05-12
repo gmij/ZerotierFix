@@ -37,6 +37,10 @@ public class UdpCom implements PacketSender, Runnable {
             Log.e(TAG, "Attempted to send packet on a null socket");
             return -1;
         }
+        if (bArr == null) {
+            Log.e(TAG, "Attempted to send a null packet buffer");
+            return -1;
+        }
         try {
             DatagramPacket datagramPacket = new DatagramPacket(bArr, bArr.length, inetSocketAddress);
             DebugLog.d(TAG, "onSendPacketRequested: Sent " + datagramPacket.getLength() + " bytes to " + inetSocketAddress.toString());
