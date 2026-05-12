@@ -108,6 +108,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     public static final int MSG_LEAVE_NETWORK = 2;
     public static final String ZT1_NETWORK_ID = "com.zerotier.one.network_id";
     public static final String ZT1_USE_DEFAULT_ROUTE = "com.zerotier.one.use_default_route";
+    public static final String EXTRA_FORCE_RECONFIGURE = "net.kaaass.zerotierfix.extra.force_reconfigure";
+    public static final String EXTRA_FORCE_RECONFIGURE_REASON = "net.kaaass.zerotierfix.extra.force_reconfigure_reason";
     private static final String[] DISALLOWED_APPS = {"com.android.vending"};
     /**
      * 全局路由下默认旁路的系统蓝牙/电话相关包。
@@ -542,6 +544,24 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             SmartRoutingManager.getInstance(this).ensureDataReady();
         } else {
             LogUtil.i(TAG, "智能路由增强已关闭：跳过 SmartRouting 数据预加载");
+        }
+
+        // 处理“运行中强制重配”请求（例如设置页切换智能路由增强）
+        if (intent.getBooleanExtra(EXTRA_FORCE_RECONFIGURE, false)) {
+            String reason = intent.getStringExtra(EXTRA_FORCE_RECONFIGURE_REASON);
+            if (reason == null || reason.trim().isEmpty()) {
+                reason = "unspecified";
+            }
+            if (this.node != null && this.vpnSocket != null) {
+                LogUtil.i(TAG, "收到强制 VPN 重配请求: " + reason);
+                ensureNetworkChangeHandler();
+                final String finalReason = reason;
+                networkChangeHandler.post(() ->
+                        rebuildVpnForCurrentNetwork("forceReconfigureIntent(" + finalReason + ")"));
+                return START_STICKY;
+            } else {
+                LogUtil.d(TAG, "强制 VPN 重配请求忽略：服务尚未建立 VPN，按常规启动流程继续");
+            }
         }
 
         // 检查当前的网络环境
@@ -1776,9 +1796,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * chnroutes 数据就绪后触发一次 VPN 重建（不受 network_auto_rebuild 开关影响）。
      * 该重建用于将“临时全局路由”切换为 CHINA_DIRECT 精确分流。
      */
-    private void rebuildVpnForChnroutesReady() {
+    private void rebuildVpnForCurrentNetwork(String caller) {
         if (this.vpnSocket == null || this.networkId == 0 || this.node == null) {
-            LogUtil.d(TAG, "chnroutes 就绪重建：VPN 未运行或网络上下文缺失，跳过");
+            LogUtil.d(TAG, caller + ": VPN 未运行或网络上下文缺失，跳过");
             return;
         }
         DatabaseUtils.readLock.lock();
@@ -1788,15 +1808,23 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     .where(NetworkDao.Properties.NetworkId.eq(this.networkId))
                     .list();
             if (networks.size() == 1) {
-                updateTunnelConfig(networks.get(0), "chnroutesReady(数据就绪切换CHINA_DIRECT)");
+                updateTunnelConfig(networks.get(0), caller);
             } else {
-                LogUtil.w(TAG, "chnroutes 就绪重建：未找到唯一网络记录，size=" + networks.size());
+                LogUtil.w(TAG, caller + ": 未找到唯一网络记录，size=" + networks.size());
             }
         } catch (Exception e) {
-            LogUtil.e(TAG, "chnroutes 就绪重建失败: " + e.getMessage(), e);
+            LogUtil.e(TAG, caller + " 失败: " + e.getMessage(), e);
         } finally {
             DatabaseUtils.readLock.unlock();
         }
+    }
+
+    /**
+     * chnroutes 数据就绪后触发一次 VPN 重建（不受 network_auto_rebuild 开关影响）。
+     * 该重建用于将“临时全局路由”切换为 CHINA_DIRECT 精确分流。
+     */
+    private void rebuildVpnForChnroutesReady() {
+        rebuildVpnForCurrentNetwork("chnroutesReady(数据就绪切换CHINA_DIRECT)");
     }
     
     /**
