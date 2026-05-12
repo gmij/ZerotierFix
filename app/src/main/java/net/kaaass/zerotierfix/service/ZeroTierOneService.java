@@ -1793,8 +1793,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     /**
-     * chnroutes 数据就绪后触发一次 VPN 重建（不受 network_auto_rebuild 开关影响）。
-     * 该重建用于将“临时全局路由”切换为 CHINA_DIRECT 精确分流。
+     * 以当前 networkId 从数据库读取配置并执行一次 VPN 重建。
+     * 用于承接多种“非物理网络变化”触发源（如 chnroutes 就绪、设置页强制重配）。
      */
     private void rebuildVpnForCurrentNetwork(String caller) {
         if (this.vpnSocket == null || this.networkId == 0 || this.node == null) {
