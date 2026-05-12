@@ -1419,8 +1419,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 配置 MTU
         int mtu = virtualNetworkConfig.getMtu();
         LogUtil.d(TAG, "MTU from Network Config: " + mtu);
-        if (mtu == 0) {
-            mtu = 2800;
+        // 过大的 MTU 会在移动网络/NAT 场景触发 UDP 分片黑洞，表现为下载中断或 0B 文件。
+        // 默认 1400：为 ZeroTier/UDP 封装和部分运营商链路预留头部空间，比 1500 更稳。
+        // 用户/控制器显式下发 MTU 时，仍允许使用 <=1500 的值。
+        if (mtu <= 0) {
+            mtu = 1400;
+        } else if (mtu > 1500) {
+            LogUtil.w(TAG, "MTU too large for stable mobile transport, clamp to 1500: " + mtu);
+            mtu = 1500;
         }
         LogUtil.d(TAG, "MTU Set: " + mtu);
         builder.setMtu(mtu);
