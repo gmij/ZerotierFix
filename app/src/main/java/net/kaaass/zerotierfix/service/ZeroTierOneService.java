@@ -1213,15 +1213,26 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         this.tunTapAdapter.clearRouteMap();
 
-        // 保存旧的 VPN 资源引用，延迟到新 establish() 成功后再关闭。
-        // 根据 Google VPN 开发文档，旧 TUN fd 在新 establish() 返回前必须保持打开，
-        // 否则系统会在无活跃 TUN 接口期间移除状态栏 VPN 钥匙图标。
+        // 保存旧的 VPN 资源引用，通常延迟到新 establish() 成功后再关闭。
+        // 根据 Google VPN 开发文档，旧 TUN fd 在新 establish() 返回前保持打开可降低图标抖动。
         var oldIn = this.in;
         var oldOut = this.out;
         var oldVpnSocket = this.vpnSocket;
         this.in = null;
         this.out = null;
         this.vpnSocket = null;
+
+        // 对“设置切换智能路由触发的强制重配”，采用更接近冷启动的重建：
+        // 先关闭旧 TUN 资源再 establish，可让系统路由/会话更彻底刷新，
+        // 对应用户反馈的“重启 VPN 后可恢复”场景。
+        boolean forceColdSwitch = caller != null && caller.startsWith("forceReconfigureIntent(");
+        if (forceColdSwitch && oldVpnSocket != null) {
+            LogUtil.i(TAG, "强制重配：先关闭旧 VPN 资源后再 establish（cold-switch）");
+            closeOldVpnResources(oldIn, oldOut, oldVpnSocket);
+            oldIn = null;
+            oldOut = null;
+            oldVpnSocket = null;
+        }
 
         // 配置 VPN
         LogUtil.d(TAG, "Configuring VpnService.Builder");
