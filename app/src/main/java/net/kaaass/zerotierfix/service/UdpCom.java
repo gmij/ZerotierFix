@@ -37,7 +37,7 @@ public class UdpCom implements PacketSender, Runnable {
             Log.e(TAG, "Attempted to send packet on a null socket");
             return -1;
         }
-        if (bArr == null || i <= 0 || i > bArr.length) {
+        if (bArr == null || i < 0 || i > bArr.length) {
             Log.e(TAG, "Invalid packet length: len=" + i + ", buffer=" + (bArr == null ? "null" : bArr.length));
             return -1;
         }
