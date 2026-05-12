@@ -157,6 +157,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 因此可以正确解析 google.com 等被封锁域名，避免证书错误。
      */
     private static final String[] INTERNATIONAL_DNS_SERVERS = {
+            // 优先 Cloudflare：在部分运营商网络下，对 8.8.8.8 的直连/劫持更常见，
+            // 将 1.1.1.1/1.0.0.1 放在前面可减少 YouTube 首次解析超时的概率。
             "1.1.1.1",    // Cloudflare DNS 主
             "1.0.0.1",    // Cloudflare DNS 备
             "8.8.8.8",    // Google DNS 主
@@ -1420,8 +1422,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         int mtu = virtualNetworkConfig.getMtu();
         LogUtil.d(TAG, "MTU from Network Config: " + mtu);
         // 默认 1400：为 ZeroTier/UDP 封装和部分运营商链路预留头部空间，比 1500 更稳。
-        // 若控制器显式下发 MTU（例如 2800），应尽量保留该值，避免“设置无效”。
-        // 仅对明显异常的大值做上限保护。
+        // 若控制器显式下发 MTU（例如 ZeroTier 常见的 2800），应尽量保留该值，避免“设置无效”。
+        // 2800 作为上限：与 ZT 默认虚拟链路 MTU 对齐；再大的值通常无额外收益且更易引发路径分片问题。
         if (mtu <= 0) {
             mtu = 1400;
         } else if (mtu > 2800) {
