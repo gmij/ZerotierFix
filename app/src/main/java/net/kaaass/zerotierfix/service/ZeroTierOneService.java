@@ -157,10 +157,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 因此可以正确解析 google.com 等被封锁域名，避免证书错误。
      */
     private static final String[] INTERNATIONAL_DNS_SERVERS = {
-            "8.8.8.8",    // Google DNS 主
-            "8.8.4.4",    // Google DNS 备
             "1.1.1.1",    // Cloudflare DNS 主
             "1.0.0.1",    // Cloudflare DNS 备
+            "8.8.8.8",    // Google DNS 主
+            "8.8.4.4",    // Google DNS 备
     };
     private final IBinder mBinder = new ZeroTierBinder();
     private final DataStore dataStore = new DataStore(this);
@@ -1419,14 +1419,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 配置 MTU
         int mtu = virtualNetworkConfig.getMtu();
         LogUtil.d(TAG, "MTU from Network Config: " + mtu);
-        // 过大的 MTU 会在移动网络/NAT 场景触发 UDP 分片黑洞，表现为下载中断或 0B 文件。
         // 默认 1400：为 ZeroTier/UDP 封装和部分运营商链路预留头部空间，比 1500 更稳。
-        // 用户/控制器显式下发 MTU 时，仍允许使用 <=1500 的值。
+        // 若控制器显式下发 MTU（例如 2800），应尽量保留该值，避免“设置无效”。
+        // 仅对明显异常的大值做上限保护。
         if (mtu <= 0) {
             mtu = 1400;
-        } else if (mtu > 1500) {
-            LogUtil.w(TAG, "MTU too large for stable mobile transport, clamp to 1500: " + mtu);
-            mtu = 1500;
+        } else if (mtu > 2800) {
+            LogUtil.w(TAG, "MTU too large, clamp to 2800: " + mtu);
+            mtu = 2800;
         }
         LogUtil.d(TAG, "MTU Set: " + mtu);
         builder.setMtu(mtu);
@@ -1476,15 +1476,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         LogUtil.i(TAG, "VPN 已建立" + (oldVpnSocket == null ? "（首次）" : "（更新）"));
 
-        // OEM ROM 兼容：首次 establish()（无旧 TUN fd）时，部分 OEM ROM 不显示 VPN 钥匙图标。
-        // 原因：系统在"首次创建 VPN"代码路径中不触发图标绘制，但"更新已有 VPN"路径正常。
-        // 解决：首次 establish 成功后，延迟一段时间再触发一次完整 VPN 重建。此时 vpnSocket 已非空，
-        // establish() 走"更新现有 VPN"路径 → 系统显示 VPN 钥匙图标。
-        // 注意：不能立即再次 establish()；部分 OEM ROM 需要更久时间将首次 VPN 注册到系统中。
+        // 稳定性优先：首次 establish 后不再为 OEM 图标兼容主动触发二次重建，
+        // 避免“图标修复”路径打断既有 VPN 链路，导致应用（如 YouTube）间歇性不可用。
         if (oldVpnSocket == null) {
-            final Network refreshNetwork = network;
-            final long parentRequestSeq = requestSeq;
-            scheduleFirstEstablishIconRefresh(refreshNetwork, parentRequestSeq, caller, 0);
+            LogUtil.i(TAG, "首次 VPN 建立完成：跳过 OEM 图标兼容重建，保持当前链路稳定");
         }
 
         // 新 TUN fd 创建成功，现在安全关闭旧的资源

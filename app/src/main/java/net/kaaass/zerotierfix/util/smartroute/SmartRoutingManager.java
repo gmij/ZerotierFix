@@ -129,6 +129,8 @@ public class SmartRoutingManager {
     private static final String[] PROTECTED_NON_CHINA_CIDRS = {
             "1.1.1.0/24",   // Cloudflare DNS 主（1.1.1.1）
             "1.0.0.0/24",   // Cloudflare DNS 备（1.0.0.1）
+            "8.8.8.0/24",   // Google DNS 主（8.8.8.8）
+            "8.8.4.0/24",   // Google DNS 备（8.8.4.4）
     };
 
     /** China CIDR 列表（CHINA_DIRECT 使用；完整精度，用于 isChineseIp() 查询） */
