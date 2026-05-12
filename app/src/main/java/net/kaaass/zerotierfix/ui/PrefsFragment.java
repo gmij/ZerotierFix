@@ -298,14 +298,6 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
         } else if (key.equals(Constants.PREF_NETWORK_AUTO_REBUILD)) {
             // 网络自动重建开关：通过重新触发 service 让配置尽快生效
             requireActivity().startService(new Intent(getActivity(), ZeroTierOneService.class));
-        } else if (key.equals(Constants.PREF_NETWORK_SMART_ROUTING_ENABLED)) {
-            // 智能路由增强开关：运行中立即触发 VPN 重配，避免必须手动重连 VPN 才生效
-            boolean enabled = sharedPreferences.getBoolean(Constants.PREF_NETWORK_SMART_ROUTING_ENABLED, true);
-            Intent intent = new Intent(getActivity(), ZeroTierOneService.class);
-            intent.putExtra(ZeroTierOneService.EXTRA_FORCE_RECONFIGURE, true);
-            intent.putExtra(ZeroTierOneService.EXTRA_FORCE_RECONFIGURE_REASON,
-                    "pref_smart_routing_enabled=" + enabled);
-            requireActivity().startService(intent);
         }
     }
 

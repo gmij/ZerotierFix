@@ -251,12 +251,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     /**
-     * 是否启用智能路由增强（CHINA_DIRECT/GFW 数据分流）。
-     * 关闭后尽量回退到接近 fork 原始版本的全局/Per-app 路由行为。
+     * 智能路由增强（CHINA_DIRECT/GFW 数据分流）已固定为开启。
+     * 为降低模式切换复杂度，运行时不再回退到“关闭智能路由”分支。
      */
     private boolean isSmartRoutingEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this)
-                .getBoolean(Constants.PREF_NETWORK_SMART_ROUTING_ENABLED, true);
+        return true;
     }
 
     /**

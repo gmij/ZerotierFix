@@ -121,7 +121,8 @@ public class SmartRoutingManager {
      *   <li>1.1.1.0/24 – Cloudflare DNS 主（1.1.1.1），夹在 1.1.0.0/24 和 1.1.2.0/23 两个中国段之间，
      *       若被合并则 Cloudflare DNS 经物理网络发出、受 GFW 污染，导致全局代理模式下 DNS 解析失败。</li>
      *   <li>1.0.0.0/24 – Cloudflare DNS 备（1.0.0.1），类似情形。</li>
-     *   <li>172.217.0.0/16、142.250.0.0/15 – YouTube/Google 高频出口段，防止过度聚合时被纳入中国段。</li>
+     *   <li>172.217.0.0/16、142.250.0.0/15 及更多 Google 出口段 –
+     *       防止 YouTube/Google 高频 IP 在过度聚合时被纳入中国段。</li>
      * </ul>
      *
      * <p>保护为尽力而为（best-effort）：若无法在不填充受保护间隙的前提下达到 maxEntries，
@@ -134,6 +135,13 @@ public class SmartRoutingManager {
             "8.8.4.0/24",   // Google DNS 备（8.8.4.4）
             "172.217.0.0/16", // YouTube/Google
             "142.250.0.0/15", // YouTube/Google
+            "142.251.0.0/16", // YouTube/Google
+            "172.253.0.0/16", // YouTube/Google
+            "173.194.0.0/16", // YouTube/Google
+            "74.125.0.0/16",  // YouTube/Google
+            "64.233.160.0/19", // YouTube/Google
+            "209.85.128.0/17", // YouTube/Google
+            "216.239.32.0/19", // YouTube/Google
     };
 
     /** China CIDR 列表（CHINA_DIRECT 使用；完整精度，用于 isChineseIp() 查询） */
