@@ -218,7 +218,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private final Runnable learnedRoutePolicyRebuildRunnable = () -> {
         LogUtil.i(TAG, "learned 路由策略触发 VPN 重建（" + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000
                 + "s 防抖到期），重新配置智能路由例外表");
-        doNetworkChangedUpdate();
+        rebuildVpnForCurrentNetwork("learnedRoutePolicyRebuildRunnable(learned策略变化)", false);
     };
     /** learned 路由策略触发重建的防抖延迟（10 秒，确保批量变更一次重建） */
     private static final long LEARNED_IP_REBUILD_DEBOUNCE_MS = 10_000;
@@ -1507,7 +1507,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 注册 learned 路由策略回调：DNS 嗅探发现新的 DIRECT / VIA_ZT 热点例外时，
         // 用 10 秒防抖重建 VPN，避免每个新 IP 都触发一次全量 establish()。
-        if (smartRoutingEnabled && isNetworkAutoRebuildEnabled()) {
+        if (smartRoutingEnabled) {
             ensureNetworkChangeHandler();
             smartRouter.setOnRoutePolicyChangedListener(summary -> {
                 if (networkChangeHandler != null) {

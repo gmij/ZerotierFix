@@ -144,6 +144,27 @@ public class SmartRoutingManager {
             "216.239.32.0/19", // YouTube/Google
     };
 
+    /**
+     * Google/YouTube/Google Play 相关域名后缀。
+     * 命中后优先学习为 VIA_ZT，避免在 CHINA_DIRECT 中被误判/污染解析导致直连失败。
+     */
+    private static final String[] GOOGLE_GLOBAL_SERVICE_DOMAIN_SUFFIXES = {
+            ".google.com",
+            ".googleapis.com",
+            ".gstatic.com",
+            ".googleusercontent.com",
+            ".ggpht.com",
+            ".youtube.com",
+            ".youtubei.googleapis.com",
+            ".googlevideo.com",
+            ".ytimg.com",
+            ".gvt1.com",
+            ".gvt2.com",
+            ".gvt3.com",
+            ".gvt1.net",
+            ".android.com",
+    };
+
     /** China CIDR 列表（CHINA_DIRECT 使用；完整精度，用于 isChineseIp() 查询） */
     private volatile List<CidrBlock> chinaCidrs = Collections.emptyList();
 
@@ -408,16 +429,17 @@ public class SmartRoutingManager {
         if (record == null || record.ip == null || record.domain == null) return;
         // 记录 IP → 域名 映射（用于后续 GFW 检测）
         ipToDomain.put(record.ip.getHostAddress(), record.domain.toLowerCase());
-        if (isGfwDomain(record.domain)) {
+        boolean isGoogleService = isGoogleGlobalServiceDomain(record.domain);
+        if (isGfwDomain(record.domain) || isGoogleService) {
             boolean isNew = gfwIpSet.add(record.ip);
             if (isNew) {
                 LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                        + " -> ZT (GFW)");
+                        + (isGoogleService ? " -> ZT (GoogleService)" : " -> ZT (GFW)"));
                 OnNewGfwIpListener l = onNewGfwIpListener;
                 if (l != null) l.onNewGfwIp(record.ip);
             }
             observeRoutePolicy(record.ip, LearnedRoutePolicyStore.Preference.VIA_ZT,
-                    record.domain, "gfw-domain", false);
+                    record.domain, isGoogleService ? "google-service" : "gfw-domain", false);
         } else if (isChineseIp(record.ip)) {
             if (isLiveStreamingDomain(record.domain)) {
                 LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
@@ -677,6 +699,17 @@ public class SmartRoutingManager {
                 || d.endsWith(".huya.com") || d.endsWith(".huya.cn")  // 虎牙直播
                 || d.endsWith(".douyu.com") || d.endsWith(".douyucdn.cn") // 斗鱼直播
                 || d.endsWith(".vlive.qq.com") || d.endsWith(".livep.qq.com");
+    }
+
+    private static boolean isGoogleGlobalServiceDomain(String domain) {
+        if (domain == null) return false;
+        String d = domain.toLowerCase();
+        for (String suffix : GOOGLE_GLOBAL_SERVICE_DOMAIN_SUFFIXES) {
+            if (d.equals(suffix.substring(1)) || d.endsWith(suffix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
