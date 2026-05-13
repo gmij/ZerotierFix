@@ -135,7 +135,6 @@ public class SmartRoutingManager {
             "8.8.4.0/24",   // Google DNS 备（8.8.4.4）
             "172.217.0.0/16", // YouTube/Google
             "142.250.0.0/15", // YouTube/Google
-            "142.251.0.0/16", // YouTube/Google
             "172.253.0.0/16", // YouTube/Google
             "173.194.0.0/16", // YouTube/Google
             "74.125.0.0/16",  // YouTube/Google
@@ -149,18 +148,18 @@ public class SmartRoutingManager {
      * 命中后优先学习为 VIA_ZT，避免在 CHINA_DIRECT 中被误判/污染解析导致直连失败。
      */
     private static final String[] GOOGLE_GLOBAL_SERVICE_DOMAIN_SUFFIXES = {
-            ".google.com",
-            ".googleapis.com",
-            ".gstatic.com",
-            ".googleusercontent.com",
-            ".ggpht.com",
-            ".youtube.com",
-            ".googlevideo.com",
-            ".ytimg.com",
-            ".gvt2.com",
-            ".gvt3.com",
-            ".gvt1.net",
-            ".android.com",
+            ".google.com",           // Google 主域
+            ".googleapis.com",       // Google APIs（含 Play 服务 API）
+            ".gstatic.com",          // Play 服务/Google 静态资源
+            ".googleusercontent.com",// Google 内容分发
+            ".ggpht.com",            // Google 图片/CDN
+            ".youtube.com",          // YouTube 主域
+            ".googlevideo.com",      // YouTube 视频流 CDN
+            ".ytimg.com",            // YouTube 静态资源
+            ".gvt2.com",             // Google 传输/视频 CDN
+            ".gvt3.com",             // Google 传输/视频 CDN
+            ".gvt1.net",             // Google 视频/更新分发
+            ".android.com",          // Android/Play 生态域
     };
 
     /** China CIDR 列表（CHINA_DIRECT 使用；完整精度，用于 isChineseIp() 查询） */

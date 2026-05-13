@@ -110,7 +110,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     public static final String ZT1_USE_DEFAULT_ROUTE = "com.zerotier.one.use_default_route";
     public static final String EXTRA_FORCE_RECONFIGURE = "net.kaaass.zerotierfix.extra.force_reconfigure";
     public static final String EXTRA_FORCE_RECONFIGURE_REASON = "net.kaaass.zerotierfix.extra.force_reconfigure_reason";
-    private static final String FORCE_RECONFIGURE_CALLER_PREFIX = "forceReconfigureIntent(";
+    private static final String FORCE_RECONFIGURE_CALLER_FORMAT = "forceReconfigureIntent(%s)";
     private static final String[] DISALLOWED_APPS = {"com.android.vending"};
     /**
      * 全局路由下默认旁路的系统蓝牙/电话相关包。
@@ -557,7 +557,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 ensureNetworkChangeHandler();
                 final String finalReason = reason;
                 networkChangeHandler.post(() ->
-                        rebuildVpnForCurrentNetwork(FORCE_RECONFIGURE_CALLER_PREFIX + finalReason + ")", true));
+                        rebuildVpnForCurrentNetwork(
+                                String.format(java.util.Locale.ROOT, FORCE_RECONFIGURE_CALLER_FORMAT, finalReason),
+                                true));
                 return START_STICKY;
             } else {
                 LogUtil.d(TAG, "强制 VPN 重配请求忽略：服务尚未建立 VPN，按常规启动流程继续");
