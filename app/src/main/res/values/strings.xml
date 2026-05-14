@@ -237,4 +237,15 @@
     <string name="smart_routing_data_ready">Ready</string>
     <string name="smart_routing_data_downloading">Downloading…</string>
     <string name="smart_routing_data_not_ready">Not downloaded</string>
+    <string name="dialog_ota_stable_title">Stable update available</string>
+    <string name="dialog_ota_stable_message">A new stable version %1$s is available and must be installed to continue.</string>
+    <string name="dialog_ota_prerelease_title">Prerelease update available</string>
+    <string name="dialog_ota_prerelease_message">A new prerelease version %1$s is available. Update now?</string>
+    <string name="dialog_ota_update_now">Update now</string>
+    <string name="dialog_ota_skip_update">Not now</string>
+    <string name="ota_download_title">Zerotier Fix update package</string>
+    <string name="ota_download_description">Downloading version %1$s</string>
+    <string name="toast_ota_download_started">Started downloading update package</string>
+    <string name="toast_ota_download_failed">Failed to download update package</string>
+    <string name="toast_ota_install_failed">Cannot launch installer. Please install the downloaded APK manually.</string>
 </resources>

@@ -216,4 +216,15 @@
     <string name="smart_routing_data_ready">已就绪</string>
     <string name="smart_routing_data_downloading">下载中…</string>
     <string name="smart_routing_data_not_ready">未下载</string>
+    <string name="dialog_ota_stable_title">发现正式版本更新</string>
+    <string name="dialog_ota_stable_message">检测到新正式版本 %1$s，必须更新后继续使用。</string>
+    <string name="dialog_ota_prerelease_title">发现预发布更新</string>
+    <string name="dialog_ota_prerelease_message">检测到新预发布版本 %1$s，是否立即更新？</string>
+    <string name="dialog_ota_update_now">立即更新</string>
+    <string name="dialog_ota_skip_update">暂不更新</string>
+    <string name="ota_download_title">Zerotier Fix 更新包下载</string>
+    <string name="ota_download_description">正在下载版本 %1$s</string>
+    <string name="toast_ota_download_started">已开始下载更新包</string>
+    <string name="toast_ota_download_failed">下载更新包失败</string>
+    <string name="toast_ota_install_failed">无法启动安装，请手动安装下载的 APK</string>
 </resources>

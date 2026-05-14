@@ -2,7 +2,7 @@ name: Build APP
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "**" ]
   pull_request:
     branches: [ "*" ]
   workflow_dispatch:
@@ -89,23 +89,44 @@ jobs:
           name: app-release
           path: app/build/outputs/apk/release/app-release.apk
       
-      # 重命名APK文件以包含版本号 (仅master分支)
+      # 重命名 APK，并按分支决定正式版/预发布
       - name: Rename APK with version
-        if: github.ref == 'refs/heads/master' && success()
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && success()
         run: |
           VERSION="1.0.${{ github.run_number }}"
-          cp app/build/outputs/apk/release/app-release.apk "ZerotierFix-v${VERSION}.apk"
+          BRANCH_NAME=$(echo "${{ github.ref_name }}" | sed 's#[^A-Za-z0-9._-]#-#g')
+
+          if [ "${{ github.ref }}" = "refs/heads/master" ]; then
+            TAG="v${VERSION}"
+            RELEASE_NAME="ZerotierFix v${VERSION}"
+            PRERELEASE="false"
+          else
+            TAG="v${VERSION}-${BRANCH_NAME}"
+            RELEASE_NAME="ZerotierFix v${VERSION} (${BRANCH_NAME} prerelease)"
+            PRERELEASE="true"
+          fi
+
+          cp app/build/outputs/apk/release/app-release.apk "ZerotierFix-${TAG}.apk"
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
-          echo "APK_FILE=ZerotierFix-v${VERSION}.apk" >> $GITHUB_ENV
+          echo "TAG=${TAG}" >> $GITHUB_ENV
+          echo "RELEASE_NAME=${RELEASE_NAME}" >> $GITHUB_ENV
+          echo "PRERELEASE=${PRERELEASE}" >> $GITHUB_ENV
+          echo "APK_FILE=ZerotierFix-${TAG}.apk" >> $GITHUB_ENV
       
-      # 生成变更日志 (仅master分支)
+      # 生成变更日志
       - name: Generate Changelog
-        if: github.ref == 'refs/heads/master' && success()
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && success()
         run: |
-          echo "# ZerotierFix v${VERSION}" > RELEASE_NOTES.md
+          echo "# ${RELEASE_NAME}" > RELEASE_NOTES.md
           echo "" >> RELEASE_NOTES.md
           echo "## 📦 构建信息 / Build Information" >> RELEASE_NOTES.md
-          echo "- **版本号 / Version:** v${VERSION}" >> RELEASE_NOTES.md
+          if [ "${PRERELEASE}" = "true" ]; then
+            RELEASE_TYPE="Prerelease"
+          else
+            RELEASE_TYPE="Stable"
+          fi
+          echo "- **版本号 / Version:** ${TAG}" >> RELEASE_NOTES.md
+          echo "- **发布类型 / Release Type:** ${RELEASE_TYPE}" >> RELEASE_NOTES.md
           echo "- **构建号 / Build Number:** ${{ github.run_number }}" >> RELEASE_NOTES.md
           echo "- **构建日期 / Build Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> RELEASE_NOTES.md
           echo "- **提交 / Commit:** ${{ github.sha }}" >> RELEASE_NOTES.md
@@ -131,22 +152,22 @@ jobs:
           echo "" >> RELEASE_NOTES.md
           echo "## 📥 下载 / Download" >> RELEASE_NOTES.md
           echo "" >> RELEASE_NOTES.md
-          echo "下载 \`ZerotierFix-v${VERSION}.apk\` 文件并安装到您的Android设备。" >> RELEASE_NOTES.md
+          echo "下载 \`${APK_FILE}\` 文件并安装到您的Android设备。" >> RELEASE_NOTES.md
           echo "" >> RELEASE_NOTES.md
-          echo "Download \`ZerotierFix-v${VERSION}.apk\` and install it on your Android device." >> RELEASE_NOTES.md
+          echo "Download \`${APK_FILE}\` and install it on your Android device." >> RELEASE_NOTES.md
           
           cat RELEASE_NOTES.md
       
-      # 创建GitHub Release (仅master分支)
+      # 创建 GitHub Release（master 为正式版，其他分支为预发布）
       - name: Create Release
-        if: github.ref == 'refs/heads/master' && success()
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && success()
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ env.VERSION }}
-          name: ZerotierFix v${{ env.VERSION }}
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.RELEASE_NAME }}
           body_path: RELEASE_NOTES.md
           files: ${{ env.APK_FILE }}
           draft: false
-          prerelease: false
+          prerelease: ${{ env.PRERELEASE }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
