@@ -120,6 +120,9 @@ public class SmartRoutingManager {
     };
     private static final String SMART_ROUTING_PREFS = "smart_routing_prefs";
     private static final String PREF_KEY_SUPER_AGGREGATE_BUDGET = "super_aggregate_budget";
+    static {
+        validateBudgetTiersDescending();
+    }
 
     /**
      * 受保护的非中国 CIDR 列表：即使在超级聚合过程中，这些 IP 所在的间隙也不会被填充。
@@ -680,7 +683,9 @@ public class SmartRoutingManager {
         this.nonChinaCidrsVpnSafeByBudget = Collections.unmodifiableMap(nonChinaByBudget);
         // 兜底重归一化：即使偏好文件被外部写入非档位值，也可在数据重载时收敛到合法档位。
         int budget = normalizeBudget(currentSuperAggregateBudget);
-        this.currentSuperAggregateBudget = budget;
+        if (budget != currentSuperAggregateBudget) {
+            this.currentSuperAggregateBudget = budget;
+        }
         List<CidrBlock> selectedChina = getListForBudget(chinaCidrsVpnSafeByBudget, budget, aggregated);
         List<CidrBlock> selectedNonChina = getListForBudget(nonChinaCidrsVpnSafeByBudget, budget, CidrBlock.computeComplement(aggregated));
         this.currentVpnSafeRoutes = new VpnSafeRouteSet(selectedChina, selectedNonChina);
@@ -850,7 +855,7 @@ public class SmartRoutingManager {
     }
 
     private static int normalizeBudget(int budget) {
-        // 注意：预算档位数组必须按“从高到低”排序。
+        // 注意：预算档位数组必须按“降序”排序。
         int first = SUPER_AGGREGATE_BUDGET_TIERS[0];
         int normalized = first;
         for (int tier : SUPER_AGGREGATE_BUDGET_TIERS) {
@@ -867,5 +872,13 @@ public class SmartRoutingManager {
             if (SUPER_AGGREGATE_BUDGET_TIERS[i] == budget) return i;
         }
         return -1;
+    }
+
+    private static void validateBudgetTiersDescending() {
+        for (int i = 1; i < SUPER_AGGREGATE_BUDGET_TIERS.length; i++) {
+            if (SUPER_AGGREGATE_BUDGET_TIERS[i] >= SUPER_AGGREGATE_BUDGET_TIERS[i - 1]) {
+                throw new IllegalStateException("SUPER_AGGREGATE_BUDGET_TIERS must be strictly descending");
+            }
+        }
     }
 }
