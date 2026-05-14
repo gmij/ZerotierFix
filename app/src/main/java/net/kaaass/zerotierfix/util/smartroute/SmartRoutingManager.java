@@ -188,13 +188,17 @@ public class SmartRoutingManager {
      * 由 parseChnroutes() 在后台线程预计算，用于 VPN Builder.establish() 的 excludeRoute/addRoute，
      * 避免大量 CIDR 导致 Binder 序列化超限。精度略低于 chinaCidrs，但对网络连通性无实质影响。
      */
-    private volatile List<CidrBlock> chinaCidrsVpnSafe = Collections.emptyList();
+    private static final class VpnSafeRouteSet {
+        final List<CidrBlock> china;
+        final List<CidrBlock> nonChina;
 
-    /**
-     * VPN-safe 非中国 IP 补集（chinaCidrsVpnSafe 的补集），用于 Android 12- 的 addRoute。
-     * 由 parseChnroutes() 与 chinaCidrsVpnSafe 一同计算并缓存。
-     */
-    private volatile List<CidrBlock> nonChinaCidrsVpnSafe = Collections.emptyList();
+        VpnSafeRouteSet(List<CidrBlock> china, List<CidrBlock> nonChina) {
+            this.china = china;
+            this.nonChina = nonChina;
+        }
+    }
+    private volatile VpnSafeRouteSet currentVpnSafeRoutes =
+            new VpnSafeRouteSet(Collections.emptyList(), Collections.emptyList());
     private volatile Map<Integer, List<CidrBlock>> chinaCidrsVpnSafeByBudget = Collections.emptyMap();
     private volatile Map<Integer, List<CidrBlock>> nonChinaCidrsVpnSafeByBudget = Collections.emptyMap();
     private volatile int currentSuperAggregateBudget = SUPER_AGGREGATE_DEFAULT_MAX_ENTRIES;
@@ -360,8 +364,7 @@ public class SmartRoutingManager {
             List<CidrBlock> china = chinaCidrsVpnSafeByBudget.get(next);
             List<CidrBlock> nonChina = nonChinaCidrsVpnSafeByBudget.get(next);
             if (china != null && nonChina != null) {
-                chinaCidrsVpnSafe = china;
-                nonChinaCidrsVpnSafe = nonChina;
+                currentVpnSafeRoutes = new VpnSafeRouteSet(china, nonChina);
             }
         }
         return currentSuperAggregateBudget;
@@ -675,16 +678,18 @@ public class SmartRoutingManager {
         }
         this.chinaCidrsVpnSafeByBudget = Collections.unmodifiableMap(chinaByBudget);
         this.nonChinaCidrsVpnSafeByBudget = Collections.unmodifiableMap(nonChinaByBudget);
+        // 兜底重归一化：即使偏好文件被外部写入非档位值，也可在数据重载时收敛到合法档位。
         int budget = normalizeBudget(currentSuperAggregateBudget);
         this.currentSuperAggregateBudget = budget;
-        this.chinaCidrsVpnSafe = getListForBudget(chinaCidrsVpnSafeByBudget, budget, aggregated);
-        this.nonChinaCidrsVpnSafe = getListForBudget(nonChinaCidrsVpnSafeByBudget, budget, CidrBlock.computeComplement(aggregated));
+        List<CidrBlock> selectedChina = getListForBudget(chinaCidrsVpnSafeByBudget, budget, aggregated);
+        List<CidrBlock> selectedNonChina = getListForBudget(nonChinaCidrsVpnSafeByBudget, budget, CidrBlock.computeComplement(aggregated));
+        this.currentVpnSafeRoutes = new VpnSafeRouteSet(selectedChina, selectedNonChina);
 
         LogUtil.i(TAG, "已加载 " + beforeAgg + " 条中国 IP 路由（含 "
                 + supplementalAdded + " 条腾讯云补充段），聚合后 " + aggregated.size()
                 + " 条（补集 " + nonChinaCidrs.size() + " 条），超级聚合后 "
-                + chinaCidrsVpnSafe.size() + " 条（预算 " + budget + "，补集 "
-                + nonChinaCidrsVpnSafe.size() + " 条）");
+                + currentVpnSafeRoutes.china.size() + " 条（预算 " + budget + "，补集 "
+                + currentVpnSafeRoutes.nonChina.size() + " 条）");
         // 通知等待中的 CHINA_DIRECT VPN 路由重建（getAndSet 原子读取并清除，消除竞态）
         OnChnroutesReadyListener l = onChnroutesReadyListenerRef.getAndSet(null);
         if (l != null) {
@@ -821,11 +826,11 @@ public class SmartRoutingManager {
     }
 
     private List<CidrBlock> getChinaCidrsVpnSafeBase() {
-        return getListForBudget(chinaCidrsVpnSafeByBudget, currentSuperAggregateBudget, chinaCidrsVpnSafe);
+        return currentVpnSafeRoutes.china;
     }
 
     private List<CidrBlock> getNonChinaCidrsVpnSafeBase() {
-        return getListForBudget(nonChinaCidrsVpnSafeByBudget, currentSuperAggregateBudget, nonChinaCidrsVpnSafe);
+        return currentVpnSafeRoutes.nonChina;
     }
 
     private static List<CidrBlock> getListForBudget(Map<Integer, List<CidrBlock>> byBudget, int budget,
@@ -845,6 +850,7 @@ public class SmartRoutingManager {
     }
 
     private static int normalizeBudget(int budget) {
+        // 注意：预算档位数组必须按“从高到低”排序。
         int first = SUPER_AGGREGATE_BUDGET_TIERS[0];
         int normalized = first;
         for (int tier : SUPER_AGGREGATE_BUDGET_TIERS) {
