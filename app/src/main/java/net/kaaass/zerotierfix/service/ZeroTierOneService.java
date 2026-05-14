@@ -2636,6 +2636,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         try {
             return longToIpv4Addr(net).getHostAddress() + "/" + prefix;
         } catch (Exception e) {
+            LogUtil.w(TAG, "格式化 IPv4 CIDR 失败: net=" + Long.toUnsignedString(net)
+                    + ", prefix=" + prefix + ", err=" + e.getMessage());
             return Long.toUnsignedString(net) + "/" + prefix;
         }
     }

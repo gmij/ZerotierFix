@@ -209,14 +209,18 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
     public void setHotspotSubnetHints(java.util.List<long[]> hotspotSubnets) {
         if (hotspotSubnets == null || hotspotSubnets.isEmpty()) {
-            this.hotspotClientSubnets = new long[0][];
+            this.hotspotClientSubnets = new long[0][0];
             hotspotTrafficLogged.clear();
             return;
         }
-        long[][] copy = new long[hotspotSubnets.size()][2];
+        long[][] copy = new long[hotspotSubnets.size()][3];
         for (int i = 0; i < hotspotSubnets.size(); i++) {
-            copy[i][0] = hotspotSubnets.get(i)[0];
-            copy[i][1] = hotspotSubnets.get(i)[1];
+            long[] subnet = hotspotSubnets.get(i);
+            int prefix = (int) subnet[1];
+            long mask = prefix == 0 ? 0L : ((prefix == 32) ? 0xFFFFFFFFL : (~0L << (32 - prefix)) & 0xFFFFFFFFL);
+            copy[i][0] = subnet[0];
+            copy[i][1] = subnet[1];
+            copy[i][2] = mask;
         }
         this.hotspotClientSubnets = copy;
         hotspotTrafficLogged.clear();
@@ -305,8 +309,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
     private boolean belongsToAnySubnet(long ip, long[][] subnets) {
         for (long[] subnet : subnets) {
-            int prefix = (int) subnet[1];
-            long mask = prefix == 0 ? 0L : ((prefix == 32) ? 0xFFFFFFFFL : (~0L << (32 - prefix)) & 0xFFFFFFFFL);
+            long mask = subnet[2];
             if ((ip & mask) == subnet[0]) {
                 return true;
             }
