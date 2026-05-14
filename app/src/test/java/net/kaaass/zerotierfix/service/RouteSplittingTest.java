@@ -145,4 +145,31 @@ public class RouteSplittingTest {
         assertFalse(ZeroTierOneService.shouldSkipManagedIpv4RouteForChinaDirect(
                 java.net.InetAddress.getByName("100.64.0.0")));
     }
+
+    @Test
+    public void hotspotSubnetPatterns_areRecognized() {
+        assertTrue(ZeroTierOneService.isLikelyTetheringServerSubnet(parseCidrNet("192.168.43.0/24"), 24));
+        assertTrue(ZeroTierOneService.isLikelyTetheringServerSubnet(parseCidrNet("192.168.42.0/24"), 24));
+        assertTrue(ZeroTierOneService.isLikelyTetheringServerSubnet(parseCidrNet("172.20.10.0/28"), 28));
+        assertFalse(ZeroTierOneService.isLikelyTetheringServerSubnet(parseCidrNet("192.168.1.0/24"), 24));
+    }
+
+    @Test
+    public void hotspotGatewayHosts_areRecognized() throws Exception {
+        assertTrue(ZeroTierOneService.isLikelyTetheringServerHost(
+                java.net.InetAddress.getByName("192.168.43.1")));
+        assertTrue(ZeroTierOneService.isLikelyTetheringServerHost(
+                java.net.InetAddress.getByName("192.168.42.129")));
+        assertFalse(ZeroTierOneService.isLikelyTetheringServerHost(
+                java.net.InetAddress.getByName("192.168.1.23")));
+    }
+
+    @Test
+    public void privateIpv4Detection_matchesRfc1918Only() {
+        assertTrue(ZeroTierOneService.isPrivateIpv4(parseCidrNet("10.0.0.0/8")));
+        assertTrue(ZeroTierOneService.isPrivateIpv4(parseCidrNet("172.16.0.0/12")));
+        assertTrue(ZeroTierOneService.isPrivateIpv4(parseCidrNet("192.168.43.0/24")));
+        assertFalse(ZeroTierOneService.isPrivateIpv4(parseCidrNet("100.64.0.0/10")));
+        assertFalse(ZeroTierOneService.isPrivateIpv4(parseCidrNet("8.8.8.0/24")));
+    }
 }
