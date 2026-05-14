@@ -83,6 +83,11 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
      */
     private final Set<Long> chinaDirectLeakWarned =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
+    /** 已输出“热点下游流量进入 TUN”证据日志的源 IP 集合。 */
+    private final Set<Long> hotspotTrafficLogged =
+            Collections.newSetFromMap(new ConcurrentHashMap<>());
+    /** 当前识别到的热点下游客户端子网提示。 */
+    private volatile long[][] hotspotClientSubnets = new long[0][];
 
     /**
      * 缓存的 VirtualNetworkConfig，避免在每个数据包的处理热路径上都进行 synchronized 锁获取。
@@ -126,6 +131,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     public void clearConnLog() {
         connLoggedSet.clear();
         chinaDirectLeakWarned.clear();
+        hotspotTrafficLogged.clear();
     }
 
     /**
@@ -201,6 +207,21 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         this.perAppRoutingActive = perAppRouting;
     }
 
+    public void setHotspotSubnetHints(java.util.List<long[]> hotspotSubnets) {
+        if (hotspotSubnets == null || hotspotSubnets.isEmpty()) {
+            this.hotspotClientSubnets = new long[0][];
+            hotspotTrafficLogged.clear();
+            return;
+        }
+        long[][] copy = new long[hotspotSubnets.size()][2];
+        for (int i = 0; i < hotspotSubnets.size(); i++) {
+            copy[i][0] = hotspotSubnets.get(i)[0];
+            copy[i][1] = hotspotSubnets.get(i)[1];
+        }
+        this.hotspotClientSubnets = copy;
+        hotspotTrafficLogged.clear();
+    }
+
     /**
      * 发出 [CONN] 业务日志（每个 destIP:dstPort 仅记录一次）。
      *
@@ -239,28 +260,58 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         String srcStr = (sourceIP != null ? sourceIP.getHostAddress() : "?") + ":" + srcPort;
 
         // 判断路由原因
-        String routeReason;
+        String routeReason = describeRouteReason(origDestIP);
+
+        String msg = displayHost + ":" + dstPort + "  [" + routeReason + "]  (" + protoLabel + "; src=" + srcStr + "; dest=" + destStr + ")";
+        LogUtil.i(LogUtil.CONN_TAG, msg);
+    }
+
+    private String describeRouteReason(InetAddress origDestIP) {
+        if (origDestIP == null) {
+            return "ZT";
+        }
         if (perAppRoutingActive) {
-            routeReason = "ZT (per-app)";
-        } else if (smartRoutingManager != null && smartRoutingMode != SmartRoutingManager.MODE_OFF) {
+            return "ZT (per-app)";
+        }
+        if (smartRoutingManager != null && smartRoutingMode != SmartRoutingManager.MODE_OFF) {
             boolean isGfw = smartRoutingManager.getGfwIpSet().contains(origDestIP);
             boolean isCn = smartRoutingManager.isChineseIp(origDestIP);
             String learnedPolicy = smartRoutingManager.getLearnedPolicyDescription(origDestIP);
             if (learnedPolicy != null && learnedPolicy.startsWith("via-zt ")) {
-                routeReason = "ZT (" + learnedPolicy + ")";
+                return "ZT (" + learnedPolicy + ")";
             } else if (isGfw) {
-                routeReason = "ZT (GFW)";
+                return "ZT (GFW)";
             } else if (isCn) {
-                routeReason = "ZT (CN)";
+                return "ZT (CN)";
             } else {
-                routeReason = "ZT (非CN)";
+                return "ZT (非CN)";
             }
-        } else {
-            routeReason = "ZT (全局)";
         }
+        return "ZT (全局)";
+    }
 
-        String msg = displayHost + ":" + dstPort + "  [" + routeReason + "]  (" + protoLabel + "; src=" + srcStr + "; dest=" + destStr + ")";
-        LogUtil.i(LogUtil.CONN_TAG, msg);
+    private void emitHotspotTrafficEvidenceLog(InetAddress sourceIP, InetAddress destIP) {
+        if (!(sourceIP instanceof Inet4Address) || hotspotClientSubnets.length == 0) return;
+        byte[] addrBytes = sourceIP.getAddress();
+        long ipLong = ((addrBytes[0] & 0xFFL) << 24) | ((addrBytes[1] & 0xFFL) << 16)
+                | ((addrBytes[2] & 0xFFL) << 8) | (addrBytes[3] & 0xFFL);
+        if (!belongsToAnySubnet(ipLong, hotspotClientSubnets)) return;
+        if (!hotspotTrafficLogged.add(ipLong)) return;
+        String destLabel = destIP != null ? destIP.getHostAddress() : "?";
+        LogUtil.i(LogUtil.CONN_TAG, "热点下游流量进入TUN: src=" + sourceIP.getHostAddress()
+                + " -> " + destLabel + " [" + describeRouteReason(destIP)
+                + "]，当前按现有 VPN/智能路由链路处理");
+    }
+
+    private boolean belongsToAnySubnet(long ip, long[][] subnets) {
+        for (long[] subnet : subnets) {
+            int prefix = (int) subnet[1];
+            long mask = prefix == 0 ? 0L : ((prefix == 32) ? 0xFFFFFFFFL : (~0L << (32 - prefix)) & 0xFFFFFFFFL);
+            if ((ip & mask) == subnet[0]) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public void addRouteAndNetwork(Route route, long networkId) {
@@ -489,6 +540,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
         // ── [CONN] 业务日志：非多播 unicast 包通过路由过滤，即将转发至 ZT ──
         if (!isIPv4Multicast(destIP)) {
+            emitHotspotTrafficEvidenceLog(sourceIP, destIP);
             emitConnLog(packetData, destIP, sourceIP);
         }
 

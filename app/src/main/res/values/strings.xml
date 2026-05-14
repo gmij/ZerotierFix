@@ -67,7 +67,7 @@
     <string name="preferences_network_auto_rebuild">Enable auto rebuild on network change</string>
     <string name="preferences_network_auto_rebuild_summary">For troubleshooting: when disabled, Wi-Fi/4G switch will not auto-trigger VPN route rebuild. Reconnect or manually update config to apply changes.</string>
     <string name="preferences_network_forward_hotspot_traffic">Forward mobile hotspot traffic via ZeroTier</string>
-    <string name="preferences_network_forward_hotspot_traffic_summary">When enabled, downstream hotspot/USB/Bluetooth tethering traffic can enter VPN routing and be forwarded through ZeroTier (best-effort; reconnect if needed).</string>
+    <string name="preferences_network_forward_hotspot_traffic_summary">When enabled, downstream hotspot/USB/Bluetooth tethering traffic is kept on the VPN path first so it can reuse smart routing; if fine-grained split is limited by Android, all detected hotspot traffic is sent into VPN on a best-effort basis.</string>
     <string name="preferences_network_smart_routing_enabled">Enable smart routing enhancement</string>
     <string name="preferences_network_smart_routing_enabled_summary">When disabled, CHINA_DIRECT/GFW smart split is turned off and routing falls back closer to original fork behavior (reconnect required).</string>
 

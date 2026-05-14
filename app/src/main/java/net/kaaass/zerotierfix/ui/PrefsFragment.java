@@ -297,9 +297,16 @@ public class PrefsFragment extends PreferenceFragmentCompat implements SharedPre
             requireActivity().startService(new Intent(getActivity(), ZeroTierOneService.class));
         } else if (key.equals(Constants.PREF_NETWORK_AUTO_REBUILD)
                 || key.equals(Constants.PREF_NETWORK_FORWARD_HOTSPOT_TRAFFIC)) {
-            // 网络自动重建开关：通过重新触发 service 让配置尽快生效
-            requireActivity().startService(new Intent(getActivity(), ZeroTierOneService.class));
+            // 网络自动重建 / 热点转发开关：立即强制重配当前 VPN，确保活动会话更新路由表
+            startForceReconfigureService(key);
         }
+    }
+
+    private void startForceReconfigureService(String reasonKey) {
+        Intent intent = new Intent(getActivity(), ZeroTierOneService.class);
+        intent.putExtra(ZeroTierOneService.EXTRA_FORCE_RECONFIGURE, true);
+        intent.putExtra(ZeroTierOneService.EXTRA_FORCE_RECONFIGURE_REASON, "prefs:" + reasonKey);
+        requireActivity().startService(intent);
     }
 
     /**

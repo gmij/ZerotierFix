@@ -142,6 +142,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             "ap", "softap", "wlan1", "wlan2", "swlan",
             "rndis", "usb", "bt-pan", "bnep", "tether"
     };
+    /**
+     * 常见热点下游地址池。
+     * 命中时可作为接口角色二次确认，尽量覆盖仅改名不改网段的 OEM ROM。
+     */
+    private static final long[][] COMMON_TETHERING_DOWNSTREAM_SUBNETS = {
+            {0xC0A82A00L, 24}, // 192.168.42.0/24 USB tethering
+            {0xC0A82B00L, 24}, // 192.168.43.0/24 Wi-Fi hotspot
+            {0xC0A82C00L, 24}, // 192.168.44.0/24 Bluetooth PAN
+            {0xC0A8E800L, 24}, // 192.168.232.0/24 部分 OEM 热点
+            {0xAC140A00L, 28}, // 172.20.10.0/28 常见共享池
+    };
     /** 链路本地地址网络前缀 169.254.0.0，uint32。 */
     private static final long LINK_LOCAL_PREFIX = 0xA9FE0000L; // 169.254.0.0
     /** 链路本地地址子网掩码 /16，uint32。 */
@@ -150,6 +161,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private static final long CGN_PREFIX = 0x64400000L; // 100.64.0.0
     /** CGN 子网掩码 /10，uint32。 */
     private static final long CGN_MASK   = 0xFFC00000L; // /10
+    private static final long RFC1918_10_PREFIX = 0x0A000000L;
+    private static final long RFC1918_10_MASK = 0xFF000000L;
+    private static final long RFC1918_172_PREFIX = 0xAC100000L;
+    private static final long RFC1918_172_MASK = 0xFFF00000L;
+    private static final long RFC1918_192_PREFIX = 0xC0A80000L;
+    private static final long RFC1918_192_MASK = 0xFFFF0000L;
     /**
      * 国内直连模式专用 DNS 服务器：使用国内权威 DNS，使微信视频号等内容解析到国内 CDN 节点。
      * 114DNS 和阿里 DNS 均为中国 IP，在 CHINA_DIRECT 模式下会被排除在 VPN 路由之外，
@@ -305,6 +322,48 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private Runnable pendingFirstEstablishRunnable;
     /** VPN 重建请求序号，用于日志锚点关联同一次触发链路 */
     private final AtomicLong vpnRebuildRequestSeq = new AtomicLong(0);
+    static final class LocalSubnetDecision {
+        private final List<long[]> excludedSubnets = new ArrayList<>();
+        private final List<long[]> hotspotSubnets = new ArrayList<>();
+        private final List<String> excludedSummaries = new ArrayList<>();
+        private final List<String> hotspotSummaries = new ArrayList<>();
+
+        List<long[]> getExcludedSubnets() {
+            return excludedSubnets;
+        }
+
+        List<long[]> getHotspotSubnets() {
+            return hotspotSubnets;
+        }
+
+        void addExcludedSubnet(String ifaceName, long net, int prefix) {
+            excludedSubnets.add(new long[]{net, prefix});
+            excludedSummaries.add(ifaceName + "=" + formatIpv4Cidr(net, prefix));
+        }
+
+        void addHotspotSubnet(String ifaceName, long net, int prefix, String reason) {
+            hotspotSubnets.add(new long[]{net, prefix});
+            hotspotSummaries.add(ifaceName + "=" + formatIpv4Cidr(net, prefix) + " (" + reason + ")");
+        }
+
+        void logSummary(boolean hotspotTrafficForwardingEnabled) {
+            if (hotspotTrafficForwardingEnabled) {
+                if (hotspotSummaries.isEmpty()) {
+                    LogUtil.w(LogUtil.ROUTE_TAG, "热点转发已开启，但本次未识别到热点下游接口/子网；若热点流量未进入 VPN，请检查 ROM 是否限制 VpnService 接管");
+                } else {
+                    LogUtil.i(LogUtil.ROUTE_TAG, "热点转发已开启：保留 " + hotspotSummaries.size()
+                            + " 个热点下游子网进入 VPN（优先全部纳入 VPN）: "
+                            + android.text.TextUtils.join(", ", hotspotSummaries));
+                }
+            }
+            if (!excludedSummaries.isEmpty()) {
+                LogUtil.i(LogUtil.ROUTE_TAG, "本次 VPN 仍排除 " + excludedSummaries.size()
+                        + " 个本地子网: " + android.text.TextUtils.join(", ", excludedSummaries));
+            } else {
+                LogUtil.i(LogUtil.ROUTE_TAG, "本次 VPN 未排除任何本地 IPv4 子网");
+            }
+        }
+    }
     /**
      * VPN 最近一次重建开始的时间戳（{@link android.os.SystemClock#elapsedRealtime()} 毫秒）。
      * 用于抑制 VPN 建立后物理网络的虚假回调（Android 在 establish() 后会重新评估物理网络，
@@ -1265,6 +1324,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         var assignedAddresses = virtualNetworkConfig.getAssignedAddresses();
         boolean isRouteViaZeroTier = networkConfig.getRouteViaZeroTier();
         boolean isPerAppRouting = networkConfig.getPerAppRouting();
+        boolean hotspotTrafficForwardingEnabled = isHotspotTrafficForwardingEnabled();
+        LocalSubnetDecision localSubnetDecision = detectLocalSubnetDecision(hotspotTrafficForwardingEnabled);
+        LogUtil.i(LogUtil.ROUTE_TAG, "本次 VPN 重建：smartRouting="
+                + (isSmartRoutingEnabled() ? "on" : "off")
+                + ", hotspotForwarding=" + hotspotTrafficForwardingEnabled
+                + ", perApp=" + isPerAppRouting
+                + ", routeViaZT=" + isRouteViaZeroTier);
 
         // 遍历 ZT 网络中当前设备的 IP 地址，组播配置
         for (var vpnAddress : assignedAddresses) {
@@ -1319,10 +1385,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             try {
                 if (smartRoutingEnabled) {
                     // 智能路由增强开启：使用 CHINA_DIRECT 分流
-                    configureChinaDirectRouting(builder, virtualNetworkConfig, assignedAddresses);
+                    configureChinaDirectRouting(builder, virtualNetworkConfig, assignedAddresses, localSubnetDecision);
                 } else {
                     // 智能路由增强关闭：回退到普通全局/Per-app 路由
-                    configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses, isPerAppRouting);
+                    configureDirectGlobalRouting(builder, virtualNetworkConfig, assignedAddresses, isPerAppRouting, localSubnetDecision);
                 }
                 
                 // 大幅增强对本地连接的保护，避免VPN路由循环
@@ -1481,8 +1547,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 }
             }
             try {
-                List<long[]> localSubnets = detectLocalSubnetsToExclude(isHotspotTrafficForwardingEnabled());
-                addGlobalRoutesToBuilder(fallbackBuilder, localSubnets);
+                addGlobalRoutesToBuilder(fallbackBuilder, localSubnetDecision.getExcludedSubnets());
             } catch (Exception fallbackEx) {
                 LogUtil.e(TAG, "降级全局路由配置失败: " + fallbackEx.getMessage(), fallbackEx);
                 try {
@@ -1524,6 +1589,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 : smartRoutingMode;
         SmartRoutingManager smartRouter = SmartRoutingManager.getInstance(this);
         this.tunTapAdapter.setSmartRouting(smartRouter, effectiveSmartRoutingMode, isPerAppRouting);
+        this.tunTapAdapter.setHotspotSubnetHints(localSubnetDecision.getHotspotSubnets());
 
         // 注册 learned 路由策略回调：DNS 嗅探发现新的 DIRECT / VIA_ZT 热点例外时，
         // 用 10 秒防抖重建 VPN，避免每个新 IP 都触发一次全量 establish()。
@@ -2161,9 +2227,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private void configureChinaDirectRouting(VpnService.Builder builder,
                                              VirtualNetworkConfig virtualNetworkConfig,
-                                             InetSocketAddress[] assignedAddresses) throws Exception {
+                                             InetSocketAddress[] assignedAddresses,
+                                             LocalSubnetDecision localSubnetDecision) throws Exception {
         SmartRoutingManager router = SmartRoutingManager.getInstance(this);
-        List<long[]> localSubnets = detectLocalSubnetsToExclude(isHotspotTrafficForwardingEnabled());
+        List<long[]> localSubnets = localSubnetDecision.getExcludedSubnets();
 
         // 找 ZeroTier 网关（与 configureDirectGlobalRouting 逻辑相同）
         InetAddress zerotierGateway = null;
@@ -2333,7 +2400,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private void configureDirectGlobalRouting(VpnService.Builder builder, VirtualNetworkConfig virtualNetworkConfig,
                                               InetSocketAddress[] assignedAddresses,
-                                              boolean isPerAppRouting) throws Exception {
+                                              boolean isPerAppRouting,
+                                              LocalSubnetDecision localSubnetDecision) throws Exception {
         // 获取ZeroTier网络中的网关
         InetAddress zerotierGateway = null;
         
@@ -2362,7 +2430,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 检测本机活跃的本地网络子网（蓝牙PAN bt-pan、WiFi局域网 wlan0、USB共享 usb0 等），
         // 将这些子网排除在 VPN 之外，避免本地连接被意外路由至 TUN。
-        List<long[]> localSubnets = detectLocalSubnetsToExclude(isHotspotTrafficForwardingEnabled());
+        List<long[]> localSubnets = localSubnetDecision.getExcludedSubnets();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             InetAddress defaultRoute = InetAddress.getByName("0.0.0.0");
@@ -2457,41 +2525,31 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * @return 每个子网表示为 {@code long[]{networkAddressAsUint32, prefixLen}}
      */
     private static List<long[]> detectLocalSubnetsToExclude(boolean hotspotTrafficForwardingEnabled) {
-        List<long[]> subnets = new ArrayList<>();
-        Set<String> processedSubnets = new HashSet<>(); // 去重：避免相同子网被多次加入
+        return detectLocalSubnetDecision(hotspotTrafficForwardingEnabled).getExcludedSubnets();
+    }
+
+    private static LocalSubnetDecision detectLocalSubnetDecision(boolean hotspotTrafficForwardingEnabled) {
+        LocalSubnetDecision decision = new LocalSubnetDecision();
+        Set<String> processedExcludedSubnets = new HashSet<>();
+        Set<String> processedHotspotSubnets = new HashSet<>();
         try {
             List<NetworkInterface> interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
             for (NetworkInterface ni : interfaces) {
                 if (!ni.isUp() || ni.isLoopback()) continue;
                 String name = ni.getName();
-                // 跳过 ZeroTier 虚拟接口（zt*）和 TUN 接口——它们不是本地物理连接
                 if (name.startsWith("zt") || name.startsWith("tun")) continue;
-                // 跳过移动数据接口：这些是"上行"互联网提供者，排除其子网会导致 4G/5G 断网
-                boolean isMobileData = false;
-                for (String prefix : MOBILE_DATA_IFACE_PREFIXES) {
-                    if (name.startsWith(prefix)) { isMobileData = true; break; }
-                }
-                if (isMobileData) {
+                if (isMobileDataInterface(name)) {
                     LogUtil.d(TAG, "跳过移动数据接口 [" + name + "]，不加入子网排除列表");
                     continue;
                 }
-                if (hotspotTrafficForwardingEnabled && isLikelyTetheringDownstreamInterface(name)) {
-                    LogUtil.d(TAG, "热点流量转发已开启，跳过下游共享接口 [" + name + "] 的子网排除");
-                    continue;
-                }
-                // 跳过 dummy 接口（某些系统上虚拟创建的占位接口）
                 if (name.startsWith("dummy")) continue;
                 for (InterfaceAddress ia : ni.getInterfaceAddresses()) {
                     InetAddress addr = ia.getAddress();
                     if (!(addr instanceof Inet4Address)) continue;
-                    // getNetworkPrefixLength() returns short; guard against invalid values
                     int prefix = ia.getNetworkPrefixLength();
-                    // 前缀过短（< 8）意味着排除超过 1/256 的地址空间，拒绝处理
                     if (prefix < 8 || prefix > 32) continue;
                     long net = ipv4BytesToLong(addr.getAddress());
-                    // 跳过链路本地地址（169.254.x.x），它们是未连接接口上的自动分配地址
                     if ((net & LINK_LOCAL_MASK) == LINK_LOCAL_PREFIX) continue;
-                    // 跳过 CGN 地址（100.64.0.0/10），部分运营商使用该段，不应排除
                     if ((net & CGN_MASK) == CGN_PREFIX) {
                         LogUtil.d(TAG, "跳过 CGN 地址 [" + name + "]: " + addr.getHostAddress() + "/" + prefix);
                         continue;
@@ -2499,17 +2557,26 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     long mask = prefix == 32 ? 0xFFFFFFFFL
                                              : (~0L << (32 - prefix)) & 0xFFFFFFFFL;
                     net &= mask;
-                    // 去重
                     String key = net + "/" + prefix;
-                    if (!processedSubnets.add(key)) continue;
-                    subnets.add(new long[]{net, prefix});
+                    String hotspotReason = getHotspotDetectionReason(name, net, prefix, addr);
+                    if (hotspotTrafficForwardingEnabled && hotspotReason != null) {
+                        if (processedHotspotSubnets.add(key)) {
+                            decision.addHotspotSubnet(name, net, prefix, hotspotReason);
+                            LogUtil.i(LogUtil.ROUTE_TAG, "热点转发：保留下游子网进入 VPN [" + name + "] "
+                                    + addr.getHostAddress() + "/" + prefix + "，原因=" + hotspotReason);
+                        }
+                        continue;
+                    }
+                    if (!processedExcludedSubnets.add(key)) continue;
+                    decision.addExcludedSubnet(name, net, prefix);
                     LogUtil.d(TAG, "排除本地子网 [" + name + "]: " + addr.getHostAddress() + "/" + prefix);
                 }
             }
         } catch (Exception e) {
             LogUtil.w(TAG, "检测本地子网时出错: " + e.getMessage());
         }
-        return subnets;
+        decision.logSummary(hotspotTrafficForwardingEnabled);
+        return decision;
     }
 
     private static boolean isLikelyTetheringDownstreamInterface(String ifaceName) {
@@ -2519,6 +2586,58 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
         return false;
+    }
+
+    private static boolean isMobileDataInterface(String ifaceName) {
+        for (String prefix : MOBILE_DATA_IFACE_PREFIXES) {
+            if (ifaceName.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String getHotspotDetectionReason(String ifaceName, long net, int prefix, InetAddress addr) {
+        if (isLikelyTetheringDownstreamInterface(ifaceName)) {
+            return "iface-prefix";
+        }
+        if (isLikelyTetheringServerSubnet(net, prefix)) {
+            return "subnet-pattern";
+        }
+        if (isPrivateIpv4(net) && (prefix == 24 || prefix == 28) && isLikelyTetheringServerHost(addr)) {
+            return "private-gateway-shape";
+        }
+        return null;
+    }
+
+    static boolean isLikelyTetheringServerSubnet(long net, int prefix) {
+        for (long[] candidate : COMMON_TETHERING_DOWNSTREAM_SUBNETS) {
+            if (candidate[0] == net && candidate[1] == prefix) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean isPrivateIpv4(long ip) {
+        return (ip & RFC1918_10_MASK) == RFC1918_10_PREFIX
+                || (ip & RFC1918_172_MASK) == RFC1918_172_PREFIX
+                || (ip & RFC1918_192_MASK) == RFC1918_192_PREFIX;
+    }
+
+    static boolean isLikelyTetheringServerHost(InetAddress address) {
+        if (!(address instanceof Inet4Address)) return false;
+        byte[] bytes = address.getAddress();
+        int lastOctet = bytes[3] & 0xFF;
+        return lastOctet == 1 || lastOctet == 129;
+    }
+
+    private static String formatIpv4Cidr(long net, int prefix) {
+        try {
+            return longToIpv4Addr(net).getHostAddress() + "/" + prefix;
+        } catch (Exception e) {
+            return Long.toUnsignedString(net) + "/" + prefix;
+        }
     }
 
     /**
