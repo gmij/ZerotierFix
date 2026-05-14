@@ -133,14 +133,18 @@ public class SmartRoutingManager {
             "1.0.0.0/24",   // Cloudflare DNS 备（1.0.0.1）
             "8.8.8.0/24",   // Google DNS 主（8.8.8.8）
             "8.8.4.0/24",   // Google DNS 备（8.8.4.4）
+            "66.102.0.0/20", // Google
+            "108.177.0.0/17", // Google
             "172.217.0.0/16", // YouTube/Google
             "142.250.0.0/15", // YouTube/Google
+            "142.252.0.0/15", // YouTube/Google
             "172.253.0.0/16", // YouTube/Google
             "173.194.0.0/16", // YouTube/Google
             "74.125.0.0/16",  // YouTube/Google
             "64.233.160.0/19", // YouTube/Google
             "209.85.128.0/17", // YouTube/Google
             "216.239.32.0/19", // YouTube/Google
+            "199.36.154.0/23", // Google 前端 VIP（Google APIs / Accounts 常见段）
     };
 
     /**
@@ -156,9 +160,12 @@ public class SmartRoutingManager {
             ".youtube.com",          // YouTube 主域
             ".googlevideo.com",      // YouTube 视频流 CDN
             ".ytimg.com",            // YouTube 静态资源
+            ".youtu.be",             // YouTube 短链接/分享域名
+            ".youtube-nocookie.com", // YouTube 嵌入域名
             ".gvt2.com",             // Google 传输/视频 CDN
             ".gvt3.com",             // Google 传输/视频 CDN
             ".gvt1.net",             // Google 视频/更新分发
+            ".g.co",                 // Google 短域名（账号/服务跳转）
             ".android.com",          // Android/Play 生态域
     };
 
