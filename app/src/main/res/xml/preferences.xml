@@ -25,11 +25,6 @@
             android:key="network_auto_rebuild"
             android:summary="@string/preferences_network_auto_rebuild_summary"
             android:title="@string/preferences_network_auto_rebuild" />
-        <CheckBoxPreference
-            android:defaultValue="true"
-            android:key="network_smart_routing_enabled"
-            android:summary="@string/preferences_network_smart_routing_enabled_summary"
-            android:title="@string/preferences_network_smart_routing_enabled" />
     </PreferenceCategory>
     
     <!-- 代理功能已移除 -->

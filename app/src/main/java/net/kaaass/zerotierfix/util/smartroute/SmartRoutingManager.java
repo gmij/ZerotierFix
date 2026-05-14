@@ -121,6 +121,8 @@ public class SmartRoutingManager {
      *   <li>1.1.1.0/24 – Cloudflare DNS 主（1.1.1.1），夹在 1.1.0.0/24 和 1.1.2.0/23 两个中国段之间，
      *       若被合并则 Cloudflare DNS 经物理网络发出、受 GFW 污染，导致全局代理模式下 DNS 解析失败。</li>
      *   <li>1.0.0.0/24 – Cloudflare DNS 备（1.0.0.1），类似情形。</li>
+     *   <li>172.217.0.0/16、142.250.0.0/15 及更多 Google 出口段 –
+     *       防止 YouTube/Google 高频 IP 在过度聚合时被纳入中国段。</li>
      * </ul>
      *
      * <p>保护为尽力而为（best-effort）：若无法在不填充受保护间隙的前提下达到 maxEntries，
@@ -129,6 +131,35 @@ public class SmartRoutingManager {
     private static final String[] PROTECTED_NON_CHINA_CIDRS = {
             "1.1.1.0/24",   // Cloudflare DNS 主（1.1.1.1）
             "1.0.0.0/24",   // Cloudflare DNS 备（1.0.0.1）
+            "8.8.8.0/24",   // Google DNS 主（8.8.8.8）
+            "8.8.4.0/24",   // Google DNS 备（8.8.4.4）
+            "172.217.0.0/16", // YouTube/Google
+            "142.250.0.0/15", // YouTube/Google
+            "172.253.0.0/16", // YouTube/Google
+            "173.194.0.0/16", // YouTube/Google
+            "74.125.0.0/16",  // YouTube/Google
+            "64.233.160.0/19", // YouTube/Google
+            "209.85.128.0/17", // YouTube/Google
+            "216.239.32.0/19", // YouTube/Google
+    };
+
+    /**
+     * Google/YouTube/Google Play 相关域名后缀。
+     * 命中后优先学习为 VIA_ZT，避免在 CHINA_DIRECT 中被误判/污染解析导致直连失败。
+     */
+    private static final String[] GOOGLE_GLOBAL_SERVICE_DOMAIN_SUFFIXES = {
+            ".google.com",           // Google 主域
+            ".googleapis.com",       // Google APIs（含 Play 服务 API）
+            ".gstatic.com",          // Play 服务/Google 静态资源
+            ".googleusercontent.com",// Google 内容分发
+            ".ggpht.com",            // Google 图片/CDN
+            ".youtube.com",          // YouTube 主域
+            ".googlevideo.com",      // YouTube 视频流 CDN
+            ".ytimg.com",            // YouTube 静态资源
+            ".gvt2.com",             // Google 传输/视频 CDN
+            ".gvt3.com",             // Google 传输/视频 CDN
+            ".gvt1.net",             // Google 视频/更新分发
+            ".android.com",          // Android/Play 生态域
     };
 
     /** China CIDR 列表（CHINA_DIRECT 使用；完整精度，用于 isChineseIp() 查询） */
@@ -395,16 +426,17 @@ public class SmartRoutingManager {
         if (record == null || record.ip == null || record.domain == null) return;
         // 记录 IP → 域名 映射（用于后续 GFW 检测）
         ipToDomain.put(record.ip.getHostAddress(), record.domain.toLowerCase());
-        if (isGfwDomain(record.domain)) {
+        boolean isGoogleService = isGoogleGlobalServiceDomain(record.domain);
+        if (isGfwDomain(record.domain) || isGoogleService) {
             boolean isNew = gfwIpSet.add(record.ip);
             if (isNew) {
                 LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
-                        + " -> ZT (GFW)");
+                        + (isGoogleService ? " -> ZT (GoogleService)" : " -> ZT (GFW)"));
                 OnNewGfwIpListener l = onNewGfwIpListener;
                 if (l != null) l.onNewGfwIp(record.ip);
             }
             observeRoutePolicy(record.ip, LearnedRoutePolicyStore.Preference.VIA_ZT,
-                    record.domain, "gfw-domain", false);
+                    record.domain, isGoogleService ? "google-service" : "gfw-domain", false);
         } else if (isChineseIp(record.ip)) {
             if (isLiveStreamingDomain(record.domain)) {
                 LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
@@ -664,6 +696,17 @@ public class SmartRoutingManager {
                 || d.endsWith(".huya.com") || d.endsWith(".huya.cn")  // 虎牙直播
                 || d.endsWith(".douyu.com") || d.endsWith(".douyucdn.cn") // 斗鱼直播
                 || d.endsWith(".vlive.qq.com") || d.endsWith(".livep.qq.com");
+    }
+
+    private static boolean isGoogleGlobalServiceDomain(String domain) {
+        if (domain == null) return false;
+        String d = domain.toLowerCase();
+        for (String suffix : GOOGLE_GLOBAL_SERVICE_DOMAIN_SUFFIXES) {
+            if (d.equals(suffix.substring(1)) || d.endsWith(suffix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
