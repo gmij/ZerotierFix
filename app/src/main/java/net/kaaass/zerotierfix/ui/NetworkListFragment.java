@@ -89,6 +89,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -595,7 +596,12 @@ public class NetworkListFragment extends Fragment {
                     }
                     String fileName = asset.optString("name", "");
                     String downloadUrl = asset.optString("browser_download_url", "");
-                    if (fileName.endsWith(".apk") && !downloadUrl.isEmpty()) {
+                    String contentType = asset.optString("content_type", "");
+                    boolean isApkName = fileName.toLowerCase(Locale.ROOT).endsWith(".apk");
+                    boolean isAcceptedType = contentType.isEmpty()
+                            || "application/vnd.android.package-archive".equalsIgnoreCase(contentType)
+                            || "application/octet-stream".equalsIgnoreCase(contentType);
+                    if (isApkName && isAcceptedType && isTrustedDownloadUrl(downloadUrl)) {
                         return new ReleaseInfo(
                                 remoteVersion,
                                 release.optBoolean("prerelease", false),
@@ -641,11 +647,12 @@ public class NetworkListFragment extends Fragment {
         }
         try {
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(releaseInfo.downloadUrl));
+            String safeFileName = sanitizeApkFileName(releaseInfo.fileName);
             request.setTitle(getString(R.string.ota_download_title));
             request.setDescription(getString(R.string.ota_download_description, releaseInfo.version));
             request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
             request.setMimeType("application/vnd.android.package-archive");
-            request.setDestinationInExternalFilesDir(requireContext(), android.os.Environment.DIRECTORY_DOWNLOADS, releaseInfo.fileName);
+            request.setDestinationInExternalFilesDir(requireContext(), android.os.Environment.DIRECTORY_DOWNLOADS, safeFileName);
             pendingUpdateDownloadId = downloadManager.enqueue(request);
             Toast.makeText(requireContext(), R.string.toast_ota_download_started, Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
@@ -698,6 +705,41 @@ public class NetworkListFragment extends Fragment {
         } catch (Exception ignored) {
             return 0;
         }
+    }
+
+    private static boolean isTrustedDownloadUrl(String url) {
+        try {
+            URL parsed = new URL(url);
+            if (!"https".equalsIgnoreCase(parsed.getProtocol())) {
+                return false;
+            }
+            String host = parsed.getHost().toLowerCase(Locale.ROOT);
+            return host.equals("github.com")
+                    || host.equals("objects.githubusercontent.com")
+                    || host.equals("github-releases.githubusercontent.com")
+                    || host.endsWith(".githubusercontent.com");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static String sanitizeApkFileName(String fileName) {
+        if (fileName == null || fileName.trim().isEmpty()) {
+            return "ZerotierFix-update.apk";
+        }
+        String name = fileName.replace('\\', '/');
+        int separatorIndex = name.lastIndexOf('/');
+        if (separatorIndex >= 0 && separatorIndex + 1 < name.length()) {
+            name = name.substring(separatorIndex + 1);
+        }
+        name = name.replaceAll("[^A-Za-z0-9._-]", "_");
+        if (name.isEmpty()) {
+            name = "ZerotierFix-update.apk";
+        }
+        if (!name.toLowerCase(Locale.ROOT).endsWith(".apk")) {
+            name = name + ".apk";
+        }
+        return name;
     }
 
     private static class ReleaseInfo {
