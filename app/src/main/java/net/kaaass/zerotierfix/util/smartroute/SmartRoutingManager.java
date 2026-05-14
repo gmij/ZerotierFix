@@ -622,7 +622,7 @@ public class SmartRoutingManager {
             if (b != null) protectedBlocks.add(b);
         }
         List<CidrBlock> superAggregated = CidrBlock.superAggregate(aggregated, SUPER_AGGREGATE_MAX_ENTRIES, protectedBlocks);
-        // superAggregate 的保护逻辑是 best-effort；若为收敛到 maxEntries 发生回退合并，
+        // superAggregate 的保护逻辑是 best-effort；若为了收敛到 maxEntries 发生回退合并，
         // 关键非中国段仍可能被吞并。这里做一次硬性差集，确保保护段始终不在中国直连骨架中。
         List<CidrBlock> superAggregatedProtected = CidrBlock.subtract(superAggregated, protectedBlocks);
         this.chinaCidrsVpnSafe = Collections.unmodifiableList(superAggregatedProtected);
