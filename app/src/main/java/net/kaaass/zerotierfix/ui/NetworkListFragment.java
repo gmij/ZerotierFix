@@ -1,13 +1,18 @@
 package net.kaaass.zerotierfix.ui;
 
 import android.app.AlertDialog;
+import android.app.DownloadManager;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.ServiceConnection;
+import android.database.Cursor;
 import android.net.ConnectivityManager;
+import android.net.Uri;
 import android.net.VpnService;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -74,9 +79,19 @@ import net.kaaass.zerotierfix.util.StringUtils;
 import org.greenrobot.eventbus.EventBus;
 import org.greenrobot.eventbus.Subscribe;
 import org.greenrobot.eventbus.ThreadMode;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import lombok.ToString;
 
@@ -84,6 +99,7 @@ import lombok.ToString;
 public class NetworkListFragment extends Fragment {
     public static final String NETWORK_ID_MESSAGE = "com.zerotier.one.network-id";
     public static final String TAG = "NetworkListFragment";
+    private static final String RELEASES_API_URL = "https://api.github.com/repos/gmij/ZerotierFix/releases";
     private final EventBus eventBus;
     private final List<Network> mNetworks = new ArrayList<>();
     boolean mIsBound = false;
@@ -105,6 +121,52 @@ public class NetworkListFragment extends Fragment {
     private TextView nodeIdView;
     private TextView nodeStatusView;
     private TextView nodeClientVersionView;
+    private DownloadManager downloadManager;
+    private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
+    private boolean hasCheckedUpdateAfterOnline = false;
+    private boolean isCheckingUpdate = false;
+    private long pendingUpdateDownloadId = -1L;
+    private final BroadcastReceiver otaDownloadReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null || !DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(intent.getAction())) {
+                return;
+            }
+            long downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L);
+            if (downloadId != pendingUpdateDownloadId || downloadManager == null) {
+                return;
+            }
+            DownloadManager.Query query = new DownloadManager.Query().setFilterById(downloadId);
+            try (Cursor cursor = downloadManager.query(query)) {
+                if (cursor == null || !cursor.moveToFirst()) {
+                    return;
+                }
+                int statusColumn = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                if (statusColumn < 0) {
+                    return;
+                }
+                int status = cursor.getInt(statusColumn);
+                if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                    Uri apkUri = downloadManager.getUriForDownloadedFile(downloadId);
+                    if (apkUri != null) {
+                        Intent installIntent = new Intent(Intent.ACTION_VIEW);
+                        installIntent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+                        installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                        try {
+                            context.startActivity(installIntent);
+                        } catch (Exception e) {
+                            Log.e(TAG, "无法启动安装器", e);
+                            Toast.makeText(context, R.string.toast_ota_install_failed, Toast.LENGTH_LONG).show();
+                        }
+                    }
+                } else if (status == DownloadManager.STATUS_FAILED) {
+                    Toast.makeText(context, R.string.toast_ota_download_failed, Toast.LENGTH_LONG).show();
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "处理 OTA 下载完成事件失败", e);
+            }
+        }
+    };
 
     private View emptyView = null;
     final private RecyclerView.AdapterDataObserver checkIfEmptyObserver = new RecyclerView.AdapterDataObserver() {
@@ -208,11 +270,19 @@ public class NetworkListFragment extends Fragment {
             // 无通知权限
             showNoNotificationAlertDialog();
         }
+        if (downloadManager == null) {
+            downloadManager = (DownloadManager) requireContext().getSystemService(Context.DOWNLOAD_SERVICE);
+        }
+        requireContext().registerReceiver(otaDownloadReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
     }
 
     @Override
     public void onStop() {
         super.onStop();
+        try {
+            requireContext().unregisterReceiver(otaDownloadReceiver);
+        } catch (Exception ignored) {
+        }
         doUnbindService();
     }
 
@@ -337,6 +407,7 @@ public class NetworkListFragment extends Fragment {
     public void onDestroy() {
         super.onDestroy();
         doUnbindService();
+        updateExecutor.shutdownNow();
     }
 
     private List<Network> getNetworkList() {
@@ -431,6 +502,7 @@ public class NetworkListFragment extends Fragment {
             if (this.nodeIdView != null) {
                 this.nodeIdView.setText(Long.toHexString(status.getAddress()));
             }
+            triggerUpdateCheckIfNeeded();
         } else {
             setOfflineState();
         }
@@ -457,6 +529,230 @@ public class NetworkListFragment extends Fragment {
         TextView textView = this.nodeStatusView;
         if (textView != null) {
             textView.setText(R.string.status_offline);
+        }
+        hasCheckedUpdateAfterOnline = false;
+    }
+
+    private void triggerUpdateCheckIfNeeded() {
+        if (hasCheckedUpdateAfterOnline || isCheckingUpdate) {
+            return;
+        }
+        hasCheckedUpdateAfterOnline = true;
+        isCheckingUpdate = true;
+        final String currentVersion = BuildConfig.VERSION_NAME;
+        updateExecutor.execute(() -> {
+            ReleaseInfo releaseInfo = fetchNewerRelease(currentVersion);
+            var activity = getActivity();
+            if (activity == null || !isAdded()) {
+                isCheckingUpdate = false;
+                return;
+            }
+            activity.runOnUiThread(() -> {
+                isCheckingUpdate = false;
+                if (releaseInfo != null && isAdded()) {
+                    showUpdateDialog(releaseInfo);
+                }
+            });
+        });
+    }
+
+    private ReleaseInfo fetchNewerRelease(String currentVersion) {
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(RELEASES_API_URL).openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(10000);
+            connection.setRequestProperty("Accept", "application/vnd.github+json");
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                return null;
+            }
+            StringBuilder response = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    response.append(line);
+                }
+            }
+            JSONArray releases = new JSONArray(response.toString());
+            for (int i = 0; i < releases.length(); i++) {
+                JSONObject release = releases.optJSONObject(i);
+                if (release == null || release.optBoolean("draft", false)) {
+                    continue;
+                }
+                String tagName = release.optString("tag_name", "");
+                String remoteVersion = normalizeVersion(tagName);
+                if (remoteVersion.isEmpty() || !isNewerVersion(remoteVersion, currentVersion)) {
+                    continue;
+                }
+                JSONArray assets = release.optJSONArray("assets");
+                if (assets == null) {
+                    continue;
+                }
+                for (int j = 0; j < assets.length(); j++) {
+                    JSONObject asset = assets.optJSONObject(j);
+                    if (asset == null) {
+                        continue;
+                    }
+                    String fileName = asset.optString("name", "");
+                    String downloadUrl = asset.optString("browser_download_url", "");
+                    String contentType = asset.optString("content_type", "");
+                    boolean isApkName = fileName.toLowerCase(Locale.ROOT).endsWith(".apk");
+                    boolean isAcceptedType = contentType.isEmpty()
+                            || "application/vnd.android.package-archive".equalsIgnoreCase(contentType)
+                            || "application/octet-stream".equalsIgnoreCase(contentType);
+                    if (isApkName && isAcceptedType && isTrustedDownloadUrl(downloadUrl)) {
+                        return new ReleaseInfo(
+                                remoteVersion,
+                                release.optBoolean("prerelease", false),
+                                fileName,
+                                downloadUrl
+                        );
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "检查 OTA 更新失败", e);
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+        return null;
+    }
+
+    private void showUpdateDialog(ReleaseInfo releaseInfo) {
+        var builder = new AlertDialog.Builder(requireContext())
+                .setTitle(releaseInfo.prerelease ? R.string.dialog_ota_prerelease_title : R.string.dialog_ota_stable_title)
+                .setMessage(getString(
+                        releaseInfo.prerelease ? R.string.dialog_ota_prerelease_message : R.string.dialog_ota_stable_message,
+                        releaseInfo.version))
+                .setPositiveButton(R.string.dialog_ota_update_now, (dialog, which) -> startOtaDownload(releaseInfo));
+        if (releaseInfo.prerelease) {
+            builder.setNegativeButton(R.string.dialog_ota_skip_update, null);
+            builder.setCancelable(true);
+        } else {
+            builder.setCancelable(false);
+        }
+        builder.create().show();
+    }
+
+    private void startOtaDownload(ReleaseInfo releaseInfo) {
+        if (downloadManager == null) {
+            downloadManager = (DownloadManager) requireContext().getSystemService(Context.DOWNLOAD_SERVICE);
+        }
+        if (downloadManager == null) {
+            Toast.makeText(requireContext(), R.string.toast_ota_download_failed, Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(releaseInfo.downloadUrl));
+            String safeFileName = sanitizeApkFileName(releaseInfo.fileName);
+            request.setTitle(getString(R.string.ota_download_title));
+            request.setDescription(getString(R.string.ota_download_description, releaseInfo.version));
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setMimeType("application/vnd.android.package-archive");
+            request.setDestinationInExternalFilesDir(requireContext(), android.os.Environment.DIRECTORY_DOWNLOADS, safeFileName);
+            pendingUpdateDownloadId = downloadManager.enqueue(request);
+            Toast.makeText(requireContext(), R.string.toast_ota_download_started, Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Log.e(TAG, "启动 OTA 下载失败", e);
+            Toast.makeText(requireContext(), R.string.toast_ota_download_failed, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private static String normalizeVersion(String version) {
+        if (version == null) {
+            return "";
+        }
+        String normalized = version.trim();
+        if (normalized.startsWith("v") || normalized.startsWith("V")) {
+            normalized = normalized.substring(1);
+        }
+        int dashIndex = normalized.indexOf('-');
+        if (dashIndex > 0) {
+            normalized = normalized.substring(0, dashIndex);
+        }
+        return normalized;
+    }
+
+    private static boolean isNewerVersion(String remoteVersion, String currentVersion) {
+        String remote = normalizeVersion(remoteVersion);
+        String current = normalizeVersion(currentVersion);
+        String[] remoteParts = remote.split("\\.");
+        String[] currentParts = current.split("\\.");
+        int max = Math.max(remoteParts.length, currentParts.length);
+        for (int i = 0; i < max; i++) {
+            int remotePart = i < remoteParts.length ? parseVersionPart(remoteParts[i]) : 0;
+            int currentPart = i < currentParts.length ? parseVersionPart(currentParts[i]) : 0;
+            if (remotePart > currentPart) {
+                return true;
+            }
+            if (remotePart < currentPart) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static int parseVersionPart(String value) {
+        try {
+            String digits = value.replaceAll("[^0-9]", "");
+            if (digits.isEmpty()) {
+                return 0;
+            }
+            return Integer.parseInt(digits);
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private static boolean isTrustedDownloadUrl(String url) {
+        try {
+            URL parsed = new URL(url);
+            if (!"https".equalsIgnoreCase(parsed.getProtocol())) {
+                return false;
+            }
+            String host = parsed.getHost().toLowerCase(Locale.ROOT);
+            return host.equals("github.com")
+                    || host.equals("objects.githubusercontent.com")
+                    || host.equals("github-releases.githubusercontent.com")
+                    || host.endsWith(".githubusercontent.com");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static String sanitizeApkFileName(String fileName) {
+        if (fileName == null || fileName.trim().isEmpty()) {
+            return "ZerotierFix-update.apk";
+        }
+        String name = fileName.replace('\\', '/');
+        int separatorIndex = name.lastIndexOf('/');
+        if (separatorIndex >= 0 && separatorIndex + 1 < name.length()) {
+            name = name.substring(separatorIndex + 1);
+        }
+        name = name.replaceAll("[^A-Za-z0-9._-]", "_");
+        if (name.isEmpty()) {
+            name = "ZerotierFix-update.apk";
+        }
+        if (!name.toLowerCase(Locale.ROOT).endsWith(".apk")) {
+            name = name + ".apk";
+        }
+        return name;
+    }
+
+    private static class ReleaseInfo {
+        final String version;
+        final boolean prerelease;
+        final String fileName;
+        final String downloadUrl;
+
+        ReleaseInfo(String version, boolean prerelease, String fileName, String downloadUrl) {
+            this.version = version;
+            this.prerelease = prerelease;
+            this.fileName = fileName;
+            this.downloadUrl = downloadUrl;
         }
     }
 
@@ -791,4 +1087,3 @@ public class NetworkListFragment extends Fragment {
     }
 
 }
-
