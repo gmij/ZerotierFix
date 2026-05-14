@@ -109,9 +109,9 @@ public class SmartRoutingManager {
      * <p>历史：此值曾为 500（≈41 KB）。500 过于激进——超级聚合会将相隔较远的中国 IP 区间强行
      * 合并，产生 172.0.0.0/8 等巨型块，将 YouTube（172.217.x.x）、Google（142.250.x.x）等
      * 非中国 IP 纳入"排除"列表，导致这些流量绕过 VPN 走物理网络，最终被 GFW 屏蔽。
-     * 2000 条既能维持 Binder 大小安全，又避免了上述误判。
+     * 4000 条在 Binder 大小上仍有余量，同时进一步减少有损聚合带来的误判概率。
      */
-    private static final int SUPER_AGGREGATE_MAX_ENTRIES = 2000;
+    private static final int SUPER_AGGREGATE_MAX_ENTRIES = 4000;
 
     /**
      * 受保护的非中国 CIDR 列表：即使在超级聚合过程中，这些 IP 所在的间隙也不会被填充。
@@ -622,14 +622,17 @@ public class SmartRoutingManager {
             if (b != null) protectedBlocks.add(b);
         }
         List<CidrBlock> superAggregated = CidrBlock.superAggregate(aggregated, SUPER_AGGREGATE_MAX_ENTRIES, protectedBlocks);
-        this.chinaCidrsVpnSafe = Collections.unmodifiableList(superAggregated);
+        // superAggregate 的保护逻辑是 best-effort；若为收敛到 maxEntries 发生回退合并，
+        // 关键非中国段仍可能被吞并。这里做一次硬性差集，确保保护段始终不在中国直连骨架中。
+        List<CidrBlock> superAggregatedProtected = CidrBlock.subtract(superAggregated, protectedBlocks);
+        this.chinaCidrsVpnSafe = Collections.unmodifiableList(superAggregatedProtected);
         this.nonChinaCidrsVpnSafe = Collections.unmodifiableList(
-                CidrBlock.computeComplement(superAggregated));
+                CidrBlock.computeComplement(superAggregatedProtected));
 
         LogUtil.i(TAG, "已加载 " + beforeAgg + " 条中国 IP 路由（含 "
                 + supplementalAdded + " 条腾讯云补充段），聚合后 " + aggregated.size()
                 + " 条（补集 " + nonChinaCidrs.size() + " 条），超级聚合后 "
-                + superAggregated.size() + " 条（补集 " + nonChinaCidrsVpnSafe.size() + " 条）");
+                + superAggregatedProtected.size() + " 条（补集 " + nonChinaCidrsVpnSafe.size() + " 条）");
         // 通知等待中的 CHINA_DIRECT VPN 路由重建（getAndSet 原子读取并清除，消除竞态）
         OnChnroutesReadyListener l = onChnroutesReadyListenerRef.getAndSet(null);
         if (l != null) {
