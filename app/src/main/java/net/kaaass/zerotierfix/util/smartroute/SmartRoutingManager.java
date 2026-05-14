@@ -1,6 +1,7 @@
 package net.kaaass.zerotierfix.util.smartroute;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 
 import net.kaaass.zerotierfix.util.Constants;
 import net.kaaass.zerotierfix.util.LogUtil;
@@ -16,7 +17,9 @@ import java.net.InetAddress;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
@@ -109,9 +112,14 @@ public class SmartRoutingManager {
      * <p>历史：此值曾为 500（≈41 KB）。500 过于激进——超级聚合会将相隔较远的中国 IP 区间强行
      * 合并，产生 172.0.0.0/8 等巨型块，将 YouTube（172.217.x.x）、Google（142.250.x.x）等
      * 非中国 IP 纳入"排除"列表，导致这些流量绕过 VPN 走物理网络，最终被 GFW 屏蔽。
-     * 4000 条在 Binder 大小上仍有余量，同时进一步减少有损聚合带来的误判概率。
+     * 当前默认采用 3000 条；若某些 ROM 仍建立失败，会自动降档到更保守预算。
      */
-    private static final int SUPER_AGGREGATE_MAX_ENTRIES = 4000;
+    private static final int SUPER_AGGREGATE_DEFAULT_MAX_ENTRIES = 3000;
+    private static final int[] SUPER_AGGREGATE_BUDGET_TIERS = {
+            3000, 2600, 2200, 1800, 1400
+    };
+    private static final String SMART_ROUTING_PREFS = "smart_routing_prefs";
+    private static final String PREF_KEY_SUPER_AGGREGATE_BUDGET = "super_aggregate_budget";
 
     /**
      * 受保护的非中国 CIDR 列表：即使在超级聚合过程中，这些 IP 所在的间隙也不会被填充。
@@ -176,7 +184,7 @@ public class SmartRoutingManager {
     private volatile List<CidrBlock> nonChinaCidrs = Collections.emptyList();
 
     /**
-     * VPN-safe 中国 IP 超级聚合列表（≤ SUPER_AGGREGATE_MAX_ENTRIES 条）。
+     * VPN-safe 中国 IP 超级聚合列表（按当前自适应预算档位）。
      * 由 parseChnroutes() 在后台线程预计算，用于 VPN Builder.establish() 的 excludeRoute/addRoute，
      * 避免大量 CIDR 导致 Binder 序列化超限。精度略低于 chinaCidrs，但对网络连通性无实质影响。
      */
@@ -187,6 +195,9 @@ public class SmartRoutingManager {
      * 由 parseChnroutes() 与 chinaCidrsVpnSafe 一同计算并缓存。
      */
     private volatile List<CidrBlock> nonChinaCidrsVpnSafe = Collections.emptyList();
+    private volatile Map<Integer, List<CidrBlock>> chinaCidrsVpnSafeByBudget = Collections.emptyMap();
+    private volatile Map<Integer, List<CidrBlock>> nonChinaCidrsVpnSafeByBudget = Collections.emptyMap();
+    private volatile int currentSuperAggregateBudget = SUPER_AGGREGATE_DEFAULT_MAX_ENTRIES;
 
     /** GFW 域名集合（GFW_LIST 使用） */
     private volatile Set<String> gfwDomains = Collections.emptySet();
@@ -249,6 +260,7 @@ public class SmartRoutingManager {
 
     private SmartRoutingManager(Context context) {
         this.context = context;
+        this.currentSuperAggregateBudget = normalizeBudget(loadPersistedBudget());
     }
 
     // ────────────────────────── 公开 API ──────────────────────────
@@ -307,7 +319,7 @@ public class SmartRoutingManager {
     }
 
     /**
-     * 返回 VPN-safe 中国 IP 超级聚合列表（≤ SUPER_AGGREGATE_MAX_ENTRIES 条），
+     * 返回 VPN-safe 中国 IP 超级聚合列表（按当前自适应预算档位），
      * 包含 learned DIRECT / VIA_ZT 例外。
      *
      * <p>用于 {@code VpnService.Builder.excludeRoute()} / {@code addRoute()}，
@@ -315,8 +327,9 @@ public class SmartRoutingManager {
      * 精度判断（{@link #isChineseIp}）仍使用完整的 chinaCidrs。
      */
     public List<CidrBlock> getChinaCidrsVpnSafe() {
-        if (!hasLearnedRouteOverrides()) return chinaCidrsVpnSafe;
-        return Collections.unmodifiableList(buildEffectiveChinaCidrs(chinaCidrsVpnSafe));
+        List<CidrBlock> base = getChinaCidrsVpnSafeBase();
+        if (!hasLearnedRouteOverrides()) return base;
+        return Collections.unmodifiableList(buildEffectiveChinaCidrs(base));
     }
 
     /**
@@ -324,8 +337,34 @@ public class SmartRoutingManager {
      * 用于 Android 12- 的 {@code addRoute}；若有 learned 例外则重新计算补集。
      */
     public List<CidrBlock> getNonChinaCidrsVpnSafe() {
-        if (!hasLearnedRouteOverrides()) return nonChinaCidrsVpnSafe;
+        List<CidrBlock> base = getNonChinaCidrsVpnSafeBase();
+        if (!hasLearnedRouteOverrides()) return base;
         return Collections.unmodifiableList(CidrBlock.computeComplement(getChinaCidrsVpnSafe()));
+    }
+
+    public int getCurrentSuperAggregateBudget() {
+        return currentSuperAggregateBudget;
+    }
+
+    public synchronized int downgradeSuperAggregateBudget() {
+        int idx = indexOfBudget(currentSuperAggregateBudget);
+        if (idx < 0) idx = 0;
+        if (idx >= SUPER_AGGREGATE_BUDGET_TIERS.length - 1) {
+            return currentSuperAggregateBudget;
+        }
+        int next = SUPER_AGGREGATE_BUDGET_TIERS[idx + 1];
+        if (next != currentSuperAggregateBudget) {
+            currentSuperAggregateBudget = next;
+            persistBudget(next);
+            // 若已计算对应预算，立即切换缓存，避免等待下一次 chnroutes 重载。
+            List<CidrBlock> china = chinaCidrsVpnSafeByBudget.get(next);
+            List<CidrBlock> nonChina = nonChinaCidrsVpnSafeByBudget.get(next);
+            if (china != null && nonChina != null) {
+                chinaCidrsVpnSafe = china;
+                nonChinaCidrsVpnSafe = nonChina;
+            }
+        }
+        return currentSuperAggregateBudget;
     }
 
     /**
@@ -612,7 +651,7 @@ public class SmartRoutingManager {
         this.nonChinaCidrs = Collections.unmodifiableList(
                 CidrBlock.computeComplement(aggregated));
 
-        // 超级聚合：进一步将中国 IP CIDR 压缩到 SUPER_AGGREGATE_MAX_ENTRIES 条以内，
+        // 超级聚合：进一步将中国 IP CIDR 压缩到预算档位上限以内，
         // 用于 VPN Builder.establish() 的 excludeRoute/addRoute，避免 Binder 序列化超限。
         // 传入受保护 CIDR 列表，防止关键非中国 IP（如 Cloudflare DNS 1.1.1.0/24）被意外纳入排除范围。
         // 在后台线程运行，不阻塞主线程或 VPN 建立。
@@ -621,18 +660,31 @@ public class SmartRoutingManager {
             CidrBlock b = CidrBlock.parse(cidr);
             if (b != null) protectedBlocks.add(b);
         }
-        List<CidrBlock> superAggregated = CidrBlock.superAggregate(aggregated, SUPER_AGGREGATE_MAX_ENTRIES, protectedBlocks);
-        // superAggregate 的保护逻辑是 best-effort；若为了收敛到 maxEntries 发生回退合并，
-        // 关键非中国段仍可能被吞并。这里做一次硬性差集，确保保护段始终不在中国直连骨架中。
-        List<CidrBlock> superAggregatedProtected = CidrBlock.subtract(superAggregated, protectedBlocks);
-        this.chinaCidrsVpnSafe = Collections.unmodifiableList(superAggregatedProtected);
-        this.nonChinaCidrsVpnSafe = Collections.unmodifiableList(
-                CidrBlock.computeComplement(superAggregatedProtected));
+        Map<Integer, List<CidrBlock>> chinaByBudget = new LinkedHashMap<>();
+        Map<Integer, List<CidrBlock>> nonChinaByBudget = new LinkedHashMap<>();
+        for (int budget : SUPER_AGGREGATE_BUDGET_TIERS) {
+            List<CidrBlock> superAggregated = CidrBlock.superAggregate(aggregated, budget, protectedBlocks);
+            // superAggregate 的保护逻辑是 best-effort；若为了收敛到 maxEntries 发生回退合并，
+            // 关键非中国段仍可能被吞并。这里做一次硬性差集，确保保护段始终不在中国直连骨架中。
+            List<CidrBlock> superAggregatedProtected = CidrBlock.subtract(superAggregated, protectedBlocks);
+            List<CidrBlock> chinaList = Collections.unmodifiableList(superAggregatedProtected);
+            List<CidrBlock> nonChinaList = Collections.unmodifiableList(
+                    CidrBlock.computeComplement(superAggregatedProtected));
+            chinaByBudget.put(budget, chinaList);
+            nonChinaByBudget.put(budget, nonChinaList);
+        }
+        this.chinaCidrsVpnSafeByBudget = Collections.unmodifiableMap(chinaByBudget);
+        this.nonChinaCidrsVpnSafeByBudget = Collections.unmodifiableMap(nonChinaByBudget);
+        int budget = normalizeBudget(currentSuperAggregateBudget);
+        this.currentSuperAggregateBudget = budget;
+        this.chinaCidrsVpnSafe = getListForBudget(chinaCidrsVpnSafeByBudget, budget, aggregated);
+        this.nonChinaCidrsVpnSafe = getListForBudget(nonChinaCidrsVpnSafeByBudget, budget, CidrBlock.computeComplement(aggregated));
 
         LogUtil.i(TAG, "已加载 " + beforeAgg + " 条中国 IP 路由（含 "
                 + supplementalAdded + " 条腾讯云补充段），聚合后 " + aggregated.size()
                 + " 条（补集 " + nonChinaCidrs.size() + " 条），超级聚合后 "
-                + superAggregatedProtected.size() + " 条（补集 " + nonChinaCidrsVpnSafe.size() + " 条）");
+                + chinaCidrsVpnSafe.size() + " 条（预算 " + budget + "，补集 "
+                + nonChinaCidrsVpnSafe.size() + " 条）");
         // 通知等待中的 CHINA_DIRECT VPN 路由重建（getAndSet 原子读取并清除，消除竞态）
         OnChnroutesReadyListener l = onChnroutesReadyListenerRef.getAndSet(null);
         if (l != null) {
@@ -766,5 +818,48 @@ public class SmartRoutingManager {
             effective = CidrBlock.subtract(effective, learnedViaZt);
         }
         return effective;
+    }
+
+    private List<CidrBlock> getChinaCidrsVpnSafeBase() {
+        return getListForBudget(chinaCidrsVpnSafeByBudget, currentSuperAggregateBudget, chinaCidrsVpnSafe);
+    }
+
+    private List<CidrBlock> getNonChinaCidrsVpnSafeBase() {
+        return getListForBudget(nonChinaCidrsVpnSafeByBudget, currentSuperAggregateBudget, nonChinaCidrsVpnSafe);
+    }
+
+    private static List<CidrBlock> getListForBudget(Map<Integer, List<CidrBlock>> byBudget, int budget,
+                                                    List<CidrBlock> fallback) {
+        List<CidrBlock> list = byBudget.get(budget);
+        return list != null ? list : fallback;
+    }
+
+    private int loadPersistedBudget() {
+        SharedPreferences prefs = context.getSharedPreferences(SMART_ROUTING_PREFS, Context.MODE_PRIVATE);
+        return prefs.getInt(PREF_KEY_SUPER_AGGREGATE_BUDGET, SUPER_AGGREGATE_DEFAULT_MAX_ENTRIES);
+    }
+
+    private void persistBudget(int budget) {
+        SharedPreferences prefs = context.getSharedPreferences(SMART_ROUTING_PREFS, Context.MODE_PRIVATE);
+        prefs.edit().putInt(PREF_KEY_SUPER_AGGREGATE_BUDGET, budget).apply();
+    }
+
+    private static int normalizeBudget(int budget) {
+        int first = SUPER_AGGREGATE_BUDGET_TIERS[0];
+        int normalized = first;
+        for (int tier : SUPER_AGGREGATE_BUDGET_TIERS) {
+            if (budget >= tier) {
+                normalized = tier;
+                break;
+            }
+        }
+        return normalized;
+    }
+
+    private static int indexOfBudget(int budget) {
+        for (int i = 0; i < SUPER_AGGREGATE_BUDGET_TIERS.length; i++) {
+            if (SUPER_AGGREGATE_BUDGET_TIERS[i] == budget) return i;
+        }
+        return -1;
     }
 }

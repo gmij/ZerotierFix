@@ -1452,6 +1452,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         try {
             this.vpnSocket = builder.establish();
         } catch (RuntimeException e) {
+            if (smartRoutingEnabled && shouldAddGlobalRoutes) {
+                SmartRoutingManager router = SmartRoutingManager.getInstance(this);
+                int oldBudget = router.getCurrentSuperAggregateBudget();
+                int newBudget = router.downgradeSuperAggregateBudget();
+                if (newBudget < oldBudget) {
+                    LogUtil.w(TAG, "CHINA_DIRECT 自适应降档：超级聚合预算 " + oldBudget
+                            + " -> " + newBudget + "（下次重建生效）");
+                } else {
+                    LogUtil.w(TAG, "CHINA_DIRECT 自适应预算已到最低档 " + oldBudget);
+                }
+            }
             LogUtil.e(TAG, "establish() 失败（可能路由条数过多）：" + e.getMessage() + "，降级为全局路由重试", e);
             // 降级：重建 builder，仅使用 0.0.0.0/0 全局路由
             var fallbackBuilder = new VpnService.Builder();
@@ -2230,8 +2241,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             // Android 13+：0.0.0.0/0 + excludeRoute(中国IP超级聚合列表) + excludeRoute(本地子网)
-            // 超级聚合后中国 CIDR ≤ 2000 条，序列化约 164 KB，远低于任何 OEM ROM 的 Binder 事务上限。
+            // 使用自适应预算档位（默认 3000，可按失败自动降档）以提升不同 ROM 下 establish 稳定性。
             builder.addRoute(InetAddress.getByName("0.0.0.0"), 0);
+            int routeBudget = router.getCurrentSuperAggregateBudget();
             List<CidrBlock> chinaCidrsVpnSafe = router.getChinaCidrsVpnSafe();
             int excluded = 0;
             for (CidrBlock cidr : chinaCidrsVpnSafe) {
@@ -2246,7 +2258,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
             LogUtil.d(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
                     + excluded + " 条中国 IP（超级聚合，全量 " + router.getChinaCidrs().size()
-                    + " 条）+ " + localSubnets.size() + " 个本地子网");
+                    + " 条，预算 " + routeBudget + "）+ " + localSubnets.size() + " 个本地子网");
         } else {
             // Android 12-：添加非中国 CIDR 补集，每条再剔除本地活跃子网。
             // 使用超级聚合后的非中国补集（通常 ≤ 1 500 条），远小于之前的 8 000-12 000 条。
