@@ -690,7 +690,11 @@ public class NetworkListFragment extends Fragment {
 
     private static int parseVersionPart(String value) {
         try {
-            return Integer.parseInt(value.replaceAll("[^0-9]", ""));
+            String digits = value.replaceAll("[^0-9]", "");
+            if (digits.isEmpty()) {
+                return 0;
+            }
+            return Integer.parseInt(digits);
         } catch (Exception ignored) {
             return 0;
         }
