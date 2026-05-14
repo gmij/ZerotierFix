@@ -134,6 +134,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             "seth",                // Samsung LTE (seth_lte0)
             "r_rmnet"              // Qualcomm IPA 辅助接口
     };
+    /**
+     * 常见热点下游接口前缀：当“热点流量转发”开启时，这些接口子网不再从 VPN 路由中排除。
+     * 不同 ROM 命名可能不同，此列表按常见实现做 best-effort 识别。
+     */
+    private static final String[] TETHERING_DOWNSTREAM_IFACE_PREFIXES = {
+            "ap", "softap", "wlan1", "wlan2", "swlan",
+            "rndis", "usb", "bt-pan", "bnep", "tether"
+    };
     /** 链路本地地址网络前缀 169.254.0.0，uint32。 */
     private static final long LINK_LOCAL_PREFIX = 0xA9FE0000L; // 169.254.0.0
     /** 链路本地地址子网掩码 /16，uint32。 */
@@ -248,6 +256,16 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private boolean isNetworkAutoRebuildEnabled() {
         return PreferenceManager.getDefaultSharedPreferences(this)
                 .getBoolean(Constants.PREF_NETWORK_AUTO_REBUILD, false);
+    }
+
+    /**
+     * 是否启用“手机热点流量转发”。
+     * 开启后，不再将热点/USB/蓝牙共享等下游接口子网从 VPN 路由中排除，
+     * 以便下游设备流量可进入 TUN 并经 ZeroTier 转发。
+     */
+    private boolean isHotspotTrafficForwardingEnabled() {
+        return PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(Constants.PREF_NETWORK_FORWARD_HOTSPOT_TRAFFIC, false);
     }
 
     /**
@@ -1463,7 +1481,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 }
             }
             try {
-                List<long[]> localSubnets = detectLocalSubnetsToExclude();
+                List<long[]> localSubnets = detectLocalSubnetsToExclude(isHotspotTrafficForwardingEnabled());
                 addGlobalRoutesToBuilder(fallbackBuilder, localSubnets);
             } catch (Exception fallbackEx) {
                 LogUtil.e(TAG, "降级全局路由配置失败: " + fallbackEx.getMessage(), fallbackEx);
@@ -2145,7 +2163,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                                              VirtualNetworkConfig virtualNetworkConfig,
                                              InetSocketAddress[] assignedAddresses) throws Exception {
         SmartRoutingManager router = SmartRoutingManager.getInstance(this);
-        List<long[]> localSubnets = detectLocalSubnetsToExclude();
+        List<long[]> localSubnets = detectLocalSubnetsToExclude(isHotspotTrafficForwardingEnabled());
 
         // 找 ZeroTier 网关（与 configureDirectGlobalRouting 逻辑相同）
         InetAddress zerotierGateway = null;
@@ -2344,7 +2362,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 检测本机活跃的本地网络子网（蓝牙PAN bt-pan、WiFi局域网 wlan0、USB共享 usb0 等），
         // 将这些子网排除在 VPN 之外，避免本地连接被意外路由至 TUN。
-        List<long[]> localSubnets = detectLocalSubnetsToExclude();
+        List<long[]> localSubnets = detectLocalSubnetsToExclude(isHotspotTrafficForwardingEnabled());
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             InetAddress defaultRoute = InetAddress.getByName("0.0.0.0");
@@ -2419,9 +2437,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     }
 
     /**
-     * 检测本机所有活跃的<em>本地共享</em>网络子网，用于在全局路由模式下从 VPN 路由表中排除这些子网，
-     * 避免蓝牙 PAN（bt-pan）、USB 网络共享（usb0/rndis0）、WiFi 局域网等本地连接
-     * 被意外路由至 TUN 接口而无法使用。
+     * 检测本机所有活跃的本地网络子网，用于在全局路由模式下从 VPN 路由表中排除这些子网。
+     * 默认会排除蓝牙 PAN（bt-pan）、USB 网络共享（usb0/rndis0）、WiFi 局域网等本地连接，
+     * 避免被意外路由至 TUN 接口而无法使用。
+     * 当 {@code hotspotTrafficForwardingEnabled=true} 时，会跳过常见热点下游接口子网的排除，
+     * 让热点/USB/蓝牙共享下游流量可进入 VPN 并通过 ZeroTier 转发（best-effort）。
      * <p>
      * 以下接口类型会被跳过，<em>不会</em>加入排除列表：
      * <ul>
@@ -2433,9 +2453,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      *   <li>前缀长度 &lt; 8 的子网——过于宽泛，可能误排除大量公网地址</li>
      * </ul>
      *
+     * @param hotspotTrafficForwardingEnabled 是否启用热点下游流量转发
      * @return 每个子网表示为 {@code long[]{networkAddressAsUint32, prefixLen}}
      */
-    private static List<long[]> detectLocalSubnetsToExclude() {
+    private static List<long[]> detectLocalSubnetsToExclude(boolean hotspotTrafficForwardingEnabled) {
         List<long[]> subnets = new ArrayList<>();
         Set<String> processedSubnets = new HashSet<>(); // 去重：避免相同子网被多次加入
         try {
@@ -2452,6 +2473,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 }
                 if (isMobileData) {
                     LogUtil.d(TAG, "跳过移动数据接口 [" + name + "]，不加入子网排除列表");
+                    continue;
+                }
+                if (hotspotTrafficForwardingEnabled && isLikelyTetheringDownstreamInterface(name)) {
+                    LogUtil.d(TAG, "热点流量转发已开启，跳过下游共享接口 [" + name + "] 的子网排除");
                     continue;
                 }
                 // 跳过 dummy 接口（某些系统上虚拟创建的占位接口）
@@ -2485,6 +2510,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.w(TAG, "检测本地子网时出错: " + e.getMessage());
         }
         return subnets;
+    }
+
+    private static boolean isLikelyTetheringDownstreamInterface(String ifaceName) {
+        for (String prefix : TETHERING_DOWNSTREAM_IFACE_PREFIXES) {
+            if (ifaceName.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
