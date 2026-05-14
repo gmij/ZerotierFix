@@ -209,7 +209,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
     public void setHotspotSubnetHints(java.util.List<long[]> hotspotSubnets) {
         if (hotspotSubnets == null || hotspotSubnets.isEmpty()) {
-            this.hotspotClientSubnets = new long[0][0];
+            this.hotspotClientSubnets = new long[0][];
             hotspotTrafficLogged.clear();
             return;
         }
