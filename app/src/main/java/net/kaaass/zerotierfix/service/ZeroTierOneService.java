@@ -218,7 +218,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private final Runnable learnedRoutePolicyRebuildRunnable = () -> {
         LogUtil.i(TAG, "learned 路由策略触发 VPN 重建（" + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000
                 + "s 防抖到期），重新配置智能路由例外表");
-        rebuildVpnForCurrentNetwork("learnedRoutePolicyRebuildRunnable(learned策略变化)", false);
+        rebuildVpnForCurrentNetwork("learnedRoutePolicyRebuildRunnable(learned策略变化)", false, false);
     };
     /** learned 路由策略触发重建的防抖延迟（10 秒，确保批量变更一次重建） */
     private static final long LEARNED_IP_REBUILD_DEBOUNCE_MS = 10_000;
@@ -567,7 +567,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 networkChangeHandler.post(() ->
                         rebuildVpnForCurrentNetwork(
                                 String.format(java.util.Locale.ROOT, FORCE_RECONFIGURE_CALLER_FORMAT, finalReason),
-                                true));
+                                true,
+                                false));
                 return START_STICKY;
             } else {
                 LogUtil.d(TAG, "强制 VPN 重配请求忽略：服务尚未建立 VPN，按常规启动流程继续");
@@ -1833,7 +1834,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 以当前 networkId 从数据库读取配置并执行一次 VPN 重建。
      * 用于承接多种“非物理网络变化”触发源（如 chnroutes 就绪、设置页强制重配）。
      */
-    private void rebuildVpnForCurrentNetwork(String caller, boolean forceColdSwitch) {
+    private void rebuildVpnForCurrentNetwork(String caller, boolean forceColdSwitch,
+                                             boolean retryWhenConfigBusy) {
         if (this.vpnSocket == null || this.networkId == 0 || this.node == null) {
             LogUtil.d(TAG, caller + ": VPN 未运行或网络上下文缺失，跳过");
             return;
@@ -1846,7 +1848,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     .list();
             if (networks.size() == 1) {
                 boolean updated = updateTunnelConfig(networks.get(0), caller, null, forceColdSwitch);
-                if (!updated && caller.startsWith("chnroutesReady(")) {
+                if (!updated && retryWhenConfigBusy) {
                     ensureNetworkChangeHandler();
                     if (networkChangeHandler != null) {
                         networkChangeHandler.removeCallbacks(chnroutesReadyRebuildRetryRunnable);
@@ -1856,6 +1858,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         );
                         LogUtil.w(TAG, caller + ": 与当前 VPN 重建并发，"
                                 + CHNROUTES_READY_REBUILD_RETRY_MS + "ms 后重试");
+                    } else {
+                        LogUtil.w(TAG, caller + ": 无法安排重试，networkChangeHandler 未初始化");
                     }
                 }
             } else {
@@ -1876,7 +1880,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (networkChangeHandler != null) {
             networkChangeHandler.removeCallbacks(chnroutesReadyRebuildRetryRunnable);
         }
-        rebuildVpnForCurrentNetwork("chnroutesReady(数据就绪切换CHINA_DIRECT)", false);
+        rebuildVpnForCurrentNetwork("chnroutesReady(数据就绪切换CHINA_DIRECT)", false, true);
     }
 
     /**
