@@ -235,7 +235,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private static final long CHNROUTES_READY_WAIT_MS = 1200;
     private static final long CHNROUTES_READY_POLL_MS = 50;
+    /**
+     * chnroutes-ready 重建重试延迟：
+     * 与 CHNROUTES_READY_WAIT_MS 保持同量级，给首次重建释放配置锁的时间，同时不把切换窗口拉得过长。
+     */
     private static final long CHNROUTES_READY_REBUILD_RETRY_MS = 1200;
+    private static final int CHNROUTES_READY_REBUILD_MAX_RETRIES = 3;
     /** 用户主动切换配置时待处理重建的 Network 引用 */
     private volatile Network pendingUserConfigNetwork = null;
     /** 用户主动切换配置的 debounce Runnable：合并短时间内多个配置变更事件为一次 VPN 重建 */
@@ -248,6 +253,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     };
     /** chnroutes 就绪重建在配置锁竞争时的重试任务（不受 network_auto_rebuild 开关影响） */
     private final Runnable chnroutesReadyRebuildRetryRunnable = this::rebuildVpnForChnroutesReady;
+    private volatile int chnroutesReadyRebuildRetryCount = 0;
 
     /**
      * 是否启用“网络变化自动重建 VPN”。
@@ -1848,16 +1854,27 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     .list();
             if (networks.size() == 1) {
                 boolean updated = updateTunnelConfig(networks.get(0), caller, null, forceColdSwitch);
+                if (updated && retryWhenConfigBusy) {
+                    chnroutesReadyRebuildRetryCount = 0;
+                }
                 if (!updated && retryWhenConfigBusy) {
+                    if (chnroutesReadyRebuildRetryCount >= CHNROUTES_READY_REBUILD_MAX_RETRIES) {
+                        LogUtil.w(TAG, caller + ": 与当前 VPN 重建并发，已达到最大重试次数 "
+                                + CHNROUTES_READY_REBUILD_MAX_RETRIES + "，停止重试");
+                        return;
+                    }
                     ensureNetworkChangeHandler();
                     if (networkChangeHandler != null) {
+                        chnroutesReadyRebuildRetryCount++;
                         networkChangeHandler.removeCallbacks(chnroutesReadyRebuildRetryRunnable);
                         networkChangeHandler.postDelayed(
                                 chnroutesReadyRebuildRetryRunnable,
                                 CHNROUTES_READY_REBUILD_RETRY_MS
                         );
                         LogUtil.w(TAG, caller + ": 与当前 VPN 重建并发，"
-                                + CHNROUTES_READY_REBUILD_RETRY_MS + "ms 后重试");
+                                + CHNROUTES_READY_REBUILD_RETRY_MS + "ms 后重试（"
+                                + chnroutesReadyRebuildRetryCount + "/"
+                                + CHNROUTES_READY_REBUILD_MAX_RETRIES + "）");
                     } else {
                         LogUtil.w(TAG, caller + ": 无法安排重试，networkChangeHandler 未初始化");
                     }
@@ -2254,8 +2271,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             router.setOnChnroutesReadyListener(() -> {
                 LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
                 tencentCidrsVerified = false;
+                chnroutesReadyRebuildRetryCount = 0;
                 ensureNetworkChangeHandler();
-                networkChangeHandler.post(this::rebuildVpnForChnroutesReady);
+                if (networkChangeHandler != null) {
+                    networkChangeHandler.post(this::rebuildVpnForChnroutesReady);
+                } else {
+                    LogUtil.w(TAG, "chnroutes 已就绪但 networkChangeHandler 未初始化，改为直接重建");
+                    rebuildVpnForChnroutesReady();
+                }
             });
             addGlobalRoutesToBuilder(builder, localSubnets);
             return;
