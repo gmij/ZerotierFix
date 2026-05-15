@@ -1452,6 +1452,17 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         try {
             this.vpnSocket = builder.establish();
         } catch (RuntimeException e) {
+            if (smartRoutingEnabled && shouldAddGlobalRoutes) {
+                SmartRoutingManager router = SmartRoutingManager.getInstance(this);
+                int oldBudget = router.getCurrentSuperAggregateBudget();
+                int newBudget = router.downgradeSuperAggregateBudget();
+                if (newBudget < oldBudget) {
+                    LogUtil.w(TAG, "CHINA_DIRECT 自适应降档：超级聚合预算 " + oldBudget
+                            + " -> " + newBudget + "（下次重建生效）");
+                } else {
+                    LogUtil.w(TAG, "CHINA_DIRECT 自适应预算已到最低档 " + oldBudget);
+                }
+            }
             LogUtil.e(TAG, "establish() 失败（可能路由条数过多）：" + e.getMessage() + "，降级为全局路由重试", e);
             // 降级：重建 builder，仅使用 0.0.0.0/0 全局路由
             var fallbackBuilder = new VpnService.Builder();
@@ -2230,8 +2241,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             // Android 13+：0.0.0.0/0 + excludeRoute(中国IP超级聚合列表) + excludeRoute(本地子网)
-            // 超级聚合后中国 CIDR ≤ 2000 条，序列化约 164 KB，远低于任何 OEM ROM 的 Binder 事务上限。
+            // 使用自适应预算档位（默认 3000，可按失败自动降档）以提升不同 ROM 下 establish 稳定性。
             builder.addRoute(InetAddress.getByName("0.0.0.0"), 0);
+            int routeBudget = router.getCurrentSuperAggregateBudget();
             List<CidrBlock> chinaCidrsVpnSafe = router.getChinaCidrsVpnSafe();
             int excluded = 0;
             for (CidrBlock cidr : chinaCidrsVpnSafe) {
@@ -2246,7 +2258,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
             LogUtil.d(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
                     + excluded + " 条中国 IP（超级聚合，全量 " + router.getChinaCidrs().size()
-                    + " 条）+ " + localSubnets.size() + " 个本地子网");
+                    + " 条，预算 " + routeBudget + "）+ " + localSubnets.size() + " 个本地子网");
         } else {
             // Android 12-：添加非中国 CIDR 补集，每条再剔除本地活跃子网。
             // 使用超级聚合后的非中国补集（通常 ≤ 1 500 条），远小于之前的 8 000-12 000 条。
@@ -2422,17 +2434,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 检测本机所有活跃的<em>本地共享</em>网络子网，用于在全局路由模式下从 VPN 路由表中排除这些子网，
      * 避免蓝牙 PAN（bt-pan）、USB 网络共享（usb0/rndis0）、WiFi 局域网等本地连接
      * 被意外路由至 TUN 接口而无法使用。
+     * 下游共享接口（bt-pan/bnep/rndis/usb/softap）默认按本地子网处理并排除出 VPN。
      * <p>
-     * 以下接口类型会被跳过，<em>不会</em>加入排除列表：
-     * <ul>
-     *   <li>ZeroTier 虚拟接口（zt*）和 TUN 接口（tun*）</li>
-     *   <li>移动数据接口：rmnet*、ccmni*、wwan*、seth*、r_rmnet* 以及对应的
-     *       CLAT/464XLAT 接口（v4-rmnet*）——这些是"上行"互联网提供者而非本地共享接口，
-     *       将其子网排除在 VPN 路由之外会导致 4G/5G 网络无法访问</li>
-     *   <li>链路本地地址（169.254.x.x）——这些是未连接接口上的自动分配地址</li>
-     *   <li>前缀长度 &lt; 8 的子网——过于宽泛，可能误排除大量公网地址</li>
-     * </ul>
-     *
      * @return 每个子网表示为 {@code long[]{networkAddressAsUint32, prefixLen}}
      */
     private static List<long[]> detectLocalSubnetsToExclude() {
@@ -2453,6 +2456,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 if (isMobileData) {
                     LogUtil.d(TAG, "跳过移动数据接口 [" + name + "]，不加入子网排除列表");
                     continue;
+                }
+                if (isDownstreamSharingInterface(name)) {
+                    LogUtil.d(TAG, "检测到下游共享接口 [" + name + "]，其子网将按默认策略从 VPN 路由排除");
                 }
                 // 跳过 dummy 接口（某些系统上虚拟创建的占位接口）
                 if (name.startsWith("dummy")) continue;
@@ -2485,6 +2491,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.w(TAG, "检测本地子网时出错: " + e.getMessage());
         }
         return subnets;
+    }
+
+    /**
+     * 判断是否为“下游共享”接口名称（热点/USB/蓝牙共享）。
+     */
+    private static boolean isDownstreamSharingInterface(String interfaceName) {
+        if (interfaceName == null) return false;
+        String name = interfaceName.toLowerCase();
+        return name.startsWith("bt-pan") || name.startsWith("bnep")
+                || name.startsWith("rndis") || name.startsWith("usb")
+                || name.startsWith("ap") || name.startsWith("swlan")
+                || name.startsWith("softap");
     }
 
     /**
