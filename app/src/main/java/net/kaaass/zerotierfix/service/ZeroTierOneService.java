@@ -99,6 +99,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -259,8 +260,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /** chnroutes 就绪回调兜底轮询：防御极端机型下监听回调丢失，保证最终切换到 CHINA_DIRECT。 */
     private final Runnable chnroutesReadyFallbackPollRunnable = this::pollChnroutesReadyFallback;
     private volatile int chnroutesReadyFallbackPollAttempts = 0;
-    private final java.util.concurrent.atomic.AtomicBoolean chnroutesReadyRebuildRequested =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final AtomicBoolean chnroutesReadyRebuildRequested =
+            new AtomicBoolean(false);
 
     /**
      * 是否启用“网络变化自动重建 VPN”。
@@ -300,8 +301,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 若有另一次 VPN 配置正在进行（例如来自 onNetworkReconfigure 和 networkChangeHandler 同时触发），
      * 后到的调用将在当前配置完成后延迟重建，避免两次并发建立均失败（TransactionTooLargeException 双重触发）。
      */
-    private final java.util.concurrent.atomic.AtomicBoolean isConfiguringVpn =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final AtomicBoolean isConfiguringVpn =
+            new AtomicBoolean(false);
     /** 主线程 Handler，用于首次 establish 前的延迟调度 */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     /** 首次 VPN establish 的延迟 Runnable，用于防止重复调度（ZT SDK 首次加入网络时可能连续触发多次 onNetworkReconfigure） */
