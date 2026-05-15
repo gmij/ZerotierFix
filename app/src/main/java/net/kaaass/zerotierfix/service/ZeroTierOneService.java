@@ -2434,6 +2434,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 检测本机所有活跃的<em>本地共享</em>网络子网，用于在全局路由模式下从 VPN 路由表中排除这些子网，
      * 避免蓝牙 PAN（bt-pan）、USB 网络共享（usb0/rndis0）、WiFi 局域网等本地连接
      * 被意外路由至 TUN 接口而无法使用。
+     * 下游共享接口（bt-pan/bnep/rndis/usb/softap）默认按本地子网处理并排除出 VPN。
      * <p>
      * @return 每个子网表示为 {@code long[]{networkAddressAsUint32, prefixLen}}
      */
@@ -2455,6 +2456,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 if (isMobileData) {
                     LogUtil.d(TAG, "跳过移动数据接口 [" + name + "]，不加入子网排除列表");
                     continue;
+                }
+                if (isDownstreamSharingInterface(name)) {
+                    LogUtil.d(TAG, "检测到下游共享接口 [" + name + "]，其子网将按默认策略从 VPN 路由排除");
                 }
                 // 跳过 dummy 接口（某些系统上虚拟创建的占位接口）
                 if (name.startsWith("dummy")) continue;
@@ -2487,6 +2491,18 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.w(TAG, "检测本地子网时出错: " + e.getMessage());
         }
         return subnets;
+    }
+
+    /**
+     * 判断是否为“下游共享”接口名称（热点/USB/蓝牙共享）。
+     */
+    private static boolean isDownstreamSharingInterface(String interfaceName) {
+        if (interfaceName == null) return false;
+        String name = interfaceName.toLowerCase();
+        return name.startsWith("bt-pan") || name.startsWith("bnep")
+                || name.startsWith("rndis") || name.startsWith("usb")
+                || name.startsWith("ap") || name.startsWith("swlan")
+                || name.startsWith("softap");
     }
 
     /**
