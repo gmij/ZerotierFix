@@ -2119,6 +2119,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
         LogUtil.i(TAG, "CHINA_DIRECT 模式：已添加国内 DNS 服务器（114DNS / AliDNS）");
+        LogUtil.i(LogUtil.DNS_TAG, "ANCHOR DNS_PATH_CHINA_DIRECT_DOMESTIC");
     }
 
     /**
@@ -2137,6 +2138,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
         LogUtil.i(TAG, "全局代理模式：已添加国际 DNS 服务器（Google DNS / Cloudflare DNS）");
+        LogUtil.i(LogUtil.DNS_TAG, "ANCHOR DNS_PATH_GLOBAL_INTERNATIONAL");
     }
 
     /**
