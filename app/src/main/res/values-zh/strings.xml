@@ -62,8 +62,6 @@
     <string name="preferences_network_use_cell_data">允许移动网络下使用</string>
     <string name="preferences_network_auto_rebuild">网络变化时自动重建 VPN</string>
     <string name="preferences_network_auto_rebuild_summary">用于排障：关闭后，Wi-Fi/4G 切换不会自动触发 VPN 路由重建。需手动重连或手动更新配置后生效。</string>
-    <string name="preferences_network_forward_hotspot_traffic">热点/USB/蓝牙下游流量通过 ZeroTier 转发</string>
-    <string name="preferences_network_forward_hotspot_traffic_summary">开启后，softap/rndis/bt-pan 等下游共享子网不再从 VPN 路由排除，回程流量可经 ZeroTier 返回。</string>
     <string name="preferences_network_smart_routing_enabled">启用智能路由增强</string>
     <string name="preferences_network_smart_routing_enabled_summary">关闭后将禁用 CHINA_DIRECT/GFW 分流增强，尽量回退到接近 fork 原始路由行为（需断开重连生效）。</string>
     <string name="reset_planet">重置 Planet</string>
