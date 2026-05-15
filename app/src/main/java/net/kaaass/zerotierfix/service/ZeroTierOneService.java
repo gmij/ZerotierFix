@@ -1866,11 +1866,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 boolean updated = updateTunnelConfig(networks.get(0), caller, null, forceColdSwitch);
                 if (updated && retryWhenConfigBusy) {
                     chnroutesReadyRebuildRetryCount = 0;
+                    chnroutesReadyRebuildRequested.set(false);
                 }
                 if (!updated && retryWhenConfigBusy) {
                     if (chnroutesReadyRebuildRetryCount >= CHNROUTES_READY_REBUILD_MAX_RETRIES) {
                         LogUtil.w(TAG, caller + ": 与当前 VPN 重建并发，已达到最大重试次数 "
                                 + CHNROUTES_READY_REBUILD_MAX_RETRIES + "，停止重试");
+                        chnroutesReadyRebuildRequested.set(false);
                         return;
                     }
                     ensureNetworkChangeHandler();
