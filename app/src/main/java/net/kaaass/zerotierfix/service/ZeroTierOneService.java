@@ -2430,24 +2430,23 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         protectSocketConnection("2606:4700:4700::1111", 53);
     }
 
+    private List<long[]> detectLocalSubnetsToExclude() {
+        boolean forwardHotspotTraffic = PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(Constants.PREF_NETWORK_FORWARD_HOTSPOT_TRAFFIC, false);
+        return detectLocalSubnetsToExclude(forwardHotspotTraffic);
+    }
+
     /**
      * 检测本机所有活跃的<em>本地共享</em>网络子网，用于在全局路由模式下从 VPN 路由表中排除这些子网，
      * 避免蓝牙 PAN（bt-pan）、USB 网络共享（usb0/rndis0）、WiFi 局域网等本地连接
      * 被意外路由至 TUN 接口而无法使用。
      * <p>
-     * 以下接口类型会被跳过，<em>不会</em>加入排除列表：
-     * <ul>
-     *   <li>ZeroTier 虚拟接口（zt*）和 TUN 接口（tun*）</li>
-     *   <li>移动数据接口：rmnet*、ccmni*、wwan*、seth*、r_rmnet* 以及对应的
-     *       CLAT/464XLAT 接口（v4-rmnet*）——这些是"上行"互联网提供者而非本地共享接口，
-     *       将其子网排除在 VPN 路由之外会导致 4G/5G 网络无法访问</li>
-     *   <li>链路本地地址（169.254.x.x）——这些是未连接接口上的自动分配地址</li>
-     *   <li>前缀长度 &lt; 8 的子网——过于宽泛，可能误排除大量公网地址</li>
-     * </ul>
+     * 当 {@code forwardHotspotTraffic=true} 时，热点/USB/蓝牙共享等下游接口会被跳过，
+     * 其子网不再加入排除列表，使下游设备回程流量可经 ZeroTier 返回。
      *
      * @return 每个子网表示为 {@code long[]{networkAddressAsUint32, prefixLen}}
      */
-    private static List<long[]> detectLocalSubnetsToExclude() {
+    private static List<long[]> detectLocalSubnetsToExclude(boolean forwardHotspotTraffic) {
         List<long[]> subnets = new ArrayList<>();
         Set<String> processedSubnets = new HashSet<>(); // 去重：避免相同子网被多次加入
         try {
@@ -2464,6 +2463,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 }
                 if (isMobileData) {
                     LogUtil.d(TAG, "跳过移动数据接口 [" + name + "]，不加入子网排除列表");
+                    continue;
+                }
+                if (forwardHotspotTraffic && isDownstreamSharingInterface(name)) {
+                    LogUtil.i(TAG, "下游共享转发已开启：保留接口 [" + name + "] 子网，不做 VPN 排除");
                     continue;
                 }
                 // 跳过 dummy 接口（某些系统上虚拟创建的占位接口）
@@ -2497,6 +2500,15 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.w(TAG, "检测本地子网时出错: " + e.getMessage());
         }
         return subnets;
+    }
+
+    private static boolean isDownstreamSharingInterface(String interfaceName) {
+        if (interfaceName == null) return false;
+        String name = interfaceName.toLowerCase();
+        return name.startsWith("bt-pan") || name.startsWith("bnep")
+                || name.startsWith("rndis") || name.startsWith("usb")
+                || name.startsWith("ap") || name.startsWith("swlan")
+                || name.startsWith("softap");
     }
 
     /**
