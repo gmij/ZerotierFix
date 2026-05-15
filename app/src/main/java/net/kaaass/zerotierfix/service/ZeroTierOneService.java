@@ -2430,6 +2430,10 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         protectSocketConnection("2606:4700:4700::1111", 53);
     }
 
+    /**
+     * 按用户偏好决定是否保留下游共享子网：
+     * 开启“热点/USB/蓝牙下游流量通过 ZeroTier 转发”时，不排除下游共享接口子网。
+     */
     private List<long[]> detectLocalSubnetsToExclude() {
         boolean forwardHotspotTraffic = PreferenceManager.getDefaultSharedPreferences(this)
                 .getBoolean(Constants.PREF_NETWORK_FORWARD_HOTSPOT_TRAFFIC, false);
@@ -2444,6 +2448,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 当 {@code forwardHotspotTraffic=true} 时，热点/USB/蓝牙共享等下游接口会被跳过，
      * 其子网不再加入排除列表，使下游设备回程流量可经 ZeroTier 返回。
      *
+     * @param forwardHotspotTraffic 是否将下游共享子网保留在 VPN 路由内（不加入排除列表）
      * @return 每个子网表示为 {@code long[]{networkAddressAsUint32, prefixLen}}
      */
     private static List<long[]> detectLocalSubnetsToExclude(boolean forwardHotspotTraffic) {
@@ -2502,6 +2507,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         return subnets;
     }
 
+    /**
+     * 判断是否为“下游共享”接口名称。
+     * 这些接口通常用于热点/USB/蓝牙共享（softap/rndis/usb/bt-pan/bnep），
+     * 开启下游转发时应保留其子网在 VPN 路由内，避免回程流量被系统排除。
+     */
     private static boolean isDownstreamSharingInterface(String interfaceName) {
         if (interfaceName == null) return false;
         String name = interfaceName.toLowerCase();
