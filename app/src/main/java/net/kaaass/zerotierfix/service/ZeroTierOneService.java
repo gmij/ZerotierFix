@@ -1866,11 +1866,13 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private boolean waitForChnroutesReady(SmartRoutingManager router, long timeoutMs) {
         if (router == null || router.isChnroutesReady()) return true;
-        long deadline = android.os.SystemClock.elapsedRealtime() + Math.max(timeoutMs, 0L);
+        if (timeoutMs <= 0L) return router.isChnroutesReady();
+        long deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs;
         while (!router.isChnroutesReady()) {
             long now = android.os.SystemClock.elapsedRealtime();
             if (now >= deadline) break;
             long sleepMs = Math.min(CHNROUTES_READY_POLL_MS, deadline - now);
+            // 防止在临近 deadline 时出现 0ms busy-loop。
             android.os.SystemClock.sleep(Math.max(sleepMs, 1L));
         }
         return router.isChnroutesReady();
