@@ -2295,7 +2295,19 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (zerotierGateway != null) defaultTunRoute.setGateway(zerotierGateway);
         this.tunTapAdapter.addRouteAndNetwork(defaultTunRoute, networkId);
 
+        SmartRoutingManager.OnChnroutesReadyListener chnroutesReadyRebuildTrigger = () -> {
+            LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
+            tencentCidrsVerified = false;
+            chnroutesReadyRebuildRetryCount = 0;
+            requestChnroutesReadyRebuildIfNeeded("chnroutesReadyListener");
+        };
         boolean chnroutesReadyAtEntry = router.isChnroutesReady();
+        if (chnroutesReadyAtEntry) {
+            // 启动时若使用了缓存 chnroutes 建链，仍需监听“下一次后台刷新完成”，
+            // 以便在数据更新后重建一次路由，避免继续使用旧骨架导致国内 IP 仍进 TUN。
+            chnroutesReadyRebuildRequested.set(false);
+            router.setOnChnroutesReadyListener(chnroutesReadyRebuildTrigger, false);
+        }
         if (!chnroutesReadyAtEntry) {
             long waitStart = android.os.SystemClock.elapsedRealtime();
             boolean becameReady = waitForChnroutesReady(router, CHNROUTES_READY_WAIT_MS);
@@ -2320,12 +2332,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                         CHNROUTES_READY_FALLBACK_POLL_INTERVAL_MS
                 );
             }
-            router.setOnChnroutesReadyListener(() -> {
-                LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
-                tencentCidrsVerified = false;
-                chnroutesReadyRebuildRetryCount = 0;
-                requestChnroutesReadyRebuildIfNeeded("chnroutesReadyListener");
-            });
+            router.setOnChnroutesReadyListener(chnroutesReadyRebuildTrigger);
             addGlobalRoutesToBuilder(builder, localSubnets);
             return;
         }
