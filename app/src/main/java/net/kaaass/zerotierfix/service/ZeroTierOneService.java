@@ -235,6 +235,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      */
     private static final long CHNROUTES_READY_WAIT_MS = 1200;
     private static final long CHNROUTES_READY_POLL_MS = 50;
+    private static final long CHNROUTES_READY_REBUILD_RETRY_MS = 1200;
     /** 用户主动切换配置时待处理重建的 Network 引用 */
     private volatile Network pendingUserConfigNetwork = null;
     /** 用户主动切换配置的 debounce Runnable：合并短时间内多个配置变更事件为一次 VPN 重建 */
@@ -245,6 +246,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.i(TAG, "用户配置变更 debounce 到期，执行 VPN 重建");
         updateTunnelConfig(network, "userConfigChangeRunnable(用户切换配置)");
     };
+    /** chnroutes 就绪重建在配置锁竞争时的重试任务（不受 network_auto_rebuild 开关影响） */
+    private final Runnable chnroutesReadyRebuildRetryRunnable = this::rebuildVpnForChnroutesReady;
 
     /**
      * 是否启用“网络变化自动重建 VPN”。
@@ -1842,7 +1845,19 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     .where(NetworkDao.Properties.NetworkId.eq(this.networkId))
                     .list();
             if (networks.size() == 1) {
-                updateTunnelConfig(networks.get(0), caller, null, forceColdSwitch);
+                boolean updated = updateTunnelConfig(networks.get(0), caller, null, forceColdSwitch);
+                if (!updated && caller.startsWith("chnroutesReady(")) {
+                    ensureNetworkChangeHandler();
+                    if (networkChangeHandler != null) {
+                        networkChangeHandler.removeCallbacks(chnroutesReadyRebuildRetryRunnable);
+                        networkChangeHandler.postDelayed(
+                                chnroutesReadyRebuildRetryRunnable,
+                                CHNROUTES_READY_REBUILD_RETRY_MS
+                        );
+                        LogUtil.w(TAG, caller + ": 与当前 VPN 重建并发，"
+                                + CHNROUTES_READY_REBUILD_RETRY_MS + "ms 后重试");
+                    }
+                }
             } else {
                 LogUtil.w(TAG, caller + ": 未找到唯一网络记录，size=" + networks.size());
             }
@@ -1858,6 +1873,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 该重建用于将“临时全局路由”切换为 CHINA_DIRECT 精确分流。
      */
     private void rebuildVpnForChnroutesReady() {
+        if (networkChangeHandler != null) {
+            networkChangeHandler.removeCallbacks(chnroutesReadyRebuildRetryRunnable);
+        }
         rebuildVpnForCurrentNetwork("chnroutesReady(数据就绪切换CHINA_DIRECT)", false);
     }
 
