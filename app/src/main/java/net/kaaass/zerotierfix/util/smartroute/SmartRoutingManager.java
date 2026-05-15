@@ -402,13 +402,8 @@ public class SmartRoutingManager {
             this.onChnroutesReadyListenerRef.set(null);
             return;
         }
-        // 快路径：避免“先就绪后注册”竞态导致回调丢失。
-        if (isChnroutesReady()) {
-            listener.onChnroutesReady();
-            return;
-        }
         this.onChnroutesReadyListenerRef.set(listener);
-        // 再次检查：覆盖“注册后立刻就绪”的窗口；CAS 防止与加载线程重复触发。
+        // 覆盖“先就绪后注册/注册后立刻就绪”窗口；CAS 防止与加载线程重复触发。
         if (isChnroutesReady() && this.onChnroutesReadyListenerRef.compareAndSet(listener, null)) {
             listener.onChnroutesReady();
         }
