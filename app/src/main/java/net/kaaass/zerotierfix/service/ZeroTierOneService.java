@@ -230,6 +230,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 500ms 足够合并同一用户操作内的多个事件，同时不引入明显延迟。
      */
     private static final long USER_CONFIG_CHANGE_DEBOUNCE_MS = 500;
+    /**
+     * 首次建链时给 chnroutes 后台加载一个短暂等待窗口，尽量减少启动初期临时全局路由窗口。
+     */
+    private static final long CHNROUTES_READY_WAIT_MS = 1200;
+    private static final long CHNROUTES_READY_POLL_MS = 50;
     /** 用户主动切换配置时待处理重建的 Network 引用 */
     private volatile Network pendingUserConfigNetwork = null;
     /** 用户主动切换配置的 debounce Runnable：合并短时间内多个配置变更事件为一次 VPN 重建 */
@@ -1855,6 +1860,21 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private void rebuildVpnForChnroutesReady() {
         rebuildVpnForCurrentNetwork("chnroutesReady(数据就绪切换CHINA_DIRECT)", false);
     }
+
+    /**
+     * 在有限时间内等待 chnroutes 就绪，避免首次建链时的短暂竞态窗口。
+     */
+    private boolean waitForChnroutesReady(SmartRoutingManager router, long timeoutMs) {
+        if (router == null || router.isChnroutesReady()) return true;
+        long deadline = android.os.SystemClock.elapsedRealtime() + Math.max(timeoutMs, 0L);
+        while (!router.isChnroutesReady()) {
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (now >= deadline) break;
+            long sleepMs = Math.min(CHNROUTES_READY_POLL_MS, deadline - now);
+            android.os.SystemClock.sleep(Math.max(sleepMs, 1L));
+        }
+        return router.isChnroutesReady();
+    }
     
     /**
      * 配置允许/不允许的应用
@@ -2188,9 +2208,21 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (zerotierGateway != null) defaultTunRoute.setGateway(zerotierGateway);
         this.tunTapAdapter.addRouteAndNetwork(defaultTunRoute, networkId);
 
+        boolean chnroutesReadyAtEntry = router.isChnroutesReady();
+        if (!chnroutesReadyAtEntry) {
+            long waitStart = android.os.SystemClock.elapsedRealtime();
+            boolean becameReady = waitForChnroutesReady(router, CHNROUTES_READY_WAIT_MS);
+            long waitedMs = android.os.SystemClock.elapsedRealtime() - waitStart;
+            if (becameReady) {
+                LogUtil.i(TAG, "CHINA_DIRECT 模式：chnroutes 启动等待 " + waitedMs
+                        + "ms 后就绪，直接应用精确分流路由");
+            }
+        }
+
         if (!router.isChnroutesReady()) {
             // chnroutes 尚未加载，临时使用全局路由，数据就绪后触发重建
-            LogUtil.w(TAG, "CHINA_DIRECT 模式：chnroutes 尚未加载，临时全局路由，就绪后重建");
+            LogUtil.w(TAG, "CHINA_DIRECT 模式：chnroutes 在 " + CHNROUTES_READY_WAIT_MS
+                    + "ms 等待窗口内仍未就绪，临时全局路由，就绪后重建");
             router.setOnChnroutesReadyListener(() -> {
                 LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
                 tencentCidrsVerified = false;
