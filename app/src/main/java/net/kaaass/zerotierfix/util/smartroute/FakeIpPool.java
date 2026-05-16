@@ -54,7 +54,7 @@ public class FakeIpPool {
     private final Object lock = new Object();
 
     public FakeIpPool() {
-        domainToFakeIp = new LinkedHashMap<String, Integer>(MAX_ENTRIES + 1, 0.75f, true) {
+        domainToFakeIp = new LinkedHashMap<String, Integer>((int)(MAX_ENTRIES / 0.75f) + 1, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(Map.Entry<String, Integer> eldest) {
                 if (size() > MAX_ENTRIES) {

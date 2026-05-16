@@ -60,6 +60,10 @@ public class DirectConnectionManager {
     private static final long UDP_SESSION_TIMEOUT_MS = 60_000;
     /** 等待 DNS 解析（fake-IP → 真实 IP）的最长时间 */
     private static final long RESOLVE_TIMEOUT_MS = 3_000;
+    /** TCP 直连超时（毫秒） */
+    private static final int TCP_CONNECT_TIMEOUT_MS = 10_000;
+    /** proxy 读缓冲区大小 */
+    private static final int PROXY_BUFFER_SIZE = 4096;
     /** 直连 DNS 服务器（114.114.114.114 和备用 AliDNS） */
     private static final String[] DIRECT_DNS_SERVERS = {"114.114.114.114", "223.5.5.5"};
 
@@ -330,7 +334,7 @@ public class DirectConnectionManager {
                     cleanup(); return;
                 }
                 s.setSoTimeout(0); // 无超时，靠 close() 中断阻塞 read
-                s.connect(new InetSocketAddress(realIp, realPort), 10_000);
+                s.connect(new InetSocketAddress(realIp, realPort), TCP_CONNECT_TIMEOUT_MS);
                 this.socket = s;
                 this.established = true;
 
@@ -393,7 +397,7 @@ public class DirectConnectionManager {
             if (s == null) return;
             try {
                 InputStream is = s.getInputStream();
-                byte[] buf = new byte[4096];
+                byte[] buf = new byte[PROXY_BUFFER_SIZE];
                 int n;
                 while (!closed && (n = is.read(buf)) != -1) {
                     byte[] payload = new byte[n];
@@ -471,7 +475,7 @@ public class DirectConnectionManager {
         void startReadLoop() {
             try {
                 if (socket == null || socket.isClosed()) return;
-                byte[] buf = new byte[4096];
+                byte[] buf = new byte[PROXY_BUFFER_SIZE];
                 DatagramPacket dp = new DatagramPacket(buf, buf.length);
                 socket.setSoTimeout(5000);
                 while (!closed && !socket.isClosed()) {
@@ -695,11 +699,8 @@ public class DirectConnectionManager {
         pkt[10] = (byte)(ipCs >> 8);
         pkt[11] = (byte)(ipCs);
 
-        // TCP pseudo-header checksum: srcIP(4) + dstIP(4) + 0(1) + 6(1) + tcpLen(2) + TCP header + data
-        long tcpCs = 0;
-        // pseudo-header
-        for (int i = 0; i < 4; i++) tcpCs += (srcIp[i] & 0xFF) << (8 * ((i & 1) == 0 ? 1 : 0)); // interleaved
-        tcpCs = pseudoAndTcpChecksum(srcIp, dstIp, pkt, 20, tcpLen);
+        // TCP pseudo-header checksum
+        int tcpCs = pseudoAndTcpChecksum(srcIp, dstIp, pkt, 20, tcpLen);
         pkt[t+16] = (byte)(tcpCs >> 8);
         pkt[t+17] = (byte)(tcpCs);
 
