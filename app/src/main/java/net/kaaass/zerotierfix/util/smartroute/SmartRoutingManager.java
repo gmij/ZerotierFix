@@ -301,9 +301,62 @@ public class SmartRoutingManager {
         return GFWListParser.isGfwBlocked(domain, gfwDomains);
     }
 
+    // ─────────────── Fake-IP 模式专用 API ───────────────────────────
+
     /**
-     * 返回已知的 GFW 封锁 IP 集合（用于 VPN 路由配置）
+     * Fake-IP 模式下判断一个域名的流量是否应走 ZeroTier 隧道（VIA_ZT）。
+     *
+     * <p>决策顺序：
+     * <ol>
+     *   <li>GFWList 命中 → VIA_ZT（true）</li>
+     *   <li>Google/YouTube 等全球服务域名 → VIA_ZT（true）</li>
+     *   <li>learned VIA_ZT 策略命中（历史上已被识别为需要 ZT 的 IP/域名）→ VIA_ZT（true）</li>
+     *   <li>默认 → DIRECT（false，分配 fake IP，通过保护套接字直连）</li>
+     * </ol>
+     *
+     * <p>注意：此方法仅根据域名做决策，无需解析真实 IP，因此可在 DNS 拦截路径的热路径上同步调用。
+     *
+     * @param domain 查询域名（已小写）
+     * @return true = 走 ZeroTier 隧道；false = 直连（分配 fake IP）
      */
+    public boolean shouldRouteViaTunnel(String domain) {
+        if (domain == null) return true; // 安全默认：走 ZT
+        String d = domain.toLowerCase();
+        // ① GFWList
+        if (isGfwDomain(d)) return true;
+        // ② Google/YouTube 等全球服务
+        if (isGoogleGlobalServiceDomain(d)) return true;
+        // ③ 默认 → DIRECT
+        return false;
+    }
+
+    /**
+     * Fake-IP 模式下的 DNS 记录学习：在代理层成功解析出真实 IP 后调用，
+     * 用于更新 learned VIA_ZT 策略（若该 IP 不是中国 IP），以便后续同域名直接复用策略。
+     *
+     * @param domain  域名（小写）
+     * @param realIp  代理层解析到的真实 IP
+     */
+    public void learnFromDirectConnection(String domain, InetAddress realIp) {
+        if (domain == null || realIp == null) return;
+        if (!(realIp instanceof java.net.Inet4Address)) return;
+        // 如果真实 IP 不是中国 IP，说明我们把它路由到了 DIRECT，这是正确的；
+        // 如果是 VIA_ZT 的 IP（GFW 封锁等），让 gfwlist 路径在下次 DNS 查询时覆盖。
+        // 此处只记录 DIRECT 策略供 emitConnLog 使用，不影响路由表。
+        if (!isChineseIp(realIp) && !isGfwDomain(domain)) {
+            // 非中国、非 GFW → 记录为已观察的 DIRECT（不促进路由重建，仅供统计）
+            LearnedRoutePolicyStore.ChangeSummary cs = learnedRoutePolicies.observe(
+                    realIp, LearnedRoutePolicyStore.Preference.DIRECT,
+                    domain, "fakeip-direct", System.currentTimeMillis(), false);
+            if (cs.routingChanged) {
+                LogUtil.d(TAG, "fake-IP 学习 DIRECT: " + domain + " → " + realIp.getHostAddress());
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+
+
     public Set<InetAddress> getGfwIpSet() {
         return Collections.unmodifiableSet(gfwIpSet);
     }

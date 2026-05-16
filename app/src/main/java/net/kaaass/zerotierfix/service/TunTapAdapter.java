@@ -18,6 +18,7 @@ import net.kaaass.zerotierfix.util.IPPacketUtils;
 import net.kaaass.zerotierfix.util.InetAddressUtils;
 import net.kaaass.zerotierfix.util.LogUtil;
 import net.kaaass.zerotierfix.util.smartroute.DnsPacketParser;
+import net.kaaass.zerotierfix.util.smartroute.FakeIpPool;
 import net.kaaass.zerotierfix.util.smartroute.SmartRoutingManager;
 
 import java.io.FileInputStream;
@@ -67,6 +68,20 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
      * 所有进入 TUN 的包都应无条件转发给 ZeroTier。
      */
     private boolean perAppRoutingActive = false;
+
+    // ── Fake-IP 模式 ─────────────────────────────────────────────────────────
+    /** Fake-IP 模式是否激活 */
+    private volatile boolean fakeIpModeActive = false;
+    /** Fake-IP 地址池（fakeIpModeActive=true 时非 null） */
+    private volatile net.kaaass.zerotierfix.util.smartroute.FakeIpPool fakeIpPool;
+    /** 直连代理管理器（fakeIpModeActive=true 时非 null） */
+    private volatile DirectConnectionManager directConnectionManager;
+    /**
+     * TUN 写锁（由 TunTapAdapter 和 DirectConnectionManager 共享），
+     * 确保多线程同时向 TUN fd 写包时串行化，避免内核层的包损坏。
+     */
+    final Object tunWriteLock = new Object();
+    // ─────────────────────────────────────────────────────────────────────────
 
     /**
      * 已记录 [CONN] 日志的连接端点集合，用于每条连接只记录一次日志。
@@ -128,6 +143,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         chinaDirectLeakWarned.clear();
     }
 
+
     /**
      * 判断是否为TCP数据包
      */
@@ -186,6 +202,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     public void setFileStreams(FileInputStream fileInputStream, FileOutputStream fileOutputStream) {
         this.in = fileInputStream;
         this.out = fileOutputStream;
+        // 同步更新 DirectConnectionManager 的 tunOut 引用
+        DirectConnectionManager dcm = this.directConnectionManager;
+        if (dcm != null) dcm.setTunOut(fileOutputStream);
     }
 
     /**
@@ -199,6 +218,25 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         this.smartRoutingManager = manager;
         this.smartRoutingMode = mode;
         this.perAppRoutingActive = perAppRouting;
+    }
+
+    /**
+     * 配置 Fake-IP 直连代理模式。
+     *
+     * @param pool    Fake-IP 地址池（null 表示停用）
+     * @param manager 直连代理管理器（null 表示停用）
+     */
+    public void setFakeIpMode(net.kaaass.zerotierfix.util.smartroute.FakeIpPool pool,
+                               DirectConnectionManager manager) {
+        if (manager != null) {
+            manager.setTunOut(this.out);
+        }
+        this.fakeIpPool = pool;
+        this.directConnectionManager = manager;
+        this.fakeIpModeActive = (pool != null && manager != null);
+        if (this.fakeIpModeActive) {
+            LogUtil.i(TAG, "Fake-IP 模式已启用（198.18.0.0/15）");
+        }
     }
 
     /**
@@ -388,6 +426,69 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     }
 
     private void handleIPv4Packet(byte[] packetData) {
+        // ── Fake-IP 模式：DNS 拦截 ─────────────────────────────────────────
+        // 在任何其他处理之前，检查是否是发出的 DNS 查询（UDP:53）且 Fake-IP 模式已激活。
+        // 若是需要直连的域名，立即构造含 fake IP 的 DNS 响应写回 TUN，不转发到 ZT。
+        if (fakeIpModeActive && packetData.length >= 28) {
+            int proto = packetData[9] & 0xFF;
+            if (proto == 17 /* UDP */) {
+                int ipHdrLen = (packetData[0] & 0x0F) * 4;
+                if (packetData.length > ipHdrLen + 3) {
+                    int dstPort = ((packetData[ipHdrLen + 2] & 0xFF) << 8)
+                                | (packetData[ipHdrLen + 3] & 0xFF);
+                    if (dstPort == 53) {
+                        String domain = net.kaaass.zerotierfix.util.smartroute.DnsPacketParser
+                                .parseQueryDomain(packetData);
+                        if (domain != null) {
+                            SmartRoutingManager sm = this.smartRoutingManager;
+                            boolean viaZt = (sm == null) || sm.shouldRouteViaTunnel(domain);
+                            if (!viaZt) {
+                                // 直连域名：分配 fake IP，构造 DNS 响应，写回 TUN
+                                net.kaaass.zerotierfix.util.smartroute.FakeIpPool pool = this.fakeIpPool;
+                                if (pool != null) {
+                                    InetAddress fakeIp = pool.getOrAllocate(domain);
+                                    if (fakeIp != null) {
+                                        byte[] resp = net.kaaass.zerotierfix.util.smartroute.DnsPacketParser
+                                                .buildFakeResponse(packetData, fakeIp);
+                                        if (resp != null) {
+                                            try {
+                                                synchronized (tunWriteLock) {
+                                                    this.out.write(resp);
+                                                }
+                                                DebugLog.d(TAG, "Fake-IP DNS 响应: " + domain
+                                                        + " → " + fakeIp.getHostAddress());
+                                            } catch (java.io.IOException e) {
+                                                LogUtil.e(TAG, "Fake-IP DNS 写回失败: " + e.getMessage());
+                                            }
+                                            return; // 已处理，不转发到 ZT
+                                        }
+                                    }
+                                }
+                            }
+                            // viaZt=true 或 fake IP 分配失败 → 继续正常转发到 ZT
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Fake-IP 模式：直连代理拦截（TCP/UDP 到 fake IP 子网） ──────────
+        if (fakeIpModeActive) {
+            int rawDst = IPPacketUtils.getDestIPv4AsInt(packetData);
+            if (FakeIpPool.isFakeIpInt(rawDst)) {
+                DirectConnectionManager dcm = this.directConnectionManager;
+                if (dcm != null) {
+                    int protocol = packetData[9] & 0xFF;
+                    if (protocol == 6 /* TCP */) {
+                        dcm.handleTcpPacket(packetData);
+                    } else if (protocol == 17 /* UDP */) {
+                        dcm.handleUdpPacket(packetData);
+                    }
+                    return; // fake IP 流量已消费，不转发到 ZT
+                }
+            }
+        }
+
         // ── 超快路径：无 InetAddress 分配 ──
         // 直接从原始字节提取目的 IPv4（偏移 16–19），避免在每个数据包上都分配
         // InetAddress / byte[] 对象，彻底消除视频/直播高频数据包路径上的 GC 压力。
@@ -859,7 +960,12 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                     }
                 }
 
-                this.out.write(frameData);
+                // 在 fake-IP 模式下与 DirectConnectionManager 共享写锁
+                if (fakeIpModeActive) {
+                    synchronized (tunWriteLock) { this.out.write(frameData); }
+                } else {
+                    this.out.write(frameData);
+                }
                 DebugLog.d(TAG, "IPv4数据包已写入本地TUN: 大小=" + frameData.length);
             } catch (Exception e) {
                 LogUtil.e(TAG, "向VPN套接字写入数据失败: " + e.getMessage(), e);
@@ -884,7 +990,12 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                         DebugLog.d(TAG, "更新NDP表: IP=" + sourceIP + ", MAC=" + StringUtils.macAddressToString(srcMac));
                     }
                 }
-                this.out.write(frameData);
+                // 在 fake-IP 模式下与 DirectConnectionManager 共享写锁
+                if (fakeIpModeActive) {
+                    synchronized (tunWriteLock) { this.out.write(frameData); }
+                } else {
+                    this.out.write(frameData);
+                }
                 DebugLog.d(TAG, "IPv6数据包已写入本地TUN: 大小=" + frameData.length);
             } catch (Exception e) {
                 LogUtil.e(TAG, "向VPN套接字写入数据失败: " + e.getMessage(), e);
