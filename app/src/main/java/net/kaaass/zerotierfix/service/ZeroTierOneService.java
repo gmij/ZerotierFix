@@ -2235,6 +2235,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (zerotierGateway == null && assignedAddresses.length > 0) {
             for (var addr : assignedAddresses) {
                 if (addr.getAddress() instanceof Inet4Address) {
+                    // addr.getAddress() → InetAddress；.getAddress() → byte[]；clone() 避免修改原数组
                     byte[] ipBytes = addr.getAddress().getAddress().clone();
                     ipBytes[3] = 1;
                     zerotierGateway = InetAddress.getByAddress(ipBytes);

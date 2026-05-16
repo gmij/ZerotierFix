@@ -329,7 +329,7 @@ public class DirectConnectionManager {
                 Socket s = new Socket();
                 if (!vpnService.protect(s)) {
                     LogUtil.w(TAG, "TCP: protect() 失败（" + domain + " 目标=" + realIp + ":" + realPort
-                            + "）——VPN 可能未就绪，发送 RST");
+                            + "）——套接字无法绑定到物理网络，发送 RST");
                     try { s.close(); } catch (IOException ignored) {}
                     sendRst(clientIp, fakeIp, clientPort, fakePort, serverIsn, clientNextSeq);
                     cleanup(); return;
@@ -551,7 +551,7 @@ public class DirectConnectionManager {
         // DNS header(12) + QNAME + QTYPE(2) + QCLASS(2)
         byte[] pkt = new byte[12 + qnameLen + 4];
         // header
-        int txId = (int)(Math.random() * 0xFFFF) & 0xFFFF; // 随机事务 ID，避免并发查询冲突
+        int txId = random.nextInt(0xFFFF) & 0xFFFF; // 随机事务 ID，避免并发查询冲突
         pkt[0] = (byte)(txId >> 8); pkt[1] = (byte)(txId);
         pkt[2] = 1; pkt[3] = 0;   // flags: RD=1
         pkt[4] = 0; pkt[5] = 1;   // QDCOUNT = 1
