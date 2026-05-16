@@ -22,9 +22,12 @@ public class FakeIpPool {
     private static final String TAG = "FakeIpPool";
 
     // 198.18.0.0/15：198.18.0.0 – 198.19.255.255（131072 个地址）
-    static final int POOL_START = (198 << 24) | (18 << 16);        // 0xC6120000
-    static final int POOL_END   = (198 << 24) | (19 << 16) | 0xFFFF; // 0xC613FFFF
+    private static final int POOL_START = (198 << 24) | (18 << 16);        // 0xC6120000
+    private static final int POOL_END   = (198 << 24) | (19 << 16) | 0xFFFF; // 0xC613FFFF
     private static final int POOL_MASK_HI = 0xFFFE0000;            // /15
+    /** 公开范围标志，供外部（TunTapAdapter）快速检测目标 IP 是否在 fake-IP 子网内 */
+    public static final int FAKE_IP_RANGE_START = POOL_START;
+    public static final int FAKE_IP_RANGE_END   = POOL_END;
 
     /** 最多同时缓存的域名→fakeIP 映射数，LRU 淘汰 */
     private static final int MAX_ENTRIES = 10_000;
