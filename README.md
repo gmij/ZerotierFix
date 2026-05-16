@@ -70,7 +70,7 @@ You can configure how traffic is routed through ZeroTier:
 
 ## Build (Developer)
 
-ZeroTier JNI SDK comes from git submodule `externals/core` (upstream: `zerotier/ZeroTierOne`).
+ZeroTier JNI SDK comes from git submodule `externals/core` (upstream: https://github.com/zerotier/ZeroTierOne).
 
 For first checkout, or when the submodule is missing, run:
 
