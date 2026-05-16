@@ -1421,17 +1421,6 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         try {
             this.vpnSocket = builder.establish();
         } catch (RuntimeException e) {
-            if (smartRoutingEnabled && shouldAddGlobalRoutes) {
-                SmartRoutingManager router = SmartRoutingManager.getInstance(this);
-                int oldBudget = router.getCurrentSuperAggregateBudget();
-                int newBudget = router.downgradeSuperAggregateBudget();
-                if (newBudget < oldBudget) {
-                    LogUtil.w(TAG, "CHINA_DIRECT 自适应降档：超级聚合预算 " + oldBudget
-                            + " -> " + newBudget + "（下次重建生效）");
-                } else {
-                    LogUtil.w(TAG, "CHINA_DIRECT 自适应预算已到最低档 " + oldBudget);
-                }
-            }
             LogUtil.e(TAG, "establish() 失败（可能路由条数过多）：" + e.getMessage() + "，降级为全局路由重试", e);
             // 降级：重建 builder，仅使用 0.0.0.0/0 全局路由
             var fallbackBuilder = new VpnService.Builder();
