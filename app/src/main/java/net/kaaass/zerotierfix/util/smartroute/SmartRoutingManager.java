@@ -206,6 +206,12 @@ public class SmartRoutingManager {
     private volatile Map<Integer, List<CidrBlock>> nonChinaCidrsVpnSafeByBudget = Collections.emptyMap();
     private volatile int currentSuperAggregateBudget = SUPER_AGGREGATE_DEFAULT_MAX_ENTRIES;
 
+    /**
+     * Fake-IP 模式标志：设为 true 时跳过超级聚合预计算。
+     * Fake-IP 模式下 VPN 路由表仅含 0.0.0.0/0，超级聚合结果永不被 VPN Builder 使用。
+     */
+    private volatile boolean skipSuperAggregate = false;
+
     /** GFW 域名集合（GFW_LIST 使用） */
     private volatile Set<String> gfwDomains = Collections.emptySet();
 
@@ -436,6 +442,24 @@ public class SmartRoutingManager {
             }
         }
         return currentSuperAggregateBudget;
+    }
+
+    /**
+     * 设置 Fake-IP 超级聚合跳过标志。
+     *
+     * <p>Fake-IP 模式下 VPN 路由表仅含 0.0.0.0/0，超级聚合结果永不被 VPN Builder 消费，
+     * 跳过此步骤可节省启动时的 CPU 开销，同时 isChineseIp() 使用精度更高的完整 chinaCidrs。
+     * 若 chnroutes 数据已就绪，立即将 currentVpnSafeRoutes 切换为完整精度列表并释放缓存。
+     *
+     * @param skip true 表示跳过超级聚合（Fake-IP 模式），false 恢复正常（CHINA_DIRECT 模式）
+     */
+    public synchronized void setSkipSuperAggregate(boolean skip) {
+        this.skipSuperAggregate = skip;
+        if (skip && !chinaCidrs.isEmpty()) {
+            this.currentVpnSafeRoutes = new VpnSafeRouteSet(chinaCidrs, nonChinaCidrs);
+            this.chinaCidrsVpnSafeByBudget = Collections.emptyMap();
+            this.nonChinaCidrsVpnSafeByBudget = Collections.emptyMap();
+        }
     }
 
     /**
@@ -750,6 +774,15 @@ public class SmartRoutingManager {
         // 用于 VPN Builder.establish() 的 excludeRoute/addRoute，避免 Binder 序列化超限。
         // 传入受保护 CIDR 列表，防止关键非中国 IP（如 Cloudflare DNS 1.1.1.0/24）被意外纳入排除范围。
         // 在后台线程运行，不阻塞主线程或 VPN 建立。
+        // Fake-IP 模式下跳过：VPN 路由表仅含 0.0.0.0/0，超级聚合结果永不被消费，节省启动 CPU 开销。
+        if (skipSuperAggregate) {
+            this.chinaCidrsVpnSafeByBudget = Collections.emptyMap();
+            this.nonChinaCidrsVpnSafeByBudget = Collections.emptyMap();
+            this.currentVpnSafeRoutes = new VpnSafeRouteSet(this.chinaCidrs, this.nonChinaCidrs);
+            LogUtil.i(TAG, "已加载 " + beforeAgg + " 条中国 IP 路由（含 "
+                    + supplementalAdded + " 条腾讯云补充段），聚合后 " + aggregated.size()
+                    + " 条（补集 " + nonChinaCidrs.size() + " 条），Fake-IP 模式跳过超级聚合");
+        } else {
         List<CidrBlock> protectedBlocks = new ArrayList<>();
         for (String cidr : PROTECTED_NON_CHINA_CIDRS) {
             CidrBlock b = CidrBlock.parse(cidr);
@@ -784,6 +817,7 @@ public class SmartRoutingManager {
                 + " 条（补集 " + nonChinaCidrs.size() + " 条），超级聚合后 "
                 + currentVpnSafeRoutes.china.size() + " 条（预算 " + budget + "，补集 "
                 + currentVpnSafeRoutes.nonChina.size() + " 条）");
+        }
         // 通知等待中的 CHINA_DIRECT VPN 路由重建（getAndSet 原子读取并清除，消除竞态）
         OnChnroutesReadyListener l = onChnroutesReadyListenerRef.getAndSet(null);
         if (l != null) {

@@ -1479,9 +1479,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             currentDirectConnectionManager = dcm;
             this.tunTapAdapter.setFakeIpMode(fakePool, dcm);
             LogUtil.i(TAG, "Fake-IP 直连代理已启动");
+            // Fake-IP 模式：VPN 路由表仅 0.0.0.0/0，超级聚合结果永不被消费，跳过以节省 CPU。
+            smartRouter.setSkipSuperAggregate(true);
         } else {
             // 不需要全局路由时，关闭 fake-IP 模式
             this.tunTapAdapter.setFakeIpMode(null, null);
+            smartRouter.setSkipSuperAggregate(false);
         }
 
         // 配置 TunTapAdapter 路由上下文（用于 CONN 日志和诊断）。

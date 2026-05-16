@@ -298,6 +298,12 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         }
 
         String msg = displayHost + ":" + dstPort + "  [" + routeReason + "]  (" + protoLabel + "; src=" + srcStr + "; dest=" + destStr + ")";
+        // 国内中国IP经ZT转发属于预期行为（Fake-IP下硬编码IP/非DNS流量，CHINA_DIRECT下已有路由泄漏告警），
+        // 无诊断价值，降为调试级别，不出现在常规日志中。
+        if ("ZT (CN)".equals(routeReason)) {
+            DebugLog.d(TAG, msg);
+            return;
+        }
         LogUtil.i(LogUtil.CONN_TAG, msg);
     }
 
