@@ -29,20 +29,21 @@ tasks.register("ensureZeroTierCoreSubmodule") {
     description = "Ensure ZeroTier SDK submodule (externals/core) is available before compile."
     doLast {
         if (zeroTierCoreJavaDir.exists() && zeroTierCoreNodeDir.exists()) {
+            logger.lifecycle("ZeroTier SDK submodule already ready: ${zeroTierCoreDir}")
             return
         }
         logger.lifecycle("ZeroTier SDK submodule missing, trying to initialize externals/core ...")
-        def cmdOut = new ByteArrayOutputStream()
-        def cmdErr = new ByteArrayOutputStream()
+        def standardOutputStream = new ByteArrayOutputStream()
+        def errorOutputStream = new ByteArrayOutputStream()
         def result = exec {
             workingDir rootDir
             commandLine "git", "submodule", "update", "--init", "--recursive", "externals/core"
-            standardOutput cmdOut
-            errorOutput cmdErr
+            standardOutput standardOutputStream
+            errorOutput errorOutputStream
             ignoreExitValue true
         }
         def coreReady = zeroTierCoreJavaDir.exists() && zeroTierCoreNodeDir.exists()
-        def cmdOutput = "stdout:\n${cmdOut.toString('UTF-8').trim()}\n\nstderr:\n${cmdErr.toString('UTF-8').trim()}"
+        def cmdOutput = "stdout:\n${standardOutputStream.toString('UTF-8').trim()}\n\nstderr:\n${errorOutputStream.toString('UTF-8').trim()}"
         if (result.exitValue != 0) {
             throw new GradleException(
                     "ZeroTier SDK submodule is missing. Run:\n" +
