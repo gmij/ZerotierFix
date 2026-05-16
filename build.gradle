@@ -20,6 +20,35 @@ allprojects {
     }
 }
 
+def zeroTierCoreDir = file("${rootDir}/externals/core")
+def zeroTierCoreJavaDir = file("${rootDir}/externals/core/java/src")
+def zeroTierCoreNodeDir = file("${rootDir}/externals/core/node")
+
+tasks.register("ensureZeroTierCoreSubmodule") {
+    group = "build setup"
+    description = "Ensure ZeroTier SDK submodule (externals/core) is available before compile."
+    doLast {
+        if (zeroTierCoreJavaDir.exists() && zeroTierCoreNodeDir.exists()) {
+            return
+        }
+        logger.lifecycle("ZeroTier SDK submodule missing, trying to initialize externals/core ...")
+        def result = exec {
+            workingDir rootDir
+            commandLine "git", "submodule", "update", "--init", "--recursive", "externals/core"
+            ignoreExitValue true
+        }
+        if (result.exitValue != 0 || !zeroTierCoreJavaDir.exists() || !zeroTierCoreNodeDir.exists()) {
+            throw new GradleException(
+                    "ZeroTier SDK submodule is missing. Run:\n" +
+                            "  git submodule update --init --recursive externals/core\n" +
+                            "or clone with:\n" +
+                            "  git clone --recursive <repo-url>\n"
+            )
+        }
+        logger.lifecycle("ZeroTier SDK submodule ready: ${zeroTierCoreDir}")
+    }
+}
+
 ext {
     compileSdkVersion = 33
     minSdkVersion = 21
@@ -28,4 +57,12 @@ ext {
 
 task clean(type: Delete) {
     delete rootProject.buildDir
+}
+
+gradle.projectsEvaluated {
+    [project(":core"), project(":app")].each { p ->
+        p.tasks.matching { it.name == "preBuild" }.configureEach {
+            dependsOn(rootProject.tasks.named("ensureZeroTierCoreSubmodule"))
+        }
+    }
 }
