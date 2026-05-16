@@ -573,7 +573,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             }
 
             // ── 国内直连模式：中国 IP 进入 TUN 说明 OS 路由排除未生效，记录一次性告警 ──
-            if (smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT
+            // Fake-IP 模式下 0.0.0.0/0 覆盖全部流量，中国 IP 进入 TUN 是正常路径，不发告警。
+            if (!fakeIpModeActive
+                    && smartRoutingMode == SmartRoutingManager.MODE_CHINA_DIRECT
                     && smartRoutingManager.isChineseIp(destIP)) {
                 byte[] addrBytes = destIP.getAddress();
                 if (addrBytes != null && addrBytes.length == 4) {
@@ -953,7 +955,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                                 .append(" mode=").append(smartRoutingMode)
                                 .append(" src=").append(sourceIP != null ? sourceIP.getHostAddress() : "?")
                                 .append(" dst=").append(destIP != null ? destIP.getHostAddress() : "?");
-                        LogUtil.i(LogUtil.DNS_TAG, anchor.toString());
+                        LogUtil.d(LogUtil.DNS_TAG, anchor.toString());
                     }
                     for (DnsPacketParser.DnsRecord record : records) {
                         smartRoutingManager.onDnsRecord(record);
