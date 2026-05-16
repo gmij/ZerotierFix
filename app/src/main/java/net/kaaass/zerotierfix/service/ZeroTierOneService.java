@@ -2397,6 +2397,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.d(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
                     + excluded + " 条中国 IP（超级聚合，全量 " + router.getChinaCidrs().size()
                     + " 条，预算 " + routeBudget + "）+ " + localSubnets.size() + " 个本地子网");
+            LogUtil.i(LogUtil.ROUTE_TAG, "ROUTE_TABLE_COUNT CHINA_DIRECT_A13: addRoute=1, excludeChina="
+                    + excluded + ", excludeLocal=" + localSubnets.size() + ", totalRuleOps="
+                    + (1 + excluded + localSubnets.size()));
         } else {
             // Android 12-：添加非中国 CIDR 补集，每条再剔除本地活跃子网。
             // 使用超级聚合后的非中国补集（通常 ≤ 1 500 条），远小于之前的 8 000-12 000 条。
@@ -2431,6 +2434,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
             LogUtil.i(TAG, "CHINA_DIRECT (Android 12-): 添加 " + added + "/" + nonChina.size()
                     + " 条非中国路由（超级聚合）");
+            LogUtil.i(LogUtil.ROUTE_TAG, "ROUTE_TABLE_COUNT CHINA_DIRECT_LEGACY: addedRoutes="
+                    + added + ", candidateNonChina=" + nonChina.size() + ", localSubnets="
+                    + localSubnets.size());
         }
     }
 
@@ -2443,6 +2449,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             for (long[] s : localSubnets) {
                 builder.excludeRoute(new IpPrefix(longToIpv4Addr(s[0]), (int) s[1]));
             }
+            LogUtil.i(LogUtil.ROUTE_TAG, "ROUTE_TABLE_COUNT GLOBAL_A13: addRoute=1, excludeLocal="
+                    + localSubnets.size() + ", totalRuleOps=" + (1 + localSubnets.size()));
         } else {
             List<long[]> vpnRoutes = localSubnets.isEmpty()
                     ? Collections.singletonList(new long[]{0L, 0L})
@@ -2450,6 +2458,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             for (long[] r : vpnRoutes) {
                 builder.addRoute(longToIpv4Addr(r[0]), (int) r[1]);
             }
+            LogUtil.i(LogUtil.ROUTE_TAG, "ROUTE_TABLE_COUNT GLOBAL_LEGACY: addedRoutes="
+                    + vpnRoutes.size() + ", localSubnets=" + localSubnets.size());
         }
     }
 
