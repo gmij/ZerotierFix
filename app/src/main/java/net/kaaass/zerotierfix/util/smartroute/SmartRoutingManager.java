@@ -398,13 +398,26 @@ public class SmartRoutingManager {
      * 注册 chnroutes 数据加载完成回调（用于在 CHINA_DIRECT 路由数据就绪后重建 VPN 路由）
      */
     public void setOnChnroutesReadyListener(OnChnroutesReadyListener listener) {
+        setOnChnroutesReadyListener(listener, true);
+    }
+
+    /**
+     * 注册 chnroutes 数据加载完成回调。
+     *
+     * @param notifyImmediatelyIfReady 当数据当前已就绪时是否立即触发一次回调。
+     *                                 传 false 可用于“只监听下一次刷新完成”场景。
+     */
+    public void setOnChnroutesReadyListener(OnChnroutesReadyListener listener,
+                                            boolean notifyImmediatelyIfReady) {
         if (listener == null) {
             this.onChnroutesReadyListenerRef.set(null);
             return;
         }
         this.onChnroutesReadyListenerRef.set(listener);
         // 覆盖“先就绪后注册/注册后立刻就绪”窗口；CAS 防止与加载线程重复触发。
-        if (isChnroutesReady() && this.onChnroutesReadyListenerRef.compareAndSet(listener, null)) {
+        if (notifyImmediatelyIfReady
+                && isChnroutesReady()
+                && this.onChnroutesReadyListenerRef.compareAndSet(listener, null)) {
             listener.onChnroutesReady();
         }
     }

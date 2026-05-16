@@ -68,6 +68,24 @@ You can configure how traffic is routed through ZeroTier:
 
 **Note**: Global routing and per-app routing are mutually exclusive. Enabling one will automatically disable the other.
 
+## Build (Developer)
+
+ZeroTier JNI SDK comes from git submodule `externals/core` (upstream: https://github.com/zerotier/ZeroTierOne).
+
+For first checkout, or when the submodule is missing, run:
+
+```bash
+git submodule update --init --recursive externals/core
+```
+
+Then run compile check:
+
+```bash
+./gradlew :app:compileDebugJavaWithJavac
+```
+
+Gradle now attempts to initialize `externals/core` automatically before build; if it fails, it prints actionable setup commands.
+
 ## Copyright
 
 The code for this repository is based on the reverse engineering of the official Android client. The

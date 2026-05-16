@@ -99,6 +99,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -218,7 +219,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private final Runnable learnedRoutePolicyRebuildRunnable = () -> {
         LogUtil.i(TAG, "learned 路由策略触发 VPN 重建（" + LEARNED_IP_REBUILD_DEBOUNCE_MS / 1000
                 + "s 防抖到期），重新配置智能路由例外表");
-        rebuildVpnForCurrentNetwork("learnedRoutePolicyRebuildRunnable(learned策略变化)", false);
+        rebuildVpnForCurrentNetwork("learnedRoutePolicyRebuildRunnable(learned策略变化)", false, false);
     };
     /** learned 路由策略触发重建的防抖延迟（10 秒，确保批量变更一次重建） */
     private static final long LEARNED_IP_REBUILD_DEBOUNCE_MS = 10_000;
@@ -230,6 +231,19 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 500ms 足够合并同一用户操作内的多个事件，同时不引入明显延迟。
      */
     private static final long USER_CONFIG_CHANGE_DEBOUNCE_MS = 500;
+    /**
+     * 首次建链时给 chnroutes 后台加载一个短暂等待窗口，尽量减少启动初期临时全局路由窗口。
+     */
+    private static final long CHNROUTES_READY_WAIT_MS = 1200;
+    private static final long CHNROUTES_READY_POLL_MS = 50;
+    /**
+     * chnroutes-ready 重建重试延迟：
+     * 与 CHNROUTES_READY_WAIT_MS 保持同量级，给首次重建释放配置锁的时间，同时不把切换窗口拉得过长。
+     */
+    private static final long CHNROUTES_READY_REBUILD_RETRY_MS = 1200;
+    private static final int CHNROUTES_READY_REBUILD_MAX_RETRIES = 3;
+    private static final long CHNROUTES_READY_FALLBACK_POLL_INTERVAL_MS = 800;
+    private static final int CHNROUTES_READY_FALLBACK_POLL_MAX_ATTEMPTS = 20;
     /** 用户主动切换配置时待处理重建的 Network 引用 */
     private volatile Network pendingUserConfigNetwork = null;
     /** 用户主动切换配置的 debounce Runnable：合并短时间内多个配置变更事件为一次 VPN 重建 */
@@ -240,6 +254,14 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         LogUtil.i(TAG, "用户配置变更 debounce 到期，执行 VPN 重建");
         updateTunnelConfig(network, "userConfigChangeRunnable(用户切换配置)");
     };
+    /** chnroutes 就绪重建在配置锁竞争时的重试任务（不受 network_auto_rebuild 开关影响） */
+    private final Runnable chnroutesReadyRebuildRetryRunnable = this::rebuildVpnForChnroutesReady;
+    private volatile int chnroutesReadyRebuildRetryCount = 0;
+    /** chnroutes 就绪回调兜底轮询：防御极端机型下监听回调丢失，保证最终切换到 CHINA_DIRECT。 */
+    private final Runnable chnroutesReadyFallbackPollRunnable = this::pollChnroutesReadyFallback;
+    private volatile int chnroutesReadyFallbackPollAttempts = 0;
+    private final AtomicBoolean chnroutesReadyRebuildRequested =
+            new AtomicBoolean(false);
 
     /**
      * 是否启用“网络变化自动重建 VPN”。
@@ -279,8 +301,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 若有另一次 VPN 配置正在进行（例如来自 onNetworkReconfigure 和 networkChangeHandler 同时触发），
      * 后到的调用将在当前配置完成后延迟重建，避免两次并发建立均失败（TransactionTooLargeException 双重触发）。
      */
-    private final java.util.concurrent.atomic.AtomicBoolean isConfiguringVpn =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final AtomicBoolean isConfiguringVpn =
+            new AtomicBoolean(false);
     /** 主线程 Handler，用于首次 establish 前的延迟调度 */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     /** 首次 VPN establish 的延迟 Runnable，用于防止重复调度（ZT SDK 首次加入网络时可能连续触发多次 onNetworkReconfigure） */
@@ -559,7 +581,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                 networkChangeHandler.post(() ->
                         rebuildVpnForCurrentNetwork(
                                 String.format(java.util.Locale.ROOT, FORCE_RECONFIGURE_CALLER_FORMAT, finalReason),
-                                true));
+                                true,
+                                false));
                 return START_STICKY;
             } else {
                 LogUtil.d(TAG, "强制 VPN 重配请求忽略：服务尚未建立 VPN，按常规启动流程继续");
@@ -1631,6 +1654,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             unregisterConnectivityNetworkCallback();
             networkChangeHandler.removeCallbacks(networkChangeRunnable);
             networkChangeHandler.removeCallbacks(learnedRoutePolicyRebuildRunnable);
+            networkChangeHandler.removeCallbacks(chnroutesReadyFallbackPollRunnable);
             LogUtil.i(TAG, "网络自动重建已禁用：跳过物理网络变化回调注册");
             return;
         }
@@ -1750,6 +1774,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             networkChangeHandler.removeCallbacks(networkChangeRunnable);
             networkChangeHandler.removeCallbacks(learnedRoutePolicyRebuildRunnable);
             networkChangeHandler.removeCallbacks(userConfigChangeRunnable);
+            networkChangeHandler.removeCallbacks(chnroutesReadyFallbackPollRunnable);
             networkChangeHandler = null;
         }
         if (networkChangeThread != null) {
@@ -1825,7 +1850,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 以当前 networkId 从数据库读取配置并执行一次 VPN 重建。
      * 用于承接多种“非物理网络变化”触发源（如 chnroutes 就绪、设置页强制重配）。
      */
-    private void rebuildVpnForCurrentNetwork(String caller, boolean forceColdSwitch) {
+    private void rebuildVpnForCurrentNetwork(String caller, boolean forceColdSwitch,
+                                             boolean retryWhenConfigBusy) {
         if (this.vpnSocket == null || this.networkId == 0 || this.node == null) {
             LogUtil.d(TAG, caller + ": VPN 未运行或网络上下文缺失，跳过");
             return;
@@ -1837,7 +1863,34 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     .where(NetworkDao.Properties.NetworkId.eq(this.networkId))
                     .list();
             if (networks.size() == 1) {
-                updateTunnelConfig(networks.get(0), caller, null, forceColdSwitch);
+                boolean updated = updateTunnelConfig(networks.get(0), caller, null, forceColdSwitch);
+                if (updated && retryWhenConfigBusy) {
+                    chnroutesReadyRebuildRetryCount = 0;
+                    chnroutesReadyRebuildRequested.set(false);
+                }
+                if (!updated && retryWhenConfigBusy) {
+                    if (chnroutesReadyRebuildRetryCount >= CHNROUTES_READY_REBUILD_MAX_RETRIES) {
+                        LogUtil.w(TAG, caller + ": 与当前 VPN 重建并发，已达到最大重试次数 "
+                                + CHNROUTES_READY_REBUILD_MAX_RETRIES + "，停止重试");
+                        chnroutesReadyRebuildRequested.set(false);
+                        return;
+                    }
+                    ensureNetworkChangeHandler();
+                    if (networkChangeHandler != null) {
+                        chnroutesReadyRebuildRetryCount++;
+                        networkChangeHandler.removeCallbacks(chnroutesReadyRebuildRetryRunnable);
+                        networkChangeHandler.postDelayed(
+                                chnroutesReadyRebuildRetryRunnable,
+                                CHNROUTES_READY_REBUILD_RETRY_MS
+                        );
+                        LogUtil.w(TAG, caller + ": 与当前 VPN 重建并发，"
+                                + CHNROUTES_READY_REBUILD_RETRY_MS + "ms 后重试（"
+                                + chnroutesReadyRebuildRetryCount + "/"
+                                + CHNROUTES_READY_REBUILD_MAX_RETRIES + "）");
+                    } else {
+                        LogUtil.w(TAG, caller + ": 无法安排重试，networkChangeHandler 未初始化");
+                    }
+                }
             } else {
                 LogUtil.w(TAG, caller + ": 未找到唯一网络记录，size=" + networks.size());
             }
@@ -1853,7 +1906,61 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 该重建用于将“临时全局路由”切换为 CHINA_DIRECT 精确分流。
      */
     private void rebuildVpnForChnroutesReady() {
-        rebuildVpnForCurrentNetwork("chnroutesReady(数据就绪切换CHINA_DIRECT)", false);
+        if (networkChangeHandler != null) {
+            networkChangeHandler.removeCallbacks(chnroutesReadyRebuildRetryRunnable);
+            networkChangeHandler.removeCallbacks(chnroutesReadyFallbackPollRunnable);
+        }
+        rebuildVpnForCurrentNetwork("chnroutesReady(数据就绪切换CHINA_DIRECT)", false, true);
+    }
+
+    private void pollChnroutesReadyFallback() {
+        SmartRoutingManager router = SmartRoutingManager.getInstance(this);
+        if (router.isChnroutesReady()) {
+            LogUtil.i(TAG, "chnroutes 轮询检测已就绪，触发 CHINA_DIRECT VPN 路由重建");
+            requestChnroutesReadyRebuildIfNeeded("chnroutesFallbackPoll");
+            return;
+        }
+        if (chnroutesReadyFallbackPollAttempts >= CHNROUTES_READY_FALLBACK_POLL_MAX_ATTEMPTS) {
+            LogUtil.w(TAG, "chnroutes 兜底轮询达到上限仍未就绪，停止轮询");
+            return;
+        }
+        chnroutesReadyFallbackPollAttempts++;
+        ensureNetworkChangeHandler();
+        if (networkChangeHandler != null) {
+            networkChangeHandler.postDelayed(
+                    chnroutesReadyFallbackPollRunnable,
+                    CHNROUTES_READY_FALLBACK_POLL_INTERVAL_MS
+            );
+        }
+    }
+
+    private void requestChnroutesReadyRebuildIfNeeded(String source) {
+        if (!chnroutesReadyRebuildRequested.compareAndSet(false, true)) {
+            LogUtil.d(TAG, source + ": chnroutes 就绪重建已请求，跳过重复触发");
+            return;
+        }
+        rebuildVpnForChnroutesReady();
+    }
+
+    /**
+     * 在有限时间内等待 chnroutes 就绪，避免首次建链时的短暂竞态窗口。
+     */
+    private boolean waitForChnroutesReady(SmartRoutingManager router, long timeoutMs) {
+        if (router == null || router.isChnroutesReady()) return true;
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            LogUtil.w(TAG, "waitForChnroutesReady 在主线程调用，跳过等待以避免阻塞");
+            return router.isChnroutesReady();
+        }
+        if (timeoutMs <= 0L) return router.isChnroutesReady();
+        long deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs;
+        while (!router.isChnroutesReady()) {
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (now >= deadline) break;
+            long sleepMs = Math.min(CHNROUTES_READY_POLL_MS, deadline - now);
+            // 防止在临近 deadline 时出现 0ms busy-loop。
+            android.os.SystemClock.sleep(Math.max(sleepMs, 1L));
+        }
+        return router.isChnroutesReady();
     }
     
     /**
@@ -2119,6 +2226,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
         LogUtil.i(TAG, "CHINA_DIRECT 模式：已添加国内 DNS 服务器（114DNS / AliDNS）");
+        LogUtil.i(LogUtil.DNS_TAG, "ANCHOR DNS_PATH_CHINA_DIRECT_DOMESTIC");
     }
 
     /**
@@ -2137,6 +2245,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
         }
         LogUtil.i(TAG, "全局代理模式：已添加国际 DNS 服务器（Google DNS / Cloudflare DNS）");
+        LogUtil.i(LogUtil.DNS_TAG, "ANCHOR DNS_PATH_GLOBAL_INTERNATIONAL");
     }
 
     /**
@@ -2186,15 +2295,44 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (zerotierGateway != null) defaultTunRoute.setGateway(zerotierGateway);
         this.tunTapAdapter.addRouteAndNetwork(defaultTunRoute, networkId);
 
+        SmartRoutingManager.OnChnroutesReadyListener chnroutesReadyRebuildTrigger = () -> {
+            LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
+            tencentCidrsVerified = false;
+            chnroutesReadyRebuildRetryCount = 0;
+            requestChnroutesReadyRebuildIfNeeded("chnroutesReadyListener");
+        };
+        boolean chnroutesReadyAtEntry = router.isChnroutesReady();
+        if (chnroutesReadyAtEntry) {
+            // 启动时若使用了缓存 chnroutes 建链，仍需监听“下一次后台刷新完成”，
+            // 以便在数据更新后重建一次路由，避免继续使用旧骨架导致国内 IP 仍进 TUN。
+            chnroutesReadyRebuildRequested.set(false);
+            router.setOnChnroutesReadyListener(chnroutesReadyRebuildTrigger, false);
+        }
+        if (!chnroutesReadyAtEntry) {
+            long waitStart = android.os.SystemClock.elapsedRealtime();
+            boolean becameReady = waitForChnroutesReady(router, CHNROUTES_READY_WAIT_MS);
+            long waitedMs = android.os.SystemClock.elapsedRealtime() - waitStart;
+            if (becameReady) {
+                LogUtil.i(TAG, "CHINA_DIRECT 模式：chnroutes 启动等待 " + waitedMs
+                        + "ms 后就绪，直接应用精确分流路由");
+            }
+        }
+
         if (!router.isChnroutesReady()) {
             // chnroutes 尚未加载，临时使用全局路由，数据就绪后触发重建
-            LogUtil.w(TAG, "CHINA_DIRECT 模式：chnroutes 尚未加载，临时全局路由，就绪后重建");
-            router.setOnChnroutesReadyListener(() -> {
-                LogUtil.i(TAG, "chnroutes 已就绪，触发 CHINA_DIRECT VPN 路由重建");
-                tencentCidrsVerified = false;
-                ensureNetworkChangeHandler();
-                networkChangeHandler.post(this::rebuildVpnForChnroutesReady);
-            });
+            LogUtil.w(TAG, "CHINA_DIRECT 模式：chnroutes 在 " + CHNROUTES_READY_WAIT_MS
+                    + "ms 等待窗口内仍未就绪，临时全局路由，就绪后重建");
+            chnroutesReadyRebuildRequested.set(false);
+            chnroutesReadyFallbackPollAttempts = 0;
+            ensureNetworkChangeHandler();
+            if (networkChangeHandler != null) {
+                networkChangeHandler.removeCallbacks(chnroutesReadyFallbackPollRunnable);
+                networkChangeHandler.postDelayed(
+                        chnroutesReadyFallbackPollRunnable,
+                        CHNROUTES_READY_FALLBACK_POLL_INTERVAL_MS
+                );
+            }
+            router.setOnChnroutesReadyListener(chnroutesReadyRebuildTrigger);
             addGlobalRoutesToBuilder(builder, localSubnets);
             return;
         }
@@ -2259,6 +2397,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             LogUtil.d(TAG, "CHINA_DIRECT (Android 13+): 0.0.0.0/0 + 排除 "
                     + excluded + " 条中国 IP（超级聚合，全量 " + router.getChinaCidrs().size()
                     + " 条，预算 " + routeBudget + "）+ " + localSubnets.size() + " 个本地子网");
+            LogUtil.i(LogUtil.ROUTE_TAG, "ROUTE_TABLE_COUNT CHINA_DIRECT_A13: addRoute=1, excludeChina="
+                    + excluded + ", excludeLocal=" + localSubnets.size() + ", totalRuleOps="
+                    + (1 + excluded + localSubnets.size()));
         } else {
             // Android 12-：添加非中国 CIDR 补集，每条再剔除本地活跃子网。
             // 使用超级聚合后的非中国补集（通常 ≤ 1 500 条），远小于之前的 8 000-12 000 条。
@@ -2293,6 +2434,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             }
             LogUtil.i(TAG, "CHINA_DIRECT (Android 12-): 添加 " + added + "/" + nonChina.size()
                     + " 条非中国路由（超级聚合）");
+            LogUtil.i(LogUtil.ROUTE_TAG, "ROUTE_TABLE_COUNT CHINA_DIRECT_LEGACY: addedRoutes="
+                    + added + ", candidateNonChina=" + nonChina.size() + ", localSubnets="
+                    + localSubnets.size());
         }
     }
 
@@ -2305,6 +2449,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             for (long[] s : localSubnets) {
                 builder.excludeRoute(new IpPrefix(longToIpv4Addr(s[0]), (int) s[1]));
             }
+            LogUtil.i(LogUtil.ROUTE_TAG, "ROUTE_TABLE_COUNT GLOBAL_A13: addRoute=1, excludeLocal="
+                    + localSubnets.size() + ", totalRuleOps=" + (1 + localSubnets.size()));
         } else {
             List<long[]> vpnRoutes = localSubnets.isEmpty()
                     ? Collections.singletonList(new long[]{0L, 0L})
@@ -2312,6 +2458,8 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             for (long[] r : vpnRoutes) {
                 builder.addRoute(longToIpv4Addr(r[0]), (int) r[1]);
             }
+            LogUtil.i(LogUtil.ROUTE_TAG, "ROUTE_TABLE_COUNT GLOBAL_LEGACY: addedRoutes="
+                    + vpnRoutes.size() + ", localSubnets=" + localSubnets.size());
         }
     }
 

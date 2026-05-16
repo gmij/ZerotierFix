@@ -846,6 +846,14 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
                 if (smartRoutingManager != null) {
                     java.util.List<DnsPacketParser.DnsRecord> records =
                             DnsPacketParser.parseFromIpPacket(frameData);
+                    if (!records.isEmpty()) {
+                        StringBuilder anchor = new StringBuilder(96);
+                        anchor.append("ANCHOR DNS_FRAME_CAPTURED records=").append(records.size())
+                                .append(" mode=").append(smartRoutingMode)
+                                .append(" src=").append(sourceIP != null ? sourceIP.getHostAddress() : "?")
+                                .append(" dst=").append(destIP != null ? destIP.getHostAddress() : "?");
+                        LogUtil.i(LogUtil.DNS_TAG, anchor.toString());
+                    }
                     for (DnsPacketParser.DnsRecord record : records) {
                         smartRoutingManager.onDnsRecord(record);
                     }
