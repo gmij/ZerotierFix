@@ -41,14 +41,27 @@ tasks.register("ensureZeroTierCoreSubmodule") {
             errorOutput cmdErr
             ignoreExitValue true
         }
-        if (result.exitValue != 0 || !zeroTierCoreJavaDir.exists() || !zeroTierCoreNodeDir.exists()) {
+        def coreReady = zeroTierCoreJavaDir.exists() && zeroTierCoreNodeDir.exists()
+        def cmdOutput = "stdout:\n${cmdOut.toString('UTF-8').trim()}\n\nstderr:\n${cmdErr.toString('UTF-8').trim()}"
+        if (result.exitValue != 0) {
             throw new GradleException(
                     "ZeroTier SDK submodule is missing. Run:\n" +
                             "  git submodule update --init --recursive externals/core\n" +
                             "or clone with:\n" +
                             "  git clone --recursive <repo-url>\n" +
                             "git output:\n" +
-                            (cmdOut.toString("UTF-8") + cmdErr.toString("UTF-8")).trim()
+                            cmdOutput
+            )
+        }
+        if (!coreReady) {
+            throw new GradleException(
+                    "ZeroTier SDK submodule command succeeded, but required paths are still missing:\n" +
+                            "  - ${zeroTierCoreJavaDir}\n" +
+                            "  - ${zeroTierCoreNodeDir}\n" +
+                            "Please verify submodule content with:\n" +
+                            "  git submodule status --recursive\n" +
+                            "git output:\n" +
+                            cmdOutput
             )
         }
         logger.lifecycle("ZeroTier SDK submodule ready: ${zeroTierCoreDir}")
