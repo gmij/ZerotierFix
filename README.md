@@ -72,19 +72,19 @@ You can configure how traffic is routed through ZeroTier:
 
 ZeroTier JNI SDK comes from git submodule `externals/core` (upstream: `zerotier/ZeroTierOne`).
 
-首次拉取或子模块缺失时，请先执行：
+For first checkout, or when the submodule is missing, run:
 
 ```bash
 git submodule update --init --recursive externals/core
 ```
 
-然后执行编译检查：
+Then run compile check:
 
 ```bash
 ./gradlew :app:compileDebugJavaWithJavac
 ```
 
-现在 Gradle 在构建前会自动尝试初始化 `externals/core`；如果失败，会给出明确提示命令。
+Gradle now attempts to initialize `externals/core` automatically before build; if it fails, it prints actionable setup commands.
 
 ## Copyright
 
