@@ -32,9 +32,13 @@ tasks.register("ensureZeroTierCoreSubmodule") {
             return
         }
         logger.lifecycle("ZeroTier SDK submodule missing, trying to initialize externals/core ...")
+        def cmdOut = new ByteArrayOutputStream()
+        def cmdErr = new ByteArrayOutputStream()
         def result = exec {
             workingDir rootDir
             commandLine "git", "submodule", "update", "--init", "--recursive", "externals/core"
+            standardOutput cmdOut
+            errorOutput cmdErr
             ignoreExitValue true
         }
         if (result.exitValue != 0 || !zeroTierCoreJavaDir.exists() || !zeroTierCoreNodeDir.exists()) {
@@ -42,7 +46,9 @@ tasks.register("ensureZeroTierCoreSubmodule") {
                     "ZeroTier SDK submodule is missing. Run:\n" +
                             "  git submodule update --init --recursive externals/core\n" +
                             "or clone with:\n" +
-                            "  git clone --recursive <repo-url>\n"
+                            "  git clone --recursive <repo-url>\n" +
+                            "git output:\n" +
+                            (cmdOut.toString("UTF-8") + cmdErr.toString("UTF-8")).trim()
             )
         }
         logger.lifecycle("ZeroTier SDK submodule ready: ${zeroTierCoreDir}")
@@ -60,7 +66,7 @@ task clean(type: Delete) {
 }
 
 gradle.projectsEvaluated {
-    [project(":core"), project(":app")].each { p ->
+    rootProject.subprojects.each { p ->
         p.tasks.matching { it.name == "preBuild" }.configureEach {
             dependsOn(rootProject.tasks.named("ensureZeroTierCoreSubmodule"))
         }
