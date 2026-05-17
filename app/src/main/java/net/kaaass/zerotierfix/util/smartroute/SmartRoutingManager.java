@@ -372,7 +372,6 @@ public class SmartRoutingManager {
         // 无论是否中国 IP，先更新 IP→域名 映射
         ipToDomain.put(realIp.getHostAddress(), domainLower);
         if (isGfwDomain(domainLower) || isGoogleGlobalServiceDomain(domainLower)) {
-            learnedDomainPreferences.put(domainLower, LearnedRoutePolicyStore.Preference.VIA_ZT);
             return;
         }
         if (isChineseIp(realIp)) {
@@ -616,7 +615,6 @@ public class SmartRoutingManager {
         } else if (isChineseIp(record.ip)) {
             // Fake-IP 模式：缓存中国域名，加速后续 shouldRouteViaTunnel() 步骤③判决
             domainChineseness.put(domainLower, Boolean.TRUE);
-            learnedDomainPreferences.put(domainLower, LearnedRoutePolicyStore.Preference.DIRECT);
             if (isLiveStreamingDomain(record.domain)) {
                 LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
                         + " -> direct (CN live)");

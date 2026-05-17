@@ -236,8 +236,6 @@ public class DirectConnectionManager {
 
         long sessionKey = makeKey(srcIpBytes, srcPort, dstIpBytes, dstPort);
         UdpSession session = udpSessions.get(sessionKey);
-        String learnedDomain = null;
-        InetAddress learnedRealIp = null;
 
         if (session == null) {
             InetAddress fakeIpAddr = FakeIpPool.intToAddr(dstIpInt);
@@ -254,15 +252,13 @@ public class DirectConnectionManager {
             }
             fakeIpPool.storeRealIp(fakeIpAddr, realIp);
 
-            session = new UdpSession(sessionKey, srcIpBytes, dstIpBytes, srcPort, dstPort, realIp);
+            session = new UdpSession(sessionKey, srcIpBytes, dstIpBytes, srcPort, dstPort, domain, realIp);
             udpSessions.put(sessionKey, session);
             final UdpSession finalSession = session;
             executor.submit(() -> finalSession.startReadLoop());
-            learnedDomain = domain;
-            learnedRealIp = realIp;
         }
-        if (session.send(payload) && learnedDomain != null && learnedRealIp != null && smartRouter != null) {
-            smartRouter.learnFromDirectConnection(learnedDomain, learnedRealIp);
+        if (session.send(payload) && smartRouter != null && session.markLearnedDirect()) {
+            smartRouter.learnFromDirectConnection(session.domain, session.realIp);
         }
         purgeStaleUdpSessions();
         return true;
@@ -451,19 +447,28 @@ public class DirectConnectionManager {
         final byte[] fakeIp;
         final int clientPort;
         final int fakePort;
+        final String domain;
         final InetAddress realIp;
         volatile DatagramSocket socket;
         volatile long lastActivity = System.currentTimeMillis();
         volatile boolean closed = false;
+        private boolean directLearned = false;
 
         UdpSession(long key, byte[] clientIp, byte[] fakeIp,
-                   int clientPort, int fakePort, InetAddress realIp) {
+                   int clientPort, int fakePort, String domain, InetAddress realIp) {
             this.key = key;
             this.clientIp = clientIp;
             this.fakeIp = fakeIp;
             this.clientPort = clientPort;
             this.fakePort = fakePort;
+            this.domain = domain;
             this.realIp = realIp;
+        }
+
+        synchronized boolean markLearnedDirect() {
+            if (directLearned || domain == null) return false;
+            directLearned = true;
+            return true;
         }
 
         boolean send(byte[] payload) {

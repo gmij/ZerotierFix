@@ -39,10 +39,14 @@ public class UdpCom implements PacketSender, Runnable {
         }
     }
 
+    private synchronized DatagramSocket currentSocket() {
+        return this.svrSocket;
+    }
+
     @Override // com.zerotier.sdk.PacketSender
     public int onSendPacketRequested(long j, InetSocketAddress inetSocketAddress, byte[] bArr, int i) {
-        DatagramSocket socket = this.svrSocket;
-        if (socket == null || socket.isClosed()) {
+        DatagramSocket socket = currentSocket();
+        if (socket == null) {
             Log.e(TAG, "Attempted to send packet on a null socket");
             return -1;
         }
@@ -72,7 +76,7 @@ public class UdpCom implements PacketSender, Runnable {
             byte[] bArr = new byte[16384];
             while (!Thread.interrupted() && running) {
                 jArr[0] = 0;
-                DatagramSocket socket = this.svrSocket;
+                DatagramSocket socket = currentSocket();
                 if (socket == null || socket.isClosed()) {
                     try {
                         Thread.sleep(50);
