@@ -496,22 +496,6 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             }
         }
 
-        if (fakeIpModeActive && shouldDirectRealIpv4InFakeIpMode(packetData)) {
-            DirectConnectionManager dcm = this.directConnectionManager;
-            if (dcm != null) {
-                int protocol = packetData[9] & 0xFF;
-                boolean handled = false;
-                if (protocol == TCP_PROTOCOL) {
-                    handled = dcm.handleTcpPacket(packetData);
-                } else if (protocol == UDP_PROTOCOL) {
-                    handled = dcm.handleUdpPacket(packetData);
-                }
-                if (handled) {
-                    return;
-                }
-            }
-        }
-
         // ── 超快路径：无 InetAddress 分配 ──
         // 直接从原始字节提取目的 IPv4（偏移 16–19），避免在每个数据包上都分配
         // InetAddress / byte[] 对象，彻底消除视频/直播高频数据包路径上的 GC 压力。
@@ -699,29 +683,6 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             DebugLog.d(TAG, "ARP Request Sent!");
             this.ztService.setNextBackgroundTaskDeadline(nextDeadline[0]);
         }
-    }
-
-    private boolean shouldDirectRealIpv4InFakeIpMode(byte[] packetData) {
-        if (packetData == null || packetData.length < 20 || smartRoutingManager == null) return false;
-        int protocol = packetData[9] & 0xFF;
-        if (protocol != TCP_PROTOCOL && protocol != UDP_PROTOCOL) return false;
-        int rawDestIp = IPPacketUtils.getDestIPv4AsInt(packetData);
-        if (!isPublicIpv4Candidate(rawDestIp) || FakeIpPool.isFakeIpInt(rawDestIp)) return false;
-        InetAddress destIp = IPPacketUtils.getDestIP(packetData);
-        return (destIp instanceof Inet4Address) && smartRoutingManager.isChineseIp(destIp);
-    }
-
-    private boolean isPublicIpv4Candidate(int rawDestIp) {
-        long ipLong = rawDestIp & 0xFFFFFFFFL;
-        if (ipLong == 0L) return false;
-        if ((ipLong & 0xFF000000L) == 0x00000000L) return false;        // 0.0.0.0/8
-        if ((ipLong & 0xFF000000L) == 0x0A000000L) return false;        // 10.0.0.0/8
-        if ((ipLong & 0xFF000000L) == 0x7F000000L) return false;        // 127.0.0.0/8
-        if ((ipLong & 0xFFF00000L) == 0xAC100000L) return false;        // 172.16.0.0/12
-        if ((ipLong & 0xFFFF0000L) == 0xC0A80000L) return false;        // 192.168.0.0/16
-        if ((ipLong & 0xFFFF0000L) == 0xA9FE0000L) return false;        // 169.254.0.0/16
-        if ((ipLong & 0xFFC00000L) == 0x64400000L) return false;        // 100.64.0.0/10
-        return (ipLong >>> 28) != IPV4_MULTICAST_HIGH_NIBBLE;           // 224.0.0.0/4
     }
 
     private void handleIPv6Packet(byte[] packetData) {

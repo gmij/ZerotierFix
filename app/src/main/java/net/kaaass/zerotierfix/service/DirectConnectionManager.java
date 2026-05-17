@@ -137,7 +137,7 @@ public class DirectConnectionManager {
         System.arraycopy(packet, 16, dstIpBytes, 0, 4);
         int dstIpInt = bytesToInt(dstIpBytes);
 
-        boolean isFakeIpDestination = FakeIpPool.isFakeIpInt(dstIpInt);
+        if (!FakeIpPool.isFakeIpInt(dstIpInt)) return false;
 
         int tcpOff = ipHdrLen;
         int srcPort = ((packet[tcpOff] & 0xFF) << 8) | (packet[tcpOff + 1] & 0xFF);
@@ -160,27 +160,15 @@ public class DirectConnectionManager {
                 session.sendSynAck(seqNum);
                 return true;
             }
-            String domain = null;
-            InetAddress presetRealIp = null;
-            if (isFakeIpDestination) {
-                InetAddress fakeIpAddr = FakeIpPool.intToAddr(dstIpInt);
-                domain = fakeIpPool.getDomain(fakeIpAddr);
-                if (domain == null) {
-                    LogUtil.w(TAG, "TCP SYN: 找不到 fake IP " + FakeIpPool.intToString(dstIpInt) + " 对应的域名，丢弃");
-                    sendRst(srcIpBytes, dstIpBytes, srcPort, dstPort, 0, seqNum + 1);
-                    return true;
-                }
-            } else {
-                try {
-                    presetRealIp = InetAddress.getByAddress(dstIpBytes);
-                } catch (UnknownHostException e) {
-                    LogUtil.w(TAG, "TCP SYN: 无法识别直连目标 IP，丢弃");
-                    sendRst(srcIpBytes, dstIpBytes, srcPort, dstPort, 0, seqNum + 1);
-                    return true;
-                }
+            InetAddress fakeIpAddr = FakeIpPool.intToAddr(dstIpInt);
+            String domain = fakeIpPool.getDomain(fakeIpAddr);
+            if (domain == null) {
+                LogUtil.w(TAG, "TCP SYN: 找不到 fake IP " + FakeIpPool.intToString(dstIpInt) + " 对应的域名，丢弃");
+                sendRst(srcIpBytes, dstIpBytes, srcPort, dstPort, 0, seqNum + 1);
+                return true;
             }
             TcpSession newSession = new TcpSession(sessionKey, srcIpBytes, dstIpBytes,
-                    srcPort, dstPort, domain, presetRealIp, dstPort, seqNum);
+                    srcPort, dstPort, domain, dstPort, seqNum);
             tcpSessions.put(sessionKey, newSession);
             executor.submit(() -> newSession.connect());
             return true;
@@ -239,7 +227,7 @@ public class DirectConnectionManager {
         System.arraycopy(packet, 12, srcIpBytes, 0, 4);
         System.arraycopy(packet, 16, dstIpBytes, 0, 4);
         int dstIpInt = bytesToInt(dstIpBytes);
-        boolean isFakeIpDestination = FakeIpPool.isFakeIpInt(dstIpInt);
+        if (!FakeIpPool.isFakeIpInt(dstIpInt)) return false;
 
         int srcPort = ((packet[ipHdrLen] & 0xFF) << 8) | (packet[ipHdrLen + 1] & 0xFF);
         int dstPort = ((packet[ipHdrLen + 2] & 0xFF) << 8) | (packet[ipHdrLen + 3] & 0xFF);
@@ -252,29 +240,18 @@ public class DirectConnectionManager {
         UdpSession session = udpSessions.get(sessionKey);
 
         if (session == null) {
-            String domain = null;
-            InetAddress realIp;
-            if (isFakeIpDestination) {
-                InetAddress fakeIpAddr = FakeIpPool.intToAddr(dstIpInt);
-                domain = fakeIpPool.getDomain(fakeIpAddr);
-                if (domain == null) {
-                    LogUtil.w(TAG, "UDP: 找不到 fake IP 对应域名，丢弃");
-                    return true;
-                }
-                realIp = resolveViaDirect(domain);
-                if (realIp == null) {
-                    LogUtil.w(TAG, "UDP: 无法解析 " + domain + "，丢弃");
-                    return true;
-                }
-                fakeIpPool.storeRealIp(fakeIpAddr, realIp);
-            } else {
-                try {
-                    realIp = InetAddress.getByAddress(dstIpBytes);
-                } catch (UnknownHostException e) {
-                    LogUtil.w(TAG, "UDP: 无法识别直连目标 IP，丢弃");
-                    return true;
-                }
+            InetAddress fakeIpAddr = FakeIpPool.intToAddr(dstIpInt);
+            String domain = fakeIpPool.getDomain(fakeIpAddr);
+            if (domain == null) {
+                LogUtil.w(TAG, "UDP: 找不到 fake IP 对应域名，丢弃");
+                return true;
             }
+            InetAddress realIp = resolveViaDirect(domain);
+            if (realIp == null) {
+                LogUtil.w(TAG, "UDP: 无法解析 " + domain + "，丢弃");
+                return true;
+            }
+            fakeIpPool.storeRealIp(fakeIpAddr, realIp);
 
             session = new UdpSession(sessionKey, srcIpBytes, dstIpBytes, srcPort, dstPort, domain, realIp);
             udpSessions.put(sessionKey, session);
@@ -299,7 +276,6 @@ public class DirectConnectionManager {
         final int clientPort;
         final int fakePort;      // = 真实目标端口
         final String domain;
-        final InetAddress presetRealIp;
         final int realPort;
 
         // 客户端（app → proxy）序列号跟踪
@@ -315,15 +291,13 @@ public class DirectConnectionManager {
         volatile boolean closed = false;
 
         TcpSession(long key, byte[] clientIp, byte[] fakeIp,
-                   int clientPort, int fakePort, String domain, InetAddress presetRealIp,
-                   int realPort, int clientIsn) {
+                   int clientPort, int fakePort, String domain, int realPort, int clientIsn) {
             this.key       = key;
             this.clientIp  = clientIp;
             this.fakeIp    = fakeIp;
             this.clientPort = clientPort;
             this.fakePort  = fakePort;
             this.domain    = domain;
-            this.presetRealIp = presetRealIp;
             this.realPort  = realPort;
             this.clientIsn = clientIsn;
             this.clientNextSeq = clientIsn + 1; // SYN 占一个序号
@@ -335,20 +309,17 @@ public class DirectConnectionManager {
         void connect() {
             try {
                 // 1. 解析真实 IP
-                InetAddress realIp = presetRealIp;
+                InetAddress fakeIpAddr;
+                try {
+                    fakeIpAddr = InetAddress.getByAddress(fakeIp);
+                } catch (UnknownHostException e) {
+                    close(); return;
+                }
+                InetAddress realIp = fakeIpPool.getRealIp(fakeIpAddr);
                 if (realIp == null) {
-                    InetAddress fakeIpAddr;
-                    try {
-                        fakeIpAddr = InetAddress.getByAddress(fakeIp);
-                    } catch (UnknownHostException e) {
-                        close(); return;
-                    }
-                    realIp = fakeIpPool.getRealIp(fakeIpAddr);
-                    if (realIp == null) {
-                        realIp = resolveViaDirect(domain);
-                        if (realIp != null) {
-                            fakeIpPool.storeRealIp(fakeIpAddr, realIp);
-                        }
+                    realIp = resolveViaDirect(domain);
+                    if (realIp != null) {
+                        fakeIpPool.storeRealIp(fakeIpAddr, realIp);
                     }
                 }
                 if (realIp == null) {
@@ -381,16 +352,10 @@ public class DirectConnectionManager {
                 executor.submit(this::readFromServer);
 
             } catch (IOException e) {
-                if (!closed) LogUtil.w(TAG, "TCP connect(" + describeTarget() + "): " + e.getMessage());
+                if (!closed) LogUtil.w(TAG, "TCP connect(" + domain + "): " + e.getMessage());
                 sendRst(clientIp, fakeIp, clientPort, fakePort, serverIsn, clientNextSeq);
                 cleanup();
             }
-        }
-
-        private String describeTarget() {
-            if (domain != null) return domain;
-            if (presetRealIp != null) return presetRealIp.getHostAddress();
-            return "unknown";
         }
 
         void sendSynAck(int clientSynSeq) {
