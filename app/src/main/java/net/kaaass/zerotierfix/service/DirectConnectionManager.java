@@ -3,6 +3,7 @@ package net.kaaass.zerotierfix.service;
 import android.net.VpnService;
 
 import net.kaaass.zerotierfix.util.LogUtil;
+import net.kaaass.zerotierfix.util.NetworkInfoUtils;
 import net.kaaass.zerotierfix.util.smartroute.FakeIpPool;
 import net.kaaass.zerotierfix.util.smartroute.SmartRoutingManager;
 
@@ -17,8 +18,10 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.UnknownHostException;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -257,7 +260,9 @@ public class DirectConnectionManager {
             final UdpSession finalSession = session;
             executor.submit(() -> finalSession.startReadLoop());
         }
-        if (session.send(payload) && smartRouter != null && session.markLearnedDirect()) {
+        boolean sent = session.send(payload);
+        boolean shouldLearnDirect = sent && smartRouter != null && session.markLearnedDirect();
+        if (shouldLearnDirect) {
             smartRouter.learnFromDirectConnection(session.domain, session.realIp);
         }
         purgeStaleUdpSessions();
@@ -527,7 +532,7 @@ public class DirectConnectionManager {
      */
     InetAddress resolveViaDirect(String domain) {
         if (domain == null) return null;
-        for (String dnsServer : DIRECT_DNS_SERVERS) {
+        for (String dnsServer : getDirectDnsServers()) {
             try {
                 InetAddress result = doUdpDnsQuery(domain, dnsServer, 53, RESOLVE_TIMEOUT_MS);
                 if (result != null) return result;
@@ -536,6 +541,14 @@ public class DirectConnectionManager {
             }
         }
         return null;
+    }
+
+    private String[] getDirectDnsServers() {
+        Set<String> dnsServers = new LinkedHashSet<>(NetworkInfoUtils.getPhysicalNetworkDnsServers(vpnService));
+        for (String fallback : DIRECT_DNS_SERVERS) {
+            dnsServers.add(fallback);
+        }
+        return dnsServers.toArray(new String[0]);
     }
 
     private InetAddress doUdpDnsQuery(String domain, String dnsServer, int dnsPort, long timeoutMs)
