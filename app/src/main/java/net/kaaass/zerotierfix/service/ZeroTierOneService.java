@@ -615,13 +615,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             try {
                 // 创建本地 ZT 服务 Socket，监听本地端口
                 if (this.svrSocket == null) {
-                    this.svrSocket = new DatagramSocket(null);
-                    this.svrSocket.setReuseAddress(true);
-                    this.svrSocket.setSoTimeout(5000);
-                    this.svrSocket.bind(new InetSocketAddress(9994));
-                }
-                if (!protect(this.svrSocket)) {
-                    LogUtil.e(TAG, "Error protecting UDP socket from feedback loop.");
+                    this.svrSocket = createProtectedNodeSocket();
                 }
 
                 // 创建本地节点
@@ -711,6 +705,9 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         if (this.svrSocket != null) {
             this.svrSocket.close();
             this.svrSocket = null;
+        }
+        if (this.udpCom != null) {
+            this.udpCom.stopRunning();
         }
         if (this.udpThread != null && this.udpThread.isAlive()) {
             this.udpThread.interrupt();
@@ -1524,7 +1521,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 在新 establish() 成功创建新 TUN fd 之后调用，确保系统 VPN 图标无缝切换。
      */
     private void closeOldVpnResources(FileInputStream oldIn, FileOutputStream oldOut,
-                                       ParcelFileDescriptor oldVpnSocket) {
+                                        ParcelFileDescriptor oldVpnSocket) {
         if (oldIn != null) {
             try {
                 oldIn.close();
@@ -1545,6 +1542,39 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             } catch (Exception e) {
                 LogUtil.d(TAG, "Error closing old VPN socket: " + e.getMessage());
             }
+        }
+    }
+
+    private DatagramSocket createProtectedNodeSocket() throws Exception {
+        DatagramSocket socket = new DatagramSocket(null);
+        try {
+            socket.setReuseAddress(true);
+            socket.setSoTimeout(5000);
+            socket.bind(new InetSocketAddress(9994));
+            if (!protect(socket)) {
+                LogUtil.e(TAG, "Error protecting UDP socket from feedback loop.");
+            }
+            return socket;
+        } catch (Exception e) {
+            try {
+                socket.close();
+            } catch (Exception ignored) {
+            }
+            throw e;
+        }
+    }
+
+    private void refreshProtectedNodeSocket(String caller) {
+        if (this.udpCom == null) {
+            return;
+        }
+        try {
+            DatagramSocket newSocket = createProtectedNodeSocket();
+            this.udpCom.replaceSocket(newSocket);
+            this.svrSocket = newSocket;
+            LogUtil.i(TAG, caller + ": 已刷新 ZeroTier 上行 UDP socket，跟随新的物理网络");
+        } catch (Exception e) {
+            LogUtil.w(TAG, caller + ": 刷新 ZeroTier 上行 UDP socket 失败: " + e.getMessage());
         }
     }
 
@@ -1770,6 +1800,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         // 触发 VPN 隧道重建
         if (this.networkId != 0 && this.node != null) {
             LogUtil.i(TAG, "网络环境变化，将重新配置 VPN 路由");
+            refreshProtectedNodeSocket("doNetworkChangedUpdate");
             DatabaseUtils.readLock.lock();
             try {
                 var daoSession = ((ZerotierFixApplication) getApplication()).getDaoSession();

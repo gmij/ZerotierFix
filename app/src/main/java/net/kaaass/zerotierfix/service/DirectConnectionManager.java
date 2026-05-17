@@ -236,6 +236,8 @@ public class DirectConnectionManager {
 
         long sessionKey = makeKey(srcIpBytes, srcPort, dstIpBytes, dstPort);
         UdpSession session = udpSessions.get(sessionKey);
+        String learnedDomain = null;
+        InetAddress learnedRealIp = null;
 
         if (session == null) {
             InetAddress fakeIpAddr = FakeIpPool.intToAddr(dstIpInt);
@@ -251,14 +253,17 @@ public class DirectConnectionManager {
                 return true;
             }
             fakeIpPool.storeRealIp(fakeIpAddr, realIp);
-            if (smartRouter != null) smartRouter.learnFromDirectConnection(domain, realIp);
 
             session = new UdpSession(sessionKey, srcIpBytes, dstIpBytes, srcPort, dstPort, realIp);
             udpSessions.put(sessionKey, session);
             final UdpSession finalSession = session;
             executor.submit(() -> finalSession.startReadLoop());
+            learnedDomain = domain;
+            learnedRealIp = realIp;
         }
-        session.send(payload);
+        if (session.send(payload) && learnedDomain != null && learnedRealIp != null && smartRouter != null) {
+            smartRouter.learnFromDirectConnection(learnedDomain, learnedRealIp);
+        }
         purgeStaleUdpSessions();
         return true;
     }
@@ -316,7 +321,6 @@ public class DirectConnectionManager {
                     realIp = resolveViaDirect(domain);
                     if (realIp != null) {
                         fakeIpPool.storeRealIp(fakeIpAddr, realIp);
-                        if (smartRouter != null) smartRouter.learnFromDirectConnection(domain, realIp);
                     }
                 }
                 if (realIp == null) {
@@ -338,6 +342,9 @@ public class DirectConnectionManager {
                 s.connect(new InetSocketAddress(realIp, realPort), TCP_CONNECT_TIMEOUT_MS);
                 this.socket = s;
                 this.established = true;
+                if (smartRouter != null) {
+                    smartRouter.learnFromDirectConnection(domain, realIp);
+                }
 
                 // 3. 发 SYN-ACK 给 app
                 sendSynAck(clientIsn);
@@ -459,7 +466,7 @@ public class DirectConnectionManager {
             this.realIp = realIp;
         }
 
-        void send(byte[] payload) {
+        boolean send(byte[] payload) {
             try {
                 if (socket == null || socket.isClosed()) {
                     socket = new DatagramSocket();
@@ -468,8 +475,10 @@ public class DirectConnectionManager {
                 DatagramPacket dp = new DatagramPacket(payload, payload.length, realIp, fakePort);
                 socket.send(dp);
                 lastActivity = System.currentTimeMillis();
+                return true;
             } catch (IOException e) {
                 LogUtil.d(TAG, "UDP send: " + e.getMessage());
+                return false;
             }
         }
 
