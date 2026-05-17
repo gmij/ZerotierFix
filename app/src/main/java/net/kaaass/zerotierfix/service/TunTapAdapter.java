@@ -323,9 +323,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
         this.cachedLocalV4Address = null;
         this.cachedLocalV6Address = null;
         this.destMacFastPath.clear();
-        // connLoggedSet 不在此处清除：VPN 重建不代表物理网络切换，
-        // 同一连接端点无需在每次重建后重复出现在 [CONN] 日志中。
-        // 仅在真正的网络切换时（doNetworkChangedUpdate 调用 clearConnLog()）才清除。
+        // connLoggedSet / chinaDirectLeakWarned 不在此处清除：VPN 重建不代表物理网络切换，
+        // 同一连接端点无需在每次重建后重复出现在 [CONN] 日志中；路由泄漏告警也无需重复发出。
+        // 仅在真正的网络切换时（doNetworkChangedUpdate 调用 clearConnLog()）才清除两者。
     }
 
     private boolean isIPv4Multicast(InetAddress inetAddress) {

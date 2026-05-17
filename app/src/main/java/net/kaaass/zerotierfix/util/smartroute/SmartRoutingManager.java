@@ -914,15 +914,17 @@ public class SmartRoutingManager {
      * 懒计算：若 VPN-safe 路由集合尚未按当前预算计算，立即在调用线程上同步计算。
      *
      * <p>若 skipSuperAggregate=true（Fake-IP 模式），直接使用完整精度的 chinaCidrs，不做超级聚合。
-     * 若 chinaCidrs 尚未加载（启动期间），返回空列表（VPN rebuild 会等到 chnroutes 就绪再调用）。
+     * 若 chinaCidrs 尚未加载（启动期间），不设置 vpnSafeComputed，等 parseChnroutes 完成后再触发真正计算。
      *
-     * <p><b>线程安全</b>：调用者保证在 synchronized(this) 块内或已确认 vpnSafeComputed=false 时调用。
+     * <p>此方法自身已持有 synchronized(this) 锁。
      */
     private synchronized void ensureVpnSafeComputed() {
         if (vpnSafeComputed) return;
         List<CidrBlock> base = this.chinaCidrs;
         if (base.isEmpty()) {
-            // chnroutes 尚未加载，返回空（VPN rebuild 已有 waitForChnroutesReady 保证）
+            // chnroutes 尚未加载：返回空集合，但不置 vpnSafeComputed=true，
+            // 确保 parseChnroutes() 完成后的下次调用能触发真正的计算。
+            // CHINA_DIRECT 路径的 waitForChnroutesReady() 可防止此分支被反复命中。
             currentVpnSafeRoutes = new VpnSafeRouteSet(Collections.emptyList(), Collections.emptyList());
             return;
         }
