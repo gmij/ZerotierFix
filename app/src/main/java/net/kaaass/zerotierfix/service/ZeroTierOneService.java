@@ -194,7 +194,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /** debounce 延迟后执行 VPN 重建的 Runnable */
     private final Runnable networkChangeRunnable = this::doNetworkChangedUpdate;
     /** 防止网络变化事件过于频繁触发重配的最小间隔（毫秒） */
-    private static final long NETWORK_CHANGE_DEBOUNCE_MS = 3000;
+    private static final long NETWORK_CHANGE_DEBOUNCE_MS = 1500;
     /**
      * onNetworkReconfigure 物理网络切换窗口保护的额外扩展时间（毫秒）。
      * 物理网络切换窗口 = NETWORK_CHANGE_DEBOUNCE_MS + NETWORK_CHANGE_WINDOW_EXTENSION_MS。
@@ -204,11 +204,11 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /**
      * onNetworkReconfigure 触发重建前的延迟（毫秒）。
      * 引入此延迟以解决竞态：ZT SDK 监测到底层 socket 断开的速度有时快于 Android CM 触发 onLost，
-     * 导致 sinceNetworkChange 读取到旧值。延迟 1000ms 后 onLost 有充足时间写入 lastPhysicalNetworkChangeTime。
-     * 设置为 1000ms（而非更短的 200ms）是因为在低端设备或高负载下，
-     * ZT SDK 可能比 Android CM 早 800ms+ 感知到物理链路断开，200ms 不足以覆盖此时差。
+     * 导致 sinceNetworkChange 读取到旧值。延迟 500ms 后 onLost 通常已能写入 lastPhysicalNetworkChangeTime。
+     * 这里仍保留显式延迟而非立即重建，是为了覆盖 ZT SDK 与 Android CM 间的短暂事件时差，
+     * 同时减少用户在切网过程中的额外等待。
      */
-    private static final long RECONFIGURE_REBUILD_DELAY_MS = 1000;
+    private static final long RECONFIGURE_REBUILD_DELAY_MS = 500;
     /**
      * 首次 VPN 建链时 onNetworkReconfigure (handler==null) 分支的延迟（毫秒）。
      * 给系统足够时间处理 VPN consent 状态，避免 establish() 过早执行。
@@ -314,7 +314,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     /**
      * VPN 最近一次重建开始的时间戳（{@link android.os.SystemClock#elapsedRealtime()} 毫秒）。
      * 用于抑制 VPN 建立后物理网络的虚假回调（Android 在 establish() 后会重新评估物理网络，
-     * 导致 onAvailable/onLinkPropertiesChanged 在毫秒级触发，形成 3s debounce → 重建 → 触发 → 重建 的无限循环）。
+     * 导致 onAvailable/onLinkPropertiesChanged 在毫秒级触发，形成 debounce → 重建 → 触发 → 重建 的无限循环）。
      * 同样用于抑制 ZT 节点在 VPN 重建后立刻触发的 onNetworkReconfigure。
      */
     private volatile long lastRebuildTime = 0;
@@ -326,12 +326,12 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
      * 若此时距上次 VPN 重建已超过 REBUILD_SETTLE_MS，settle 检查会放行该事件并立即重建，
      * 新 TUN fd 顶替旧 TUN，导致不必要的短时断流。
      * 通过记录物理网络变化时刻，在 onNetworkReconfigure 中额外屏蔽这段"连锁窗口"内的重建，
-     * 让 3s debounce 路径统一处理物理网络切换，避免双重重建。
+     * 让 debounce 路径统一处理物理网络切换，避免双重重建。
      */
     private volatile long lastPhysicalNetworkChangeTime = 0;
     /** VPN 重建后抑制后续虚假网络回调的静默期（毫秒）。应大于 NETWORK_CHANGE_DEBOUNCE_MS。
      * establish() 返回后，OS 会重新评估所有物理网络并触发 onAvailable / onLinkPropertiesChanged；
-     * 12 s 静默期覆盖这些回调的 3 s debounce + 重评估延迟（与路由数量无关），
+     * 12 s 静默期覆盖这些回调的 debounce + 重评估延迟（与路由数量无关），
      * 避免不必要的二次重建导致 VPN 图标消失。 */
     private static final long REBUILD_SETTLE_MS = 12_000;
     /**
@@ -1069,7 +1069,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
         }
         // 使用 debounce 合并短时间内多个用户配置变更事件（如 toggle 全局模式时
         // doUpdatePerAppRouting + doUpdateSmartRoutingMode 会连续触发两个事件）。
-        // 若不合并，第二个事件会命中 isConfiguringVpn CAS 锁并延迟 3s 重建，
+        // 若不合并，第二个事件会命中 isConfiguringVpn CAS 锁并延迟一次 debounce 周期后重建，
         // 或在极端时序下产生双重 establish()，造成短时连通性抖动。
         if (networkChangeHandler != null) {
             pendingUserConfigNetwork = network;
@@ -1206,7 +1206,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
     private boolean updateTunnelConfig(Network network, String caller, Long fixedRequestSeq,
                                        boolean forceColdSwitch) {
         long requestSeq = fixedRequestSeq != null ? fixedRequestSeq : vpnRebuildRequestSeq.incrementAndGet();
-        // 防止并发执行：若已有 VPN 配置正在进行，延迟 3s 后由 networkChangeHandler 重试一次。
+        // 防止并发执行：若已有 VPN 配置正在进行，延迟一个 debounce 周期后由 networkChangeHandler 重试一次。
         if (!isConfiguringVpn.compareAndSet(false, true)) {
             LogUtil.d(TAG, "updateTunnelConfig[" + caller + "]: 已有配置正在进行，延迟重试");
             if (networkChangeHandler != null) {
@@ -1240,11 +1240,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
 
         // 停止 TUN TAP 读写线程（但暂不关闭旧 TUN fd，保持系统 VPN 图标）
         if (this.tunTapAdapter.isRunning()) {
-            this.tunTapAdapter.interrupt();
-            try {
-                this.tunTapAdapter.join();
-            } catch (InterruptedException ignored) {
-            }
+            this.tunTapAdapter.interrupt(400);
         }
         this.tunTapAdapter.clearRouteMap();
 
@@ -1648,7 +1644,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
                     // 新网络出现时始终重置地址快照，确保后续 onLinkPropertiesChanged 能正常比较
                     lastLinkAddresses = null;
                     // 检查 VPN 重建稳定期：establish() 会触发物理网络在毫秒级内调用 onAvailable，
-                    // 若不过滤则每次 VPN 重建后 3s 都会再次重建，形成无限循环。
+                    // 若不过滤则每次 VPN 重建后都会在下一个 debounce 周期再次重建，形成无限循环。
                     if (android.os.SystemClock.elapsedRealtime() - lastRebuildTime < REBUILD_SETTLE_MS) {
                         LogUtil.d(TAG, "网络变化: VPN 重建稳定期内，跳过 onAvailable (" + network + ")");
                         return;
@@ -1708,7 +1704,7 @@ public class ZeroTierOneService extends VpnService implements Runnable, EventLis
             // 旧回调在取消消息被 ConnectivityService 处理之前仍可能触发 onAvailable / onLinkPropertiesChanged。
             // 这些"旧回调回声"事件的到来时 lastRebuildTime 仍为本次重建开始时的旧值，
             // 但若上次静默期已过（距上次 build 超过 REBUILD_SETTLE_MS），旧回调会通过静默检查，
-            // 导致 3s 后触发一次必然重建，新 TUN fd 顶替旧 TUN，造成无谓的链路切换。
+            // 导致下一个 debounce 周期后触发一次必然重建，新 TUN fd 顶替旧 TUN，造成无谓的链路切换。
             // 此处刷新 lastRebuildTime，确保刚注册新回调时的任何事件（旧回调回声或新回调初始通知）
             // 都落在新的静默窗口内，被正确抑制。
             lastRebuildTime = android.os.SystemClock.elapsedRealtime();

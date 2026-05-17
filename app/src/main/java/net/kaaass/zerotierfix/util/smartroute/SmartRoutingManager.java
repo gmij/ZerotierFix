@@ -17,8 +17,10 @@ import java.net.InetAddress;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -82,6 +84,10 @@ public class SmartRoutingManager {
     private static final int DOWNLOAD_READ_TIMEOUT = 30_000;
 
     private static final String TAG = "SmartRoutingManager";
+    private static final Set<String> ISO_COUNTRY_CODES = new HashSet<>();
+    static {
+        Collections.addAll(ISO_COUNTRY_CODES, Locale.getISOCountries());
+    }
 
     // ────────────────────────── 单例 ──────────────────────────
 
@@ -314,6 +320,42 @@ public class SmartRoutingManager {
             return true;
         }
         return binaryContains(chinaCidrs, address);
+    }
+
+    public String describeIpRegion(InetAddress address) {
+        if (address == null) return "未知";
+        if (address.isAnyLocalAddress()
+                || address.isLoopbackAddress()
+                || address.isLinkLocalAddress()
+                || address.isSiteLocalAddress()) {
+            return "本地";
+        }
+        if (isChineseIp(address)) {
+            return "中国";
+        }
+        String country = inferCountryFromDomain(getDomainForIp(address));
+        if (country != null) {
+            return country;
+        }
+        return "境外";
+    }
+
+    private String inferCountryFromDomain(String domain) {
+        if (domain == null || domain.isEmpty()) return null;
+        String normalized = domain.toLowerCase(Locale.ROOT);
+        if (normalized.endsWith(".")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        int lastDot = normalized.lastIndexOf('.');
+        if (lastDot < 0 || lastDot >= normalized.length() - 1) return null;
+        String tld = normalized.substring(lastDot + 1).toUpperCase(Locale.ROOT);
+        if (tld.length() != 2) return null;
+        if (!ISO_COUNTRY_CODES.contains(tld)) return null;
+        Locale locale = new Locale(Locale.SIMPLIFIED_CHINESE.getLanguage(), tld);
+        String country = locale.getDisplayCountry(Locale.SIMPLIFIED_CHINESE);
+        if (country == null || country.isEmpty()) return null;
+        if ("中国".equals(country)) return null;
+        return country;
     }
 
     /**
