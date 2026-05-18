@@ -3,6 +3,7 @@ package net.kaaass.zerotierfix.service;
 import android.net.VpnService;
 
 import net.kaaass.zerotierfix.util.LogUtil;
+import net.kaaass.zerotierfix.util.NetworkInfoUtils;
 import net.kaaass.zerotierfix.util.smartroute.FakeIpPool;
 import net.kaaass.zerotierfix.util.smartroute.SmartRoutingManager;
 
@@ -17,8 +18,10 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.UnknownHostException;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -157,7 +160,6 @@ public class DirectConnectionManager {
                 session.sendSynAck(seqNum);
                 return true;
             }
-            // 查找真实目标
             InetAddress fakeIpAddr = FakeIpPool.intToAddr(dstIpInt);
             String domain = fakeIpPool.getDomain(fakeIpAddr);
             if (domain == null) {
@@ -244,21 +246,23 @@ public class DirectConnectionManager {
                 LogUtil.w(TAG, "UDP: 找不到 fake IP 对应域名，丢弃");
                 return true;
             }
-            // 解析真实 IP
             InetAddress realIp = resolveViaDirect(domain);
             if (realIp == null) {
                 LogUtil.w(TAG, "UDP: 无法解析 " + domain + "，丢弃");
                 return true;
             }
             fakeIpPool.storeRealIp(fakeIpAddr, realIp);
-            if (smartRouter != null) smartRouter.learnFromDirectConnection(domain, realIp);
 
-            session = new UdpSession(sessionKey, srcIpBytes, dstIpBytes, srcPort, dstPort, realIp);
+            session = new UdpSession(sessionKey, srcIpBytes, dstIpBytes, srcPort, dstPort, domain, realIp);
             udpSessions.put(sessionKey, session);
             final UdpSession finalSession = session;
             executor.submit(() -> finalSession.startReadLoop());
         }
-        session.send(payload);
+        boolean sent = session.send(payload);
+        boolean didLearnDirect = sent && smartRouter != null && session.markLearnedDirect();
+        if (didLearnDirect) {
+            smartRouter.learnFromDirectConnection(session.domain, session.realIp);
+        }
         purgeStaleUdpSessions();
         return true;
     }
@@ -316,7 +320,6 @@ public class DirectConnectionManager {
                     realIp = resolveViaDirect(domain);
                     if (realIp != null) {
                         fakeIpPool.storeRealIp(fakeIpAddr, realIp);
-                        if (smartRouter != null) smartRouter.learnFromDirectConnection(domain, realIp);
                     }
                 }
                 if (realIp == null) {
@@ -338,6 +341,9 @@ public class DirectConnectionManager {
                 s.connect(new InetSocketAddress(realIp, realPort), TCP_CONNECT_TIMEOUT_MS);
                 this.socket = s;
                 this.established = true;
+                if (smartRouter != null && domain != null) {
+                    smartRouter.learnFromDirectConnection(domain, realIp);
+                }
 
                 // 3. 发 SYN-ACK 给 app
                 sendSynAck(clientIsn);
@@ -444,22 +450,31 @@ public class DirectConnectionManager {
         final byte[] fakeIp;
         final int clientPort;
         final int fakePort;
+        final String domain;
         final InetAddress realIp;
         volatile DatagramSocket socket;
         volatile long lastActivity = System.currentTimeMillis();
         volatile boolean closed = false;
+        private boolean directLearned = false;
 
         UdpSession(long key, byte[] clientIp, byte[] fakeIp,
-                   int clientPort, int fakePort, InetAddress realIp) {
+                   int clientPort, int fakePort, String domain, InetAddress realIp) {
             this.key = key;
             this.clientIp = clientIp;
             this.fakeIp = fakeIp;
             this.clientPort = clientPort;
             this.fakePort = fakePort;
+            this.domain = domain;
             this.realIp = realIp;
         }
 
-        void send(byte[] payload) {
+        synchronized boolean markLearnedDirect() {
+            if (directLearned || domain == null) return false;
+            directLearned = true;
+            return true;
+        }
+
+        boolean send(byte[] payload) {
             try {
                 if (socket == null || socket.isClosed()) {
                     socket = new DatagramSocket();
@@ -468,8 +483,10 @@ public class DirectConnectionManager {
                 DatagramPacket dp = new DatagramPacket(payload, payload.length, realIp, fakePort);
                 socket.send(dp);
                 lastActivity = System.currentTimeMillis();
+                return true;
             } catch (IOException e) {
                 LogUtil.d(TAG, "UDP send: " + e.getMessage());
+                return false;
             }
         }
 
@@ -513,7 +530,7 @@ public class DirectConnectionManager {
      */
     InetAddress resolveViaDirect(String domain) {
         if (domain == null) return null;
-        for (String dnsServer : DIRECT_DNS_SERVERS) {
+        for (String dnsServer : getPreferredDirectDnsServers()) {
             try {
                 InetAddress result = doUdpDnsQuery(domain, dnsServer, 53, RESOLVE_TIMEOUT_MS);
                 if (result != null) return result;
@@ -522,6 +539,14 @@ public class DirectConnectionManager {
             }
         }
         return null;
+    }
+
+    private String[] getPreferredDirectDnsServers() {
+        Set<String> dnsServers = new LinkedHashSet<>(NetworkInfoUtils.getPhysicalNetworkDnsServers(vpnService));
+        for (String fallback : DIRECT_DNS_SERVERS) {
+            dnsServers.add(fallback);
+        }
+        return dnsServers.toArray(new String[0]);
     }
 
     private InetAddress doUdpDnsQuery(String domain, String dnsServer, int dnsPort, long timeoutMs)

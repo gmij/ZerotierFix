@@ -2,6 +2,8 @@ package net.kaaass.zerotierfix.util;
 
 import android.content.Context;
 import android.net.ConnectivityManager;
+import android.net.LinkProperties;
+import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.util.Log;
@@ -11,7 +13,9 @@ import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 网络连接信息处理工具类
@@ -53,6 +57,44 @@ public class NetworkInfoUtils {
                 return CurrentConnection.CONNECTION_MOBILE;
             }
             return CurrentConnection.CONNECTION_OTHER;
+        }
+    }
+
+    public static List<String> getPhysicalNetworkDnsServers(Context context) {
+        var connectivityManager = (ConnectivityManager) context
+                .getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivityManager == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            return new ArrayList<>();
+        }
+        Set<String> dnsServers = new LinkedHashSet<>();
+        try {
+            Network activeNetwork = connectivityManager.getActiveNetwork();
+            appendPhysicalNetworkDnsServers(connectivityManager, activeNetwork, dnsServers);
+            for (Network network : connectivityManager.getAllNetworks()) {
+                if (activeNetwork != null && activeNetwork.equals(network)) continue;
+                appendPhysicalNetworkDnsServers(connectivityManager, network, dnsServers);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Error reading physical network DNS servers", e);
+        }
+        return new ArrayList<>(dnsServers);
+    }
+
+    private static void appendPhysicalNetworkDnsServers(ConnectivityManager connectivityManager,
+                                                        Network network,
+                                                        Set<String> dnsServers) {
+        if (connectivityManager == null || network == null) return;
+        NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(network);
+        if (capabilities == null
+                || !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                || !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) {
+            return;
+        }
+        LinkProperties linkProperties = connectivityManager.getLinkProperties(network);
+        if (linkProperties == null) return;
+        for (var dnsServer : linkProperties.getDnsServers()) {
+            if (dnsServer == null) continue;
+            dnsServers.add(dnsServer.getHostAddress());
         }
     }
 

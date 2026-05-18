@@ -18,7 +18,7 @@ import java.net.SocketTimeoutException;
 public class UdpCom implements PacketSender, Runnable {
     private static final String TAG = "UdpCom";
     private Node node;
-    private final DatagramSocket svrSocket;
+    private volatile DatagramSocket svrSocket;
     private final ZeroTierOneService ztService;
     private volatile boolean running = true;
 
@@ -31,9 +31,22 @@ public class UdpCom implements PacketSender, Runnable {
         this.node = node2;
     }
 
+    public synchronized void replaceSocket(DatagramSocket datagramSocket) {
+        DatagramSocket oldSocket = this.svrSocket;
+        this.svrSocket = datagramSocket;
+        if (oldSocket != null && oldSocket != datagramSocket && !oldSocket.isClosed()) {
+            oldSocket.close();
+        }
+    }
+
+    private synchronized DatagramSocket currentSocket() {
+        return this.svrSocket;
+    }
+
     @Override // com.zerotier.sdk.PacketSender
     public int onSendPacketRequested(long j, InetSocketAddress inetSocketAddress, byte[] bArr, int i) {
-        if (this.svrSocket == null) {
+        DatagramSocket socket = currentSocket();
+        if (socket == null) {
             Log.e(TAG, "Attempted to send packet on a null socket");
             return -1;
         }
@@ -44,7 +57,7 @@ public class UdpCom implements PacketSender, Runnable {
         try {
             DatagramPacket datagramPacket = new DatagramPacket(bArr, bArr.length, inetSocketAddress);
             DebugLog.d(TAG, "onSendPacketRequested: Sent " + datagramPacket.getLength() + " bytes to " + inetSocketAddress.toString());
-            this.svrSocket.send(datagramPacket);
+            socket.send(datagramPacket);
             return 0;
         } catch (Exception e) {
             Log.e(TAG, "Error sending packet: " + e.getMessage());
@@ -63,9 +76,19 @@ public class UdpCom implements PacketSender, Runnable {
             byte[] bArr = new byte[16384];
             while (!Thread.interrupted() && running) {
                 jArr[0] = 0;
+                DatagramSocket socket = currentSocket();
+                if (socket == null || socket.isClosed()) {
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    continue;
+                }
                 DatagramPacket datagramPacket = new DatagramPacket(bArr, 16384);
                 try {
-                    this.svrSocket.receive(datagramPacket);
+                    socket.receive(datagramPacket);
                     if (datagramPacket.getLength() > 0) {
                         byte[] bArr2 = new byte[datagramPacket.getLength()];
                         System.arraycopy(datagramPacket.getData(), 0, bArr2, 0, datagramPacket.getLength());
@@ -89,6 +112,11 @@ public class UdpCom implements PacketSender, Runnable {
                     }
                 } catch (SocketTimeoutException ignored) {
                     // 超时是正常的，不需要处理
+                } catch (SocketException e) {
+                    if (!running) {
+                        break;
+                    }
+                    Log.d(TAG, "UDP socket replaced or closed, retrying receive: " + e.getMessage());
                 } catch (Exception e) {
                     Log.e(TAG, "Error receiving packet: " + e.getMessage());
                     // 不终止循环，继续尝试接收数据包

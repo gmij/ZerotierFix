@@ -90,7 +90,9 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
      */
     private final Set<Long> connLoggedSet =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
-    private static final int MAX_CONN_LOG_ENTRIES = 5000;
+    // 连接日志只用于一次性诊断，1000 个端点足以覆盖一次切网/复现窗口；
+    // 相比 5000，可明显减少业务日志缓存里的高频 IP 噪声。
+    private static final int MAX_CONN_LOG_ENTRIES = 1000;
 
     /**
      * 已发出 CHINA_DIRECT 路由漏洞告警的中国 IP 集合（每个 IP 仅告警一次）。
@@ -243,7 +245,7 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
      * 发出 [CONN] 业务日志（每个 destIP:dstPort 仅记录一次）。
      *
      * <p>日志格式：{host/IP}:{port}  [路由原因]  (proto; src)
-     * 路由原因：GFW → 走ZT | CN-直连 | ZT（全局/per-app）
+     * 路由原因：GFW / learned via-zt 保留在业务日志；普通 GeoIP 命中仅输出到调试日志。
      *
      * @param packetData 完整 IPv4 数据包字节
      * @param origDestIP 路由替换前的原始目的 IP
@@ -278,29 +280,33 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
 
         // 判断路由原因
         String routeReason;
+        boolean shouldEmitInfo = false;
         if (perAppRoutingActive) {
             routeReason = "ZT (per-app)";
         } else if (smartRoutingManager != null && smartRoutingMode != SmartRoutingManager.MODE_OFF) {
             boolean isGfw = smartRoutingManager.getGfwIpSet().contains(origDestIP);
             boolean isCn = smartRoutingManager.isChineseIp(origDestIP);
+            String geoRegion = smartRoutingManager.describeIpRegion(origDestIP);
             String learnedPolicy = smartRoutingManager.getLearnedPolicyDescription(origDestIP);
             if (learnedPolicy != null && learnedPolicy.startsWith("via-zt ")) {
-                routeReason = "ZT (" + learnedPolicy + ")";
+                routeReason = "ZT (" + geoRegion + "; " + learnedPolicy + ")";
+                shouldEmitInfo = true;
             } else if (isGfw) {
                 routeReason = "ZT (GFW)";
+                shouldEmitInfo = true;
             } else if (isCn) {
-                routeReason = "ZT (CN)";
+                routeReason = "ZT (GeoIP: 中国)";
             } else {
-                routeReason = "ZT (非CN)";
+                routeReason = "ZT (GeoIP: " + geoRegion + ")";
             }
         } else {
             routeReason = "ZT (全局)";
         }
 
         String msg = displayHost + ":" + dstPort + "  [" + routeReason + "]  (" + protoLabel + "; src=" + srcStr + "; dest=" + destStr + ")";
-        // 国内中国IP经ZT转发属于预期行为（Fake-IP下硬编码IP/非DNS流量，CHINA_DIRECT下已有路由泄漏告警），
-        // 无诊断价值，降为调试级别，不出现在常规日志中。
-        if ("ZT (CN)".equals(routeReason)) {
+        // 普通 GeoIP 命中（中国/境外/全局/per-app）会非常高频，降为调试级别；
+        // 仅保留 GFW 与 learned via-zt 这类更有诊断价值的连接在业务日志中。
+        if (!shouldEmitInfo) {
             DebugLog.d(TAG, msg);
             return;
         }
@@ -816,6 +822,13 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
     }
 
     public void interrupt() {
+        interrupt(400);
+    }
+
+    /**
+     * @param joinTimeoutMs >0 时最多等待指定毫秒；<=0 时保持旧行为，等待线程完全退出
+     */
+    public void interrupt(long joinTimeoutMs) {
         if (this.receiveThread != null) {
             try {
                 this.in.close();
@@ -825,8 +838,17 @@ public class TunTapAdapter implements VirtualNetworkFrameListener {
             }
             this.receiveThread.interrupt();
             try {
-                this.receiveThread.join();
+                if (joinTimeoutMs > 0) {
+                    this.receiveThread.join(joinTimeoutMs);
+                } else {
+                    this.receiveThread.join();
+                }
             } catch (InterruptedException ignored) {
+            }
+            if (this.receiveThread.isAlive()) {
+                // 线程已收到 interrupt 且底层 fd 已关闭，后续会在异步读循环里自然退出；
+                // 这里只避免继续阻塞 VPN 重建路径，优先降低切网卡顿。
+                LogUtil.d(TAG, "TUN 接收线程在超时窗口后仍未退出，继续异步收尾");
             }
         }
     }

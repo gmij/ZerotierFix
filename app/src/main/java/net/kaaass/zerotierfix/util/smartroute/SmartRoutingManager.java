@@ -17,8 +17,10 @@ import java.net.InetAddress;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -82,6 +84,10 @@ public class SmartRoutingManager {
     private static final int DOWNLOAD_READ_TIMEOUT = 30_000;
 
     private static final String TAG = "SmartRoutingManager";
+    private static final Set<String> ISO_COUNTRY_CODES = new HashSet<>();
+    static {
+        Collections.addAll(ISO_COUNTRY_CODES, Locale.getISOCountries());
+    }
 
     // ────────────────────────── 单例 ──────────────────────────
 
@@ -225,10 +231,16 @@ public class SmartRoutingManager {
 
     /**
      * Fake-IP 模式缓存：域名 → 是否是中国域名。
-     * 由 {@code onDnsRecord()} 在解析到中国 IP 时填充；
-     * 供 {@link #shouldRouteViaTunnel(String)} 步骤③使用，无需每次重新走 chnroutes 二分查找。
+     * 由 DNS 嗅探与直连路径的真实 IP 学习逻辑在获得真实 IP 后填充；
+     * true 表示中国 IP（优先直连），false 表示非中国 IP（优先经 ZT）。
      */
     private final ConcurrentHashMap<String, Boolean> domainChineseness = new ConcurrentHashMap<>();
+    /**
+     * Fake-IP 模式域名级学习偏好。
+     * 仅记录已经验证过的 DIRECT / VIA_ZT 域名决策，用于优化后续同域名首包路径。
+     */
+    private final ConcurrentHashMap<String, LearnedRoutePolicyStore.Preference> learnedDomainPreferences =
+            new ConcurrentHashMap<>();
 
     /**
      * 已知的 GFW 封锁 IP 集合（GFW_LIST 使用，用于 VPN 路由添加）
@@ -310,6 +322,42 @@ public class SmartRoutingManager {
         return binaryContains(chinaCidrs, address);
     }
 
+    public String describeIpRegion(InetAddress address) {
+        if (address == null) return "未知";
+        if (address.isAnyLocalAddress()
+                || address.isLoopbackAddress()
+                || address.isLinkLocalAddress()
+                || address.isSiteLocalAddress()) {
+            return "本地";
+        }
+        if (isChineseIp(address)) {
+            return "中国";
+        }
+        String country = inferCountryFromDomain(getDomainForIp(address));
+        if (country != null) {
+            return country;
+        }
+        return "境外";
+    }
+
+    private String inferCountryFromDomain(String domain) {
+        if (domain == null || domain.isEmpty()) return null;
+        String normalized = domain.toLowerCase(Locale.ROOT);
+        if (normalized.endsWith(".")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        int lastDot = normalized.lastIndexOf('.');
+        if (lastDot < 0 || lastDot >= normalized.length() - 1) return null;
+        String tld = normalized.substring(lastDot + 1).toUpperCase(Locale.ROOT);
+        if (tld.length() != 2) return null;
+        if (!ISO_COUNTRY_CODES.contains(tld)) return null;
+        Locale locale = new Locale(Locale.SIMPLIFIED_CHINESE.getLanguage(), tld);
+        String country = locale.getDisplayCountry(Locale.SIMPLIFIED_CHINESE);
+        if (country == null || country.isEmpty()) return null;
+        if ("中国".equals(country)) return null;
+        return country;
+    }
+
     /**
      * 判断某域名是否被 GFW 封锁
      */
@@ -324,10 +372,11 @@ public class SmartRoutingManager {
      *
      * <p>决策顺序：
      * <ol>
-     *   <li>GFWList 命中 → VIA_ZT（true）</li>
-     *   <li>Google/YouTube 等全球服务域名 → VIA_ZT（true）</li>
-     *   <li>learned VIA_ZT 策略命中（历史上已被识别为需要 ZT 的 IP/域名）→ VIA_ZT（true）</li>
-     *   <li>默认 → DIRECT（false，分配 fake IP，通过保护套接字直连）</li>
+     *   <li>GFWList / Google 全球服务命中 → VIA_ZT（true，最高优先级）</li>
+     *   <li>域名级 learned VIA_ZT 命中 → VIA_ZT（true）</li>
+     *   <li>域名级 learned DIRECT 命中 → DIRECT（false）</li>
+     *   <li>GeoIP 缓存命中：中国 → DIRECT；非中国 → VIA_ZT</li>
+     *   <li>默认 → VIA_ZT（首次访问未知域名时继续走 ZT，等待 DNS/直连结果补充 GeoIP 缓存）</li>
      * </ol>
      *
      * <p>注意：此方法仅根据域名做决策，无需解析真实 IP，因此可在 DNS 拦截路径的热路径上同步调用。
@@ -342,15 +391,21 @@ public class SmartRoutingManager {
         if (isGfwDomain(d)) return true;
         // ② Google/YouTube 等全球服务
         if (isGoogleGlobalServiceDomain(d)) return true;
-        // ③ 缓存命中：已知中国域名 → DIRECT（直连，分配 fake IP）
-        if (Boolean.TRUE.equals(domainChineseness.get(d))) return false;
-        // ④ 默认 → VIA_ZT（安全默认：优先走 ZeroTier 隧道，确保首次访问未知域名时的隐私性）
+        // ③ learned 偏好：仅在非 GFW 域名上生效 —— 避免历史缓存覆盖明确的封锁域策略。
+        LearnedRoutePolicyStore.Preference learnedPreference = learnedDomainPreferences.get(d);
+        if (learnedPreference == LearnedRoutePolicyStore.Preference.VIA_ZT) return true;
+        if (learnedPreference == LearnedRoutePolicyStore.Preference.DIRECT) return false;
+        // ④ GeoIP 缓存：国内直连、国外走 ZT。
+        Boolean chinese = domainChineseness.get(d);
+        if (Boolean.TRUE.equals(chinese)) return false;
+        if (Boolean.FALSE.equals(chinese)) return true;
+        // ⑤ 默认 → VIA_ZT（安全默认：首访未知域名继续走 ZeroTier，等待后续 GeoIP 学习结果）
         return true;
     }
 
     /**
      * Fake-IP 模式下的 DNS 记录学习：在代理层成功解析出真实 IP 后调用，
-     * 用于更新 learned VIA_ZT 策略（若该 IP 不是中国 IP），以便后续同域名直接复用策略。
+     * 用于按真实 IP 更新域名级 DIRECT / VIA_ZT 偏好以及 GeoIP 缓存。
      *
      * @param domain  域名（小写）
      * @param realIp  代理层解析到的真实 IP
@@ -358,20 +413,20 @@ public class SmartRoutingManager {
     public void learnFromDirectConnection(String domain, InetAddress realIp) {
         if (domain == null || realIp == null) return;
         if (!(realIp instanceof java.net.Inet4Address)) return;
+        String domainLower = domain.toLowerCase();
         // 无论是否中国 IP，先更新 IP→域名 映射
-        ipToDomain.put(realIp.getHostAddress(), domain.toLowerCase());
+        ipToDomain.put(realIp.getHostAddress(), domainLower);
+        if (isGfwDomain(domainLower) || isGoogleGlobalServiceDomain(domainLower)) {
+            return;
+        }
         if (isChineseIp(realIp)) {
             // 真实 IP 是中国 IP → 缓存为中国域名，加速后续 shouldRouteViaTunnel() 步骤③判决
-            domainChineseness.put(domain.toLowerCase(), Boolean.TRUE);
+            domainChineseness.put(domainLower, Boolean.TRUE);
+            learnedDomainPreferences.put(domainLower, LearnedRoutePolicyStore.Preference.DIRECT);
             LogUtil.d(TAG, "fake-IP 学习 DIRECT(CN): " + domain + " → " + realIp.getHostAddress());
-        } else if (!isGfwDomain(domain)) {
-            // 非中国、非 GFW → 记录为已观察的 DIRECT（不促进路由重建，仅供统计）
-            LearnedRoutePolicyStore.ChangeSummary cs = learnedRoutePolicies.observe(
-                    realIp, LearnedRoutePolicyStore.Preference.DIRECT,
-                    domain, "fakeip-direct", System.currentTimeMillis(), false);
-            if (cs.routingChanged) {
-                LogUtil.d(TAG, "fake-IP 学习 DIRECT: " + domain + " → " + realIp.getHostAddress());
-            }
+        } else {
+            domainChineseness.put(domainLower, Boolean.FALSE);
+            learnedDomainPreferences.put(domainLower, LearnedRoutePolicyStore.Preference.VIA_ZT);
         }
     }
 
@@ -586,6 +641,7 @@ public class SmartRoutingManager {
         ipToDomain.put(record.ip.getHostAddress(), domainLower);
         boolean isGoogleService = isGoogleGlobalServiceDomain(record.domain);
         if (isGfwDomain(record.domain) || isGoogleService) {
+            learnedDomainPreferences.put(domainLower, LearnedRoutePolicyStore.Preference.VIA_ZT);
             boolean isNew = gfwIpSet.add(record.ip);
             if (isNew) {
                 LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
@@ -594,20 +650,18 @@ public class SmartRoutingManager {
                 if (l != null) l.onNewGfwIp(record.ip);
             }
             observeRoutePolicy(record.ip, LearnedRoutePolicyStore.Preference.VIA_ZT,
-                    record.domain, isGoogleService ? "google-service" : "gfw-domain", false);
+                    record.domain, isGoogleService ? "google-service" : "gfw-domain", true);
         } else if (isChineseIp(record.ip)) {
-            // Fake-IP 模式：缓存中国域名，加速后续 shouldRouteViaTunnel() 步骤③判决
+            // Fake-IP 模式：缓存中国域名，加速后续 shouldRouteViaTunnel() 的 GeoIP 判决
             domainChineseness.put(domainLower, Boolean.TRUE);
+            learnedDomainPreferences.put(domainLower, LearnedRoutePolicyStore.Preference.DIRECT);
             if (isLiveStreamingDomain(record.domain)) {
                 LogUtil.d(LogUtil.DNS_TAG, record.domain + " -> " + record.ip.getHostAddress()
                         + " -> direct (CN live)");
             }
         } else {
-            // 非中国 IP：直播相关域名自动触发自学习。
-            if (isLiveStreamingDomain(record.domain)) {
-                observeRoutePolicy(record.ip, LearnedRoutePolicyStore.Preference.DIRECT,
-                        record.domain, "live-domain-non-cn", true);
-            }
+            domainChineseness.put(domainLower, Boolean.FALSE);
+            learnedDomainPreferences.put(domainLower, LearnedRoutePolicyStore.Preference.VIA_ZT);
         }
     }
 
