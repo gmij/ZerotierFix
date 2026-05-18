@@ -405,7 +405,7 @@ public class SmartRoutingManager {
 
     /**
      * Fake-IP 模式下的 DNS 记录学习：在代理层成功解析出真实 IP 后调用，
-     * 用于更新 learned VIA_ZT 策略（若该 IP 不是中国 IP），以便后续同域名直接复用策略。
+     * 用于按真实 IP 更新域名级 DIRECT / VIA_ZT 偏好以及 GeoIP 缓存。
      *
      * @param domain  域名（小写）
      * @param realIp  代理层解析到的真实 IP
@@ -427,13 +427,6 @@ public class SmartRoutingManager {
         } else {
             domainChineseness.put(domainLower, Boolean.FALSE);
             learnedDomainPreferences.put(domainLower, LearnedRoutePolicyStore.Preference.VIA_ZT);
-            // 非中国 IP → 记录为已验证应走 ZT 的外网目标，供后续域名/IP 判决复用。
-            LearnedRoutePolicyStore.ChangeSummary cs = learnedRoutePolicies.observe(
-                    realIp, LearnedRoutePolicyStore.Preference.VIA_ZT,
-                    domainLower, "geoip-non-cn", System.currentTimeMillis(), false);
-            if (cs.routingChanged) {
-                LogUtil.d(TAG, "fake-IP 学习 VIA_ZT(non-CN): " + domain + " → " + realIp.getHostAddress());
-            }
         }
     }
 
@@ -669,8 +662,6 @@ public class SmartRoutingManager {
         } else {
             domainChineseness.put(domainLower, Boolean.FALSE);
             learnedDomainPreferences.put(domainLower, LearnedRoutePolicyStore.Preference.VIA_ZT);
-            observeRoutePolicy(record.ip, LearnedRoutePolicyStore.Preference.VIA_ZT,
-                    record.domain, "geoip-non-cn", false);
         }
     }
 
