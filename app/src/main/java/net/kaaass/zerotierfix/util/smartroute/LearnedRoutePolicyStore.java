@@ -206,6 +206,16 @@ public class LearnedRoutePolicyStore {
     private boolean observeSingleLocked(long network, int prefixLen, Preference preference,
                                         String domain, String reason, long nowMs,
                                         StringBuilder changeLog) {
+        if (prefixLen == 32) {
+            Entry covering = findCoveringActiveEntryLocked(network, preference, prefixLen);
+            if (covering != null) {
+                covering.hits++;
+                covering.lastSeenAt = nowMs;
+                covering.lastDomain = domain;
+                covering.lastReason = reason;
+                return false;
+            }
+        }
         Map<Long, Entry> entries = entriesFor(preference);
         Entry entry = entries.computeIfAbsent(key(network, prefixLen),
                 ignored -> new Entry(preference, network, prefixLen));
@@ -218,6 +228,9 @@ public class LearnedRoutePolicyStore {
             appendChange(changeLog, "激活 " + preference.name() + " 策略 "
                     + entry.toCidrString() + "（hits=" + entry.hits + ", domain=" + domain
                     + ", reason=" + reason + "）");
+            if (prefixLen < 32) {
+                removeCoveredActiveEntriesLocked(entry, changeLog);
+            }
             return true;
         }
         return false;
@@ -279,6 +292,36 @@ public class LearnedRoutePolicyStore {
             }
         }
         return best;
+    }
+
+    private Entry findCoveringActiveEntryLocked(long ipLong, Preference preference, int prefixLen) {
+        Entry best = null;
+        for (Entry entry : entriesFor(preference).values()) {
+            if (!entry.active || entry.prefixLen >= prefixLen) continue;
+            if (!contains(entry, ipLong)) continue;
+            if (best == null || entry.prefixLen > best.prefixLen) {
+                best = entry;
+            }
+        }
+        return best;
+    }
+
+    private void removeCoveredActiveEntriesLocked(Entry aggregateEntry, StringBuilder changeLog) {
+        Iterator<Entry> iterator = entriesFor(aggregateEntry.preference).values().iterator();
+        int removed = 0;
+        while (iterator.hasNext()) {
+            Entry entry = iterator.next();
+            if (entry == aggregateEntry || !entry.active || entry.prefixLen <= aggregateEntry.prefixLen) {
+                continue;
+            }
+            if (!contains(aggregateEntry, entry.network)) continue;
+            iterator.remove();
+            removed++;
+        }
+        if (removed > 0) {
+            appendChange(changeLog, "收敛 " + aggregateEntry.preference.name() + " 策略到 "
+                    + aggregateEntry.toCidrString() + "（移除 " + removed + " 个更细粒度条目）");
+        }
     }
 
     private static boolean contains(Entry entry, long ipLong) {

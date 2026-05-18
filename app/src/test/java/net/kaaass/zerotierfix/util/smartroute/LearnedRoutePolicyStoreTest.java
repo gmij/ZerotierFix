@@ -64,6 +64,32 @@ public class LearnedRoutePolicyStoreTest {
         assertFalse(store.matchesActivePolicy(ip, LearnedRoutePolicyStore.Preference.VIA_ZT, 2_000L));
     }
 
+    @Test
+    public void observe_viaZtPromotedPrefixCollapsesCoveredHostEntries() throws Exception {
+        LearnedRoutePolicyStore store = new LearnedRoutePolicyStore(
+                60_000L, 2, 1, 3, 8, 16);
+
+        InetAddress ip1 = InetAddress.getByName("172.217.194.100");
+        InetAddress ip2 = InetAddress.getByName("172.217.194.101");
+        InetAddress ip3 = InetAddress.getByName("172.217.194.102");
+        InetAddress ip4 = InetAddress.getByName("172.217.194.138");
+
+        assertTrue(store.observe(ip1, LearnedRoutePolicyStore.Preference.VIA_ZT,
+                "play-fe.googleapis.com", "google-service", 1_000L, true).routingChanged);
+        assertTrue(store.observe(ip2, LearnedRoutePolicyStore.Preference.VIA_ZT,
+                "play-fe.googleapis.com", "google-service", 2_000L, true).routingChanged);
+        assertTrue(store.observe(ip3, LearnedRoutePolicyStore.Preference.VIA_ZT,
+                "play-fe.googleapis.com", "google-service", 3_000L, true).routingChanged);
+
+        String description = store.describeActivePolicy(ip4, 3_000L);
+        assertNotNull(description);
+        assertTrue(description.contains("172.217.194.0/24"));
+
+        assertFalse(store.observe(ip4, LearnedRoutePolicyStore.Preference.VIA_ZT,
+                "play-fe.googleapis.com", "google-service", 4_000L, true).routingChanged);
+        assertEquals(1, store.serializeLines(4_000L).size());
+    }
+
     private static boolean contains(List<CidrBlock> cidrs, String ip) {
         try {
             InetAddress address = InetAddress.getByName(ip);

@@ -650,7 +650,7 @@ public class SmartRoutingManager {
                 if (l != null) l.onNewGfwIp(record.ip);
             }
             observeRoutePolicy(record.ip, LearnedRoutePolicyStore.Preference.VIA_ZT,
-                    record.domain, isGoogleService ? "google-service" : "gfw-domain", false);
+                    record.domain, isGoogleService ? "google-service" : "gfw-domain", true);
         } else if (isChineseIp(record.ip)) {
             // Fake-IP 模式：缓存中国域名，加速后续 shouldRouteViaTunnel() 的 GeoIP 判决
             domainChineseness.put(domainLower, Boolean.TRUE);
